@@ -1,0 +1,45 @@
+# ProxyFleet baseline .gitignore
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+*.p12
+*.token
+*.secret
+
+# Runtime/generated state
+runtime/
+cache/
+releases/
+build/
+dist/
+*.log
+*.pid
+
+# Subscription snapshots and local overrides
+providers-cache/
+subscriptions-cache/
+*.local.yaml
+*.local.yml
+*.local.json
+
+# Salt sensitive material
+salt/pki/
+/etc/salt/pki/
+
+# Editors/OS
+.vscode/
+.idea/
+.DS_Store
+*~
+*.swp
+
+# Test artifacts
+.pytest_cache/
+.coverage
+coverage/
+__pycache__/
