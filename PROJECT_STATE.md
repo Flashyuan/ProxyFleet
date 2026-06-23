@@ -3,7 +3,7 @@
 > State 版本：1.1
 > 更新时间：2026-06-23
 > 当前阶段：Architecture Baseline / Pre-implementation
-> 当前 Git commit：UNKNOWN（已完成本地 `git init`，尚未创建 commit 或推送远端）
+> 当前 Git commit：83087c0c4e8629e5c70ede6afc47ae03c6ffb0a2（bootstrap commit 已推送并核验远端 SHA）
 
 ## 1. 当前结论
 
@@ -33,8 +33,8 @@
 - [x] RP-0002 Git 治理文档基线结果
 - [x] Docker 部署评估
 - [x] 官方证据索引
-- [x] 实际 Git 仓库（本地初始化完成，尚无 commit）
-- [ ] 远程仓库接入和首次 push
+- [x] 实际 Git 仓库
+- [x] 远程仓库接入和首次 push
 - [ ] 测试环境
 - [ ] 可运行 POC
 
@@ -50,7 +50,7 @@
 | Docker/平台 | OPS-PLATFORM | BASELINED | ADR-0004、Docker 文档 | 需 Compose POC |
 | 安全 | SECURITY | NOT_STARTED | 基础安全原则 | 需正式威胁模型 |
 | QA/发布 | QA-RELEASE | NOT_STARTED | 初步矩阵 | 需测试 harness |
-| Git/SCM | GIT-SCM | ACTIVE | 本地 git init、local identity、SSH origin 已配置 | 尚未 commit、push 和远端 SHA 核验 |
+| Git/SCM | GIT-SCM | ACTIVE | bootstrap commit 已推送并完成远端 SHA 核验 | 下一步提交状态同步和版本锁定基线 |
 | 知识治理 | DOCS-KNOWLEDGE | BASELINED | v2.2 文档包 | 需首次恢复演练 |
 
 ## 4. 已接受决策
@@ -64,15 +64,15 @@
 3. 是否在 V1 支持多个订阅，还是数据结构支持但 CLI 先单订阅？
 4. Salt Master 的生产默认是否从原生切换为 Docker 控制面？当前 ADR 规定原生为参考、Docker 为支持配置。
 5. ShellCrash adopted 模式支持的最低版本和可识别目录矩阵未知。
-6. Git 托管平台、远程仓库 URL、默认分支保护策略和认证方式尚未提供。
-7. 初始远端是空仓库还是已有提交尚未知；GIT-SCM 必须先只读探测，不得假设。
+6. 默认分支保护策略尚未知。
+7. 初始远端 `main` 已由 bootstrap push 创建；后续仍需每次 push 前 fetch/compare。
 
 ## 6. 风险/阻塞
 
 - `UNKNOWN`：具体 ShellCrash 版本分布和内核配置。
 - `UNKNOWN`：现有服务器是否都可从 Master 访问 TCP 4505/4506。
 - `UNKNOWN`：订阅提供商是否都返回 `Subscription-Userinfo`。
-- `UNKNOWN`：Git 远端是否为空、是否启用 SSO/branch protection、SSH 凭据是否可用和权限是否足够。
+- `UNKNOWN`：GitHub 默认分支保护策略、SSO 策略和后续 tag 权限。
 - `INFERRED`：Salt Master 容器化可行，但需要自建镜像和灾难恢复验证。
 - `INFERRED`：透明代理子节点 Docker 化会显著扩大权限和网络故障面，因此不纳入 V1。
 
@@ -92,20 +92,21 @@
 ## 8. Git 启动所需输入
 
 ```text
-remote_repository_url   必填
-user_name               必填；写入 repo-local user.name
-user_email              必填；写入 repo-local user.email
-default_branch          可选；默认 main
-auth_method             必填：ssh | https-token | credential-helper
-credential_reference    按认证方式提供；不得写入 Git 文档或日志
-remote_expected_state   可选：empty | existing | unknown
+remote_repository_url   已提供；origin 使用 ssh://git@ssh.github.com:443/Flashyuan/ProxyFleet.git
+user_name               已提供；repo-local user.name=Flashyuan
+user_email              已提供；repo-local user.email=250072920@qq.com
+default_branch          main
+auth_method             ssh
+credential_reference    ssh-agent / 本机 SSH 配置；未写入 Git 文档或日志
+remote_expected_state   已观察：main 初始不存在，已由 bootstrap push 创建
 ```
 
-用户名和邮箱只用于提交元数据。当前已写入 repo-local Git 配置，未修改全局 Git 配置。没有可用认证方式时，GIT-SCM 可完成本地初始化和 commit，但必须将 push 标记为 `SCM_BLOCKED`，不得伪报成功。
+用户名和邮箱只用于提交元数据。当前已写入 repo-local Git 配置，未修改全局 Git 配置。当前环境的 GitHub SSH 22 端口握手失败，origin 已改为 GitHub SSH-over-443 URL。
 
 ## 9. 最近验证记录
 
 - v2.2 文档包所要求的 Git 岗位、ADR、checkpoint、手册、契约和 Task Packet 已创建并通过存在性检查。
-- `OBSERVED`：2026-06-23 已在当前项目目录执行 `git init -b main`，并配置 repo-local `user.name=Flashyuan`、`user.email=250072920@qq.com`、`origin=git@github.com:Flashyuan/ProxyFleet.git`。
-- `OBSERVED`：当前尚未创建 commit、尚未 push、尚未执行远端 SHA 核验。
+- `VERIFIED-TEST`：2026-06-23 已在当前项目目录执行 `git init -b main`，并配置 repo-local `user.name=Flashyuan`、`user.email=250072920@qq.com`。
+- `VERIFIED-TEST`：bootstrap commit `83087c0c4e8629e5c70ede6afc47ae03c6ffb0a2` 已推送到 `origin/main`，`git ls-remote --heads origin main` 返回相同 SHA。
+- `OBSERVED`：当前环境 GitHub SSH 22 端口连接被关闭，SSH-over-443 可用，origin 已设置为 `ssh://git@ssh.github.com:443/Flashyuan/ProxyFleet.git`。
 - 当前没有实际代码或自动化测试，因此所有“实现能力”和“已推送”状态仍为 UNKNOWN/未开始。

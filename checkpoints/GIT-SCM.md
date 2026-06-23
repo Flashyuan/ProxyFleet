@@ -6,7 +6,7 @@
 - status: ACTIVE
 - updated_at: 2026-06-23T00:00:00Z
 - active_task_id: TP-0002
-- loaded_commit: UNKNOWN
+- loaded_commit: 83087c0c4e8629e5c70ede6afc47ae03c6ffb0a2
 - contract_version: 0.2-draft
 - last_result_id: -
 
@@ -20,21 +20,21 @@
 
 ## Verified facts
 
-- 已提供 remote URL、user.name、user.email 和 SSH 认证方式；本地 Git 仓库已初始化，尚未创建 commit 或 push。
+- 已提供 remote URL、user.name、user_email 和 SSH 认证方式；本地 Git 仓库已初始化，bootstrap commit 已推送并核验远端 SHA。
 
 ## Repository state
 
 ```text
 repository_path: /home/terence/project/ProxyFleet
-remote_name: origin (PROPOSED)
-remote_url_redacted: git@github.com:Flashyuan/ProxyFleet.git
-default_branch: main (PROPOSED)
+remote_name: origin
+remote_url_redacted: ssh://git@ssh.github.com:443/Flashyuan/ProxyFleet.git
+default_branch: main
 current_branch: main
-head_commit: none (initial branch)
-upstream_ref: UNKNOWN
-remote_head_verified: none for refs/heads/main (ls-remote returned no ref)
-worktree_status: dirty-explained (initial untracked project files)
-active_git_operation: local init complete; commit pending
+head_commit: 83087c0c4e8629e5c70ede6afc47ae03c6ffb0a2
+upstream_ref: origin/main
+remote_head_verified: 83087c0c4e8629e5c70ede6afc47ae03c6ffb0a2
+worktree_status: dirty-explained (state files updated after bootstrap)
+active_git_operation: status synchronization pending
 backup_refs: none
 credential_state: SSH read probe succeeded without secret exposure
 ```
@@ -49,21 +49,20 @@ credential_state: SSH read probe succeeded without secret exposure
 
 ## Open questions
 
-- 远端是否完全为空，或只是尚未创建 main；
 - 默认分支和保护规则。
 
 ## Blockers
 
-- `SCM_BLOCKED/PUSH_NOT_VERIFIED`：本地 init 已完成，但尚未 commit、push 和远端 SHA 核验。
+- 无当前 SCM_BLOCKED；bootstrap push 已验证。默认分支保护策略仍 UNKNOWN。
 
 ## Next atomic action
 
-执行 secret/generation preflight，stage 批准文件，创建首个原子 commit；push 前先只读探测远端。
+提交并推送状态同步，然后进入版本锁定和后续 POC Task。
 
 ## Handoffs
 
-- 等待 GIT-SCM 完成本地首个 commit 和远端核验。
+- Handoff 给 ARCH-ORCH：TP-0002 bootstrap commit 已完成，可创建后续正式 Task Packet。
 
 ## Recovery record
 
-- 2026-06-23 恢复记录：已完成本地 `git init -b main`，repo-local identity 已设置，origin 使用 SSH URL；恢复时必须读取 docs/GIT_OPERATIONS.md 并执行只读 Git 状态核验。
+- 2026-06-23 恢复记录：已完成本地 `git init -b main`，repo-local identity 已设置；GitHub SSH 22 不可用，origin 使用 SSH-over-443；bootstrap commit 已推送并核验远端 SHA。恢复时必须读取 docs/GIT_OPERATIONS.md 并执行只读 Git 状态核验。
