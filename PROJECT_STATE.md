@@ -2,8 +2,8 @@
 
 > State 版本：1.1
 > 更新时间：2026-06-23
-> 当前阶段：Architecture Baseline / Pre-implementation
-> 当前 Git commit：83087c0c4e8629e5c70ede6afc47ae03c6ffb0a2（bootstrap commit 已推送并核验远端 SHA）
+> 当前阶段：Phase 0 / Component Locking Baseline
+> 当前 Git commit：a2ee765305205f44aa3a33862188650e199908c6（状态同步 commit 已推送并核验远端 SHA）
 
 ## 1. 当前结论
 
@@ -17,6 +17,7 @@
 - `ACCEPTED`：已有 ShellCrash/Mihomo 节点可接管；ShellCrash/sing-box V1 不直接接管。
 - `ACCEPTED`：新增唯一固定岗位 `GIT-SCM`，负责 Git 初始化、commit、tag、remote、push、错误处理和远端核验。
 - `ACCEPTED`：其他 Subagent 可修改 Task 范围内文件，但不得自行创建/改写 Git 历史或 push。
+- `ACCEPTED`：安装和发布必须使用固定开源组件版本；禁止 `latest`、浮动 tag 和自动升级关键组件。
 
 ## 2. 当前产物
 
@@ -35,6 +36,7 @@
 - [x] 官方证据索引
 - [x] 实际 Git 仓库
 - [x] 远程仓库接入和首次 push
+- [x] 组件版本锁定清单与本地校验工具
 - [ ] 测试环境
 - [ ] 可运行 POC
 
@@ -48,9 +50,9 @@
 | Mihomo 数据面 | DATA-MIHOMO | NOT_STARTED | ADR-0001/2 | 需 Ubuntu 测试机 |
 | ShellCrash 兼容 | COMPAT-SHELLCRASH | NOT_STARTED | 接管状态模型 | 需样本版本 |
 | Docker/平台 | OPS-PLATFORM | BASELINED | ADR-0004、Docker 文档 | 需 Compose POC |
-| 安全 | SECURITY | NOT_STARTED | 基础安全原则 | 需正式威胁模型 |
-| QA/发布 | QA-RELEASE | NOT_STARTED | 初步矩阵 | 需测试 harness |
-| Git/SCM | GIT-SCM | ACTIVE | bootstrap commit 已推送并完成远端 SHA 核验 | 下一步提交状态同步和版本锁定基线 |
+| 安全 | SECURITY | ACTIVE | 供应链版本锁定基线 | 需正式威胁模型 |
+| QA/发布 | QA-RELEASE | ACTIVE | Phase 0/1 最小测试矩阵 | 需测试 harness |
+| Git/SCM | GIT-SCM | ACTIVE | bootstrap 和状态同步均已推送并核验 | 后续变更继续原子提交 |
 | 知识治理 | DOCS-KNOWLEDGE | BASELINED | v2.2 文档包 | 需首次恢复演练 |
 
 ## 4. 已接受决策
@@ -66,6 +68,7 @@
 5. ShellCrash adopted 模式支持的最低版本和可识别目录矩阵未知。
 6. 默认分支保护策略尚未知。
 7. 初始远端 `main` 已由 bootstrap push 创建；后续仍需每次 push 前 fetch/compare。
+8. 组件锁定清单中 Mihomo/subconverter/Docker 镜像仍是 candidate/planned；进入 installable 前必须补齐 SHA-256 或 digest。
 
 ## 6. 风险/阻塞
 
@@ -86,6 +89,7 @@
 - TP-0007：ShellCrash 只读探测；Owner COMPAT-SHELLCRASH。
 - TP-0008：威胁模型；Owner SECURITY。
 - TP-0009：测试矩阵与 CI/VM harness；Owner QA-RELEASE。
+- TP-0010：组件版本锁定基线和校验工具；Owner SECURITY；状态 ACTIVE。
 
 除 TP-0002 外，其余任务尚未创建正式 Task Packet，不得视为已开始。TP-0002 只可在获得完整 Git 输入后进入 ACTIVE。
 
@@ -109,4 +113,6 @@ remote_expected_state   已观察：main 初始不存在，已由 bootstrap push
 - `VERIFIED-TEST`：2026-06-23 已在当前项目目录执行 `git init -b main`，并配置 repo-local `user.name=Flashyuan`、`user.email=250072920@qq.com`。
 - `VERIFIED-TEST`：bootstrap commit `83087c0c4e8629e5c70ede6afc47ae03c6ffb0a2` 已推送到 `origin/main`，`git ls-remote --heads origin main` 返回相同 SHA。
 - `OBSERVED`：当前环境 GitHub SSH 22 端口连接被关闭，SSH-over-443 可用，origin 已设置为 `ssh://git@ssh.github.com:443/Flashyuan/ProxyFleet.git`。
+- `VERIFIED-TEST`：状态同步 commit `a2ee765305205f44aa3a33862188650e199908c6` 已推送到 `origin/main`，远端 SHA 与本地 HEAD 一致。
+- `VERIFIED-TEST`：组件锁校验工具通过 `component-locks.json`，单元测试 6 项通过。
 - 当前没有实际代码或自动化测试，因此所有“实现能力”和“已推送”状态仍为 UNKNOWN/未开始。

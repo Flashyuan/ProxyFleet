@@ -1,0 +1,120 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-06-23",
+  "policy": {
+    "no_floating_versions": true,
+    "no_automatic_updates": true,
+    "fail_closed_on_missing_integrity": true,
+    "upgrade_requires": [
+      "new_lock_entry",
+      "canary",
+      "qa_release_evidence",
+      "security_review"
+    ]
+  },
+  "components": [
+    {
+      "name": "salt",
+      "kind": "apt-package",
+      "role": "control-plane",
+      "version": "3008.1",
+      "status": "candidate",
+      "source": "https://docs.saltproject.io/salt/install-guide/en/latest/topics/install-by-operating-system/linux-deb.html",
+      "packages": [
+        "salt-master",
+        "salt-minion"
+      ],
+      "architectures": [
+        "amd64",
+        "arm64"
+      ],
+      "integrity": {
+        "repository_signature": "required",
+        "package_version_exact": true
+      },
+      "install_policy": {
+        "allow_auto_update": false,
+        "require_exact_version": true,
+        "hold_after_install": true
+      },
+      "upgrade_policy": {
+        "strategy": "canary-first",
+        "requires_release_gate": true
+      }
+    },
+    {
+      "name": "mihomo",
+      "kind": "binary",
+      "role": "data-plane",
+      "version": "v1.19.27",
+      "status": "candidate",
+      "source": "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.27",
+      "architectures": [
+        "linux-amd64",
+        "linux-arm64"
+      ],
+      "integrity": {
+        "sha256": null,
+        "signature": "unknown"
+      },
+      "install_policy": {
+        "allow_auto_update": false,
+        "require_exact_version": true,
+        "hold_after_install": true
+      },
+      "upgrade_policy": {
+        "strategy": "canary-first",
+        "requires_release_gate": true
+      }
+    },
+    {
+      "name": "subconverter",
+      "kind": "archive",
+      "role": "config-build",
+      "version": "v0.9.0",
+      "status": "candidate",
+      "source": "https://github.com/tindy2013/subconverter/releases/tag/v0.9.0",
+      "architectures": [
+        "linux64"
+      ],
+      "integrity": {
+        "sha256": null,
+        "signature": "unknown"
+      },
+      "install_policy": {
+        "allow_auto_update": false,
+        "require_exact_version": true,
+        "hold_after_install": true
+      },
+      "upgrade_policy": {
+        "strategy": "canary-first",
+        "requires_release_gate": true
+      }
+    },
+    {
+      "name": "proxyfleet-salt-master-image",
+      "kind": "container-image",
+      "role": "docker-control",
+      "version": "0.1.0",
+      "status": "planned",
+      "source": "local-build",
+      "architectures": [
+        "linux-amd64",
+        "linux-arm64"
+      ],
+      "integrity": {
+        "digest": null,
+        "sbom": "required"
+      },
+      "install_policy": {
+        "allow_auto_update": false,
+        "require_exact_version": true,
+        "hold_after_install": true
+      },
+      "upgrade_policy": {
+        "strategy": "canary-first",
+        "requires_release_gate": true
+      }
+    }
+  ]
+}

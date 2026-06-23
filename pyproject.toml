@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=59"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proxyfleet"
+version = "0.1.0"
+description = "ProxyFleet CLI and release tooling"
+requires-python = ">=3.10"
+
+[project.scripts]
+proxyfleet = "proxyfleet.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
