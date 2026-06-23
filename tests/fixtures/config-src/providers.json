@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "providers": [
+    {
+      "enabled": true,
+      "id": "self-hosted",
+      "kind": "local_file",
+      "name_prefix": "[SELF] ",
+      "output": "providers/self-hosted.yaml",
+      "source": "provider-self-hosted.json"
+    }
+  ]
+}

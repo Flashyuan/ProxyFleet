@@ -1,0 +1,10 @@
+{
+  "proxies": [
+    {
+      "name": "[SELF] test-node",
+      "port": 443,
+      "server": "127.0.0.1",
+      "type": "socks5"
+    }
+  ]
+}

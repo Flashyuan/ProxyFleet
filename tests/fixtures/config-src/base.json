@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "config": {
+    "allow-lan": false,
+    "external-controller": "127.0.0.1:9090",
+    "log-level": "info",
+    "mode": "rule",
+    "mixed-port": 7890
+  }
+}

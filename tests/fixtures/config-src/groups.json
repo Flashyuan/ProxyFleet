@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "groups": [
+    {
+      "name": "FLEET_PROXY",
+      "type": "select",
+      "use": [
+        "self-hosted"
+      ]
+    }
+  ]
+}

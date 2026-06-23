@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "order": [
+    {
+      "rule_provider": "force-proxy",
+      "target": "FLEET_PROXY"
+    },
+    {
+      "match": "MATCH",
+      "target": "DIRECT"
+    }
+  ],
+  "rule_providers": [
+    {
+      "behavior": "classical",
+      "id": "force-proxy",
+      "output": "rules/force-proxy.yaml",
+      "source": "rules-force-proxy.json"
+    }
+  ]
+}
