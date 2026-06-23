@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from .component_locks import ComponentLockError, assert_valid_lock_file
 from .config_build import BuildOptions, ConfigBuildError, build_release, verify_release
+from .subscription import SubscriptionError, build_subscription_status
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     verify_release_parser = subparsers.add_parser("verify-release", help="校验 release manifest 文件哈希")
     verify_release_parser.add_argument("release_dir", help="release 目录")
+
+    subscription_status = subparsers.add_parser("subscription-status", help="解析 Subscription-Userinfo 并输出状态 JSON")
+    subscription_status.add_argument("--provider-id", default="provider", help="Provider ID")
+    subscription_status.add_argument("--header", default=None, help="Subscription-Userinfo 头内容")
+    subscription_status.add_argument("--body-file", default=None, help="订阅正文文件；省略时使用占位正文")
 
     return parser
 
@@ -67,6 +74,16 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 2
         print("release 校验通过")
+        return 0
+
+    if args.command == "subscription-status":
+        try:
+            body = Path(args.body_file).read_bytes() if args.body_file else b"proxy-provider-placeholder\n"
+            status = build_subscription_status(args.provider_id, args.header, body)
+        except SubscriptionError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(json.dumps(status.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
     parser.error("未知命令")

@@ -2,7 +2,7 @@
 
 > State 版本：1.1
 > 更新时间：2026-06-23
-> 当前阶段：Phase 1 / Config Build POC
+> 当前阶段：Phase 1 / Subscription Cache POC
 > 当前 Git commit：7cd89810e409b4210d7e694f4d9c71e9664c7798（组件锁定基线 commit 已推送并核验远端 SHA）
 
 ## 1. 当前结论
@@ -19,6 +19,7 @@
 - `ACCEPTED`：其他 Subagent 可修改 Task 范围内文件，但不得自行创建/改写 Git 历史或 push。
 - `ACCEPTED`：安装和发布必须使用固定开源组件版本；禁止 `latest`、浮动 tag 和自动升级关键组件。
 - `VERIFIED-TEST`：本地配置源校验与 release compiler POC 可生成 release manifest 并验证文件哈希。
+- `VERIFIED-TEST`：订阅状态解析与 Provider 级 Last Known Good 缓存 POC 可阻止空正文/HTML/失败覆盖有效快照。
 
 ## 2. 当前产物
 
@@ -39,6 +40,7 @@
 - [x] 远程仓库接入和首次 push
 - [x] 组件版本锁定清单与本地校验工具
 - [x] 配置源校验与 release compiler POC
+- [x] 订阅状态解析与 Provider 级 Last Known Good 缓存 POC
 - [ ] 测试环境
 - [ ] 可运行 POC
 
@@ -48,7 +50,7 @@
 |---|---|---|---|---|
 | 产品规格 | PRODUCT-SPEC | BASELINED | PLAN 目标/非目标/验收 | 需真实 CLI 场景评审 |
 | Salt 控制平面 | CONTROL-SALT | READY | TP-0012 Salt 3008.1 POC | 需 Ubuntu 测试机 |
-| 配置构建 | CONFIG-BUILD | ACTIVE | 本地 release compiler POC | 需真实订阅/subconverter 集成 |
+| 配置构建 | CONFIG-BUILD | ACTIVE | release compiler + subscription cache POC | 需真实订阅/subconverter 集成 |
 | Mihomo 数据面 | DATA-MIHOMO | BASELINED | Native driver 最小契约 | 需 Ubuntu 测试机 |
 | ShellCrash 兼容 | COMPAT-SHELLCRASH | NOT_STARTED | 接管状态模型 | 需样本版本 |
 | Docker/平台 | OPS-PLATFORM | BASELINED | ADR-0004、Docker 文档 | 需 Compose POC |
@@ -72,6 +74,7 @@
 7. 初始远端 `main` 已由 bootstrap push 创建；后续仍需每次 push 前 fetch/compare。
 8. 组件锁定清单中 Mihomo/subconverter/Docker 镜像仍是 candidate/planned；进入 installable 前必须补齐 SHA-256 或 digest。
 9. release compiler POC 当前只支持本地 `local_file` Provider fixture，尚未接入真实订阅和 subconverter。
+10. Last Known Good 当前仅覆盖 Provider 快照层，尚未实现 release 指针和节点回滚层。
 
 ## 6. 风险/阻塞
 
@@ -95,6 +98,7 @@
 - TP-0010：组件版本锁定基线和校验工具；Owner SECURITY；状态 ACTIVE。
 - TP-0011：配置源校验与 release compiler POC；Owner CONFIG-BUILD；状态 ACTIVE。
 - TP-0012：Salt 3008.1 原生 Master/Minion POC；Owner CONTROL-SALT；状态 READY，等待测试机。
+- TP-0013：订阅状态解析与 Last Known Good 缓存 POC；Owner CONFIG-BUILD；状态 ACTIVE。
 
 除 TP-0002 外，其余任务尚未创建正式 Task Packet，不得视为已开始。TP-0002 只可在获得完整 Git 输入后进入 ACTIVE。
 
@@ -121,4 +125,5 @@ remote_expected_state   已观察：main 初始不存在，已由 bootstrap push
 - `VERIFIED-TEST`：状态同步 commit `a2ee765305205f44aa3a33862188650e199908c6` 已推送到 `origin/main`，远端 SHA 与本地 HEAD 一致。
 - `VERIFIED-TEST`：组件锁校验工具通过 `component-locks.json`，单元测试 6 项通过。
 - `VERIFIED-TEST`：release compiler POC 单元测试 14 项通过，可构建并校验 `manifest.json`、`manifest.sha256` 和 release 文件哈希。
+- `VERIFIED-TEST`：订阅状态/LKG POC 单元测试纳入总计 24 项；CLI 可输出脱敏 subscription status JSON。
 - 当前没有实际代码或自动化测试，因此所有“实现能力”和“已推送”状态仍为 UNKNOWN/未开始。
