@@ -15,6 +15,7 @@ from typing import Any
 from urllib import error, parse, request
 
 from .config_build import ConfigBuildError, verify_release
+from .subscription import SubscriptionError, parse_provider_snapshot
 
 
 MANAGED_POLICY_GROUP = "FLEET_PROXY"
@@ -133,7 +134,7 @@ def build_node_catalog(release_dir: Path, health_cache_path: Path | None = None)
         if not relative.startswith("providers/"):
             continue
         provider_id = Path(relative).stem
-        provider_data = _read_json(root / relative)
+        provider_data = _read_provider_snapshot(root / relative)
         proxies = provider_data.get("proxies")
         if not isinstance(proxies, list):
             raise FleetError("E_CONFIG_VALIDATE", f"Provider 缺少 proxies 数组: {relative}")
@@ -572,6 +573,15 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise FleetError("E_CONFIG_VALIDATE", f"JSON 顶层必须是对象: {path.name}")
     return data
+
+
+def _read_provider_snapshot(path: Path) -> dict[str, Any]:
+    try:
+        return parse_provider_snapshot(path.read_bytes())
+    except FileNotFoundError as exc:
+        raise FleetError("E_CONFIG_VALIDATE", f"文件不存在: {path}") from exc
+    except SubscriptionError as exc:
+        raise FleetError("E_CONFIG_VALIDATE", f"Provider 无效: {path.name}: {exc}") from exc
 
 
 def _require_str(obj: dict[str, Any], key: str) -> str:

@@ -3,6 +3,7 @@ import gzip
 import hashlib
 import importlib.util
 import io
+import shutil
 import socket
 import tempfile
 import threading
@@ -45,6 +46,28 @@ class FleetTests(unittest.TestCase):
             self.assertEqual(1, len(catalog))
             self.assertTrue(catalog[0].node_id.startswith("node-"))
             self.assertEqual("[SELF] test-node", catalog[0].mihomo_name)
+            self.assertEqual("self-hosted", catalog[0].provider_id)
+
+    def test_build_node_catalog_accepts_yaml_provider_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "config-src"
+            shutil.copytree(FIXTURE, source)
+            (source / "provider-self-hosted.json").write_text(
+                """
+proxies:
+  - name: yaml-node
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+""",
+                encoding="utf-8",
+            )
+            release = build_release(BuildOptions(source, root / "releases", 1, "abc123", LOCKS))
+
+            catalog = build_node_catalog(release)
+
+            self.assertEqual("yaml-node", catalog[0].mihomo_name)
             self.assertEqual("self-hosted", catalog[0].provider_id)
 
     def test_build_node_catalog_merges_health_cache(self):
