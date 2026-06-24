@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 import shutil
 import subprocess
 import tempfile
@@ -37,16 +38,36 @@ class NodeEntry:
     protocol: str
     fingerprint: str
     availability: str = "unknown"
+    selectable: bool | None = None
+    selected: bool | None = None
+    last_delay_ms: int | None = None
+    health_status: str = "unknown"
+    measured_at: str | None = None
+    last_error_code: str | None = None
+    freshness: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "node_id": self.node_id,
             "mihomo_name": self.mihomo_name,
             "provider_id": self.provider_id,
             "protocol": self.protocol,
             "fingerprint": self.fingerprint,
             "availability": self.availability,
+            "health_status": self.health_status,
+            "freshness": self.freshness,
         }
+        if self.selectable is not None:
+            payload["selectable"] = self.selectable
+        if self.selected is not None:
+            payload["selected"] = self.selected
+        if self.last_delay_ms is not None:
+            payload["last_delay_ms"] = self.last_delay_ms
+        if self.measured_at is not None:
+            payload["measured_at"] = self.measured_at
+        if self.last_error_code is not None:
+            payload["last_error_code"] = self.last_error_code
+        return payload
 
 
 @dataclass(frozen=True)
@@ -93,12 +114,13 @@ def load_release_info(release_dir: Path) -> ReleaseInfo:
     )
 
 
-def build_node_catalog(release_dir: Path) -> list[NodeEntry]:
+def build_node_catalog(release_dir: Path, health_cache_path: Path | None = None) -> list[NodeEntry]:
     """从 release Provider 快照生成稳定节点目录。"""
 
     root = release_dir.resolve()
     load_release_info(root)
     manifest = _read_json(root / "manifest.json")
+    health_cache = load_health_cache(health_cache_path) if health_cache_path else {}
     entries: list[NodeEntry] = []
     seen_ids: set[str] = set()
 
@@ -114,7 +136,7 @@ def build_node_catalog(release_dir: Path) -> list[NodeEntry]:
         for proxy in proxies:
             if not isinstance(proxy, dict):
                 raise FleetError("E_CONFIG_VALIDATE", f"Provider 节点必须是对象: {relative}")
-            entry = _node_entry(provider_id, proxy)
+            entry = _merge_health(_node_entry(provider_id, proxy), health_cache)
             if entry.node_id in seen_ids:
                 raise FleetError("E_CONFIG_VALIDATE", f"node_id 重复: {entry.node_id}")
             seen_ids.add(entry.node_id)
@@ -123,6 +145,24 @@ def build_node_catalog(release_dir: Path) -> list[NodeEntry]:
     if not entries:
         raise FleetError("E_NODE_NOT_FOUND", "release 中没有可选代理节点")
     return entries
+
+
+def load_health_cache(path: Path | None) -> dict[str, dict[str, Any]]:
+    """读取节点健康缓存；缺失文件表示没有缓存。"""
+
+    if path is None or not path.exists():
+        return {}
+    data = _read_json(path)
+    nodes = data.get("nodes", {})
+    if isinstance(nodes, dict):
+        return {str(key): value for key, value in nodes.items() if isinstance(value, dict)}
+    if isinstance(nodes, list):
+        cache: dict[str, dict[str, Any]] = {}
+        for item in nodes:
+            if isinstance(item, dict) and isinstance(item.get("node_id"), str):
+                cache[str(item["node_id"])] = item
+        return cache
+    raise FleetError("E_CONFIG_VALIDATE", "health cache nodes 必须是对象或数组")
 
 
 def write_node_catalog(release_dir: Path) -> Path:
@@ -194,7 +234,7 @@ def load_desired_state(path: Path) -> dict[str, Any]:
     return data
 
 
-def prepare_salt_publish(release_dir: Path, desired_path: Path, salt_root: Path) -> SyncPlan:
+def prepare_salt_publish(release_dir: Path, desired_path: Path, salt_root: Path, component_locks_path: Path | None = None) -> SyncPlan:
     """准备 Salt file_roots 中的 release 和 desired state。"""
 
     release = load_release_info(release_dir)
@@ -207,12 +247,18 @@ def prepare_salt_publish(release_dir: Path, desired_path: Path, salt_root: Path)
     salt_root = salt_root.resolve()
     release_target = salt_root / "proxyfleet" / "releases" / f"{release.release_revision:06d}"
     desired_target = salt_root / "proxyfleet" / "desired.yaml"
+    locks_target = salt_root / "proxyfleet" / "component-locks.json"
     release_target.parent.mkdir(parents=True, exist_ok=True)
     if release_target.exists():
         shutil.rmtree(release_target)
     shutil.copytree(release.release_dir, release_target)
     desired_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(desired_path, desired_target)
+    if component_locks_path is not None:
+        try:
+            shutil.copyfile(component_locks_path, locks_target)
+        except OSError as exc:
+            raise FleetError("E_COMPONENT_INTEGRITY_MISSING", f"组件锁定清单不可用: {component_locks_path}") from exc
     return _sync_plan(release, desired, release.release_dir, release_target, desired_target, target="*")
 
 
@@ -238,7 +284,7 @@ def run_salt_sync(plan: SyncPlan, salt_bin: str = "salt") -> int:
         plan.target,
         "state.apply",
         "proxyfleet.sync",
-        f"pillar={json.dumps({'proxyfleet_operation_id': plan.operation_id, 'proxyfleet_release_root': str(plan.salt_release_dir.parent), 'proxyfleet_desired_path': str(plan.salt_desired_path)}, separators=(',', ':'))}",
+        f"pillar={json.dumps({'proxyfleet_operation_id': plan.operation_id, 'proxyfleet_release_root': str(plan.salt_release_dir.parent), 'proxyfleet_desired_path': str(plan.salt_desired_path), 'proxyfleet_component_locks_path': str(plan.salt_desired_path.parent / 'component-locks.json')}, separators=(',', ':'))}",
     ]
     completed = subprocess.run(cmd, check=False)
     return int(completed.returncode)
@@ -277,7 +323,43 @@ class MihomoClient:
             raise FleetError("E_LOCAL_API", "Mihomo API 返回非对象")
         return response
 
-    def _request(self, method: str, path: str, body: dict[str, Any] | None) -> Any:
+    def health_check(self, mihomo_name: str, test_url: str, timeout_ms: int = 3000) -> dict[str, Any]:
+        """执行单节点 delay 探测，不读取或修改 FLEET_PROXY 选择。"""
+
+        if not mihomo_name:
+            raise FleetError("E_NODE_NOT_FOUND", "Mihomo 节点名称不能为空")
+        if not _is_allowed_healthcheck_url(test_url):
+            raise FleetError("E_HEALTHCHECK_TARGET_BLOCKED", "健康检查 URL 不在允许列表中")
+        query = parse.urlencode({"timeout": int(timeout_ms), "url": test_url})
+        response = self._request(
+            "GET",
+            f"/proxies/{parse.quote(mihomo_name, safe='')}/delay?{query}",
+            None,
+            timeout_error_code="E_HEALTHCHECK_TIMEOUT",
+            not_found_error_code="E_NODE_NOT_FOUND",
+        )
+        if not isinstance(response, dict):
+            raise FleetError("E_HEALTHCHECK_FAILED", "Mihomo delay API 返回非对象")
+        delay = response.get("delay")
+        if not isinstance(delay, int):
+            raise FleetError("E_HEALTHCHECK_FAILED", "Mihomo delay API 缺少 delay")
+        return {
+            "schema_version": "1.0",
+            "mihomo_name": mihomo_name,
+            "health_status": "ok",
+            "last_delay_ms": delay,
+            "measured_at": _now_utc(),
+        }
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None,
+        *,
+        timeout_error_code: str = "E_LOCAL_API",
+        not_found_error_code: str = "E_NODE_NOT_FOUND",
+    ) -> Any:
         data = None if body is None else json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self.secret:
@@ -286,8 +368,14 @@ class MihomoClient:
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read()
-        except (error.URLError, TimeoutError) as exc:
-            raise FleetError("E_LOCAL_API", "Mihomo 本地 API 不可用") from exc
+        except error.HTTPError as exc:
+            if exc.code == 404:
+                raise FleetError(not_found_error_code, "Mihomo API 目标不存在") from exc
+            raise FleetError("E_LOCAL_API", "Mihomo 本地 API 返回错误状态") from exc
+        except socket.timeout as exc:
+            raise FleetError(timeout_error_code, "Mihomo 本地 API 超时") from exc
+        except (error.URLError, TimeoutError, socket.timeout) as exc:
+            raise FleetError(timeout_error_code, "Mihomo 本地 API 不可用") from exc
         if not raw:
             return {}
         try:
@@ -370,6 +458,51 @@ def _find_node(nodes: list[NodeEntry], node_id: str) -> NodeEntry:
     if len(matches) > 1:
         raise FleetError("E_CONFIG_VALIDATE", f"node_id 重复: {node_id}")
     return matches[0]
+
+
+def _merge_health(node: NodeEntry, cache: dict[str, dict[str, Any]]) -> NodeEntry:
+    item = cache.get(node.node_id) or cache.get(node.mihomo_name)
+    if not item:
+        return node
+    return NodeEntry(
+        node_id=node.node_id,
+        mihomo_name=node.mihomo_name,
+        provider_id=node.provider_id,
+        protocol=node.protocol,
+        fingerprint=node.fingerprint,
+        availability=str(item.get("availability", node.availability)),
+        selectable=_optional_bool(item.get("selectable")),
+        selected=_optional_bool(item.get("selected")),
+        last_delay_ms=_optional_int(item.get("last_delay_ms")),
+        health_status=str(item.get("health_status", node.health_status)),
+        measured_at=str(item["measured_at"]) if item.get("measured_at") else None,
+        last_error_code=str(item["last_error_code"]) if item.get("last_error_code") else None,
+        freshness=str(item.get("freshness", node.freshness)),
+    )
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _optional_int(value: Any) -> int | None:
+    return value if isinstance(value, int) else None
+
+
+def _is_allowed_healthcheck_url(test_url: str) -> bool:
+    """限制测速目标，避免把节点测速变成任意外联探测。"""
+
+    parsed = parse.urlparse(test_url)
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc == "www.gstatic.com"
+        and parsed.path == "/generate_204"
+        and not parsed.query
+        and not parsed.params
+        and not parsed.fragment
+        and not parsed.username
+        and not parsed.password
+    )
 
 
 def _group_all_names(group: dict[str, Any]) -> set[str]:

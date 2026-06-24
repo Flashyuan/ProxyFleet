@@ -5,8 +5,10 @@
 > 目标系统：Ubuntu Server 22.04 LTS（主基线）、Ubuntu Server 24.04 LTS（兼容基线）
 
 本目录是 ProxyFleet 的完整工程治理与实施文档基线，并包含当前 POC 代码。
-已实现的主干能力包括组件锁校验、release 构建、订阅状态解析、代理节点目录、
-desired state 写入、Mihomo API 节点选择和 Salt 同步计划。
+已实现的主干能力包括组件锁校验、release 构建、订阅 URL 拉取与 Provider
+快照转换、订阅与自建节点合并、自定义规则生成、代理节点目录、节点测速缓存、
+desired state 写入、Mihomo API 节点选择、Mihomo 安装 fail-closed state 和
+Salt 同步计划。
 
 ## 入口
 
@@ -29,14 +31,29 @@ PYTHONPATH=src python3 -m proxyfleet.cli build-release \
 
 PYTHONPATH=src python3 -m proxyfleet.cli nodes releases/000001
 
+PYTHONPATH=src python3 -m proxyfleet.cli health-check \
+  releases/000001 runtime/health.json \
+  --mihomo-api http://127.0.0.1:9090 --all
+
 PYTHONPATH=src python3 -m proxyfleet.cli select-node \
   releases/000001 runtime --node-id <node-id>
 
 PYTHONPATH=src python3 -m proxyfleet.cli publish-salt \
-  releases/000001 runtime/desired.yaml /srv/salt
+  releases/000001 runtime/desired.yaml /srv/proxyfleet/salt/states
 
 PYTHONPATH=src python3 -m proxyfleet.cli sync \
-  releases/000001 runtime/desired.yaml /srv/salt --target '*' --dry-run
+  releases/000001 runtime/desired.yaml /srv/proxyfleet/salt/states --target '*' --dry-run
+```
+
+最少步骤入口：
+
+```bash
+PYTHONPATH=src python3 -m proxyfleet.cli apply \
+  config-src releases runtime /srv/proxyfleet/salt/states \
+  --revision 1 \
+  --source-git-commit "$(git rev-parse HEAD)" \
+  --select <node-id> \
+  --target '<minion-id-or-target>'
 ```
 
 ## 固定 Subagent 岗位

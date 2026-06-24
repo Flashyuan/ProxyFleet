@@ -387,6 +387,62 @@ V1 提供：
 
 严格模式不能承诺网络意义上的真正原子事务，只能做到预检、分阶段提交和补偿回滚。
 
+### 9.4 代理节点测速显示
+
+管理员必须能在 Master 上用 CLI 查看当前 release 中所有可选择代理节点的健康状态
+和最近延迟，用于切换前判断节点质量。测速显示是观测能力，不得隐式改变
+`config.yaml`、desired state 或 `FLEET_PROXY` 当前选择。
+
+推荐用户入口：
+
+```text
+fleetctl nodes
+fleetctl nodes --refresh
+fleetctl health-check --node-id <node-id>
+fleetctl health-check --all --target-group production
+```
+
+`nodes` 默认读取最近缓存；只有显式 `--refresh` 或 `health-check` 才主动触发
+探测。测速结果必须标注 `fresh|stale|unknown`，不能把未知或超时写成成功。
+
+节点测速使用每个 Minion 本机 Mihomo API 的单节点延迟或 Provider 健康检查能力：
+
+- 优先使用单节点延迟探测，例如 `GET /proxies/{proxy_name}/delay`；
+- Provider 级刷新可使用 Provider healthcheck；
+- 不默认使用策略组级 delay 作为 `FLEET_PROXY` 的常规测速入口，因为组级测速
+  可能批量触发探测，并对自动策略组的固定选择产生副作用；
+- 探测 URL 必须来自受控 allowlist，低成本、无身份信息，预期返回 200/204；
+- 禁止使用订阅 URL、业务站点、metadata 地址或携带 token 的 URL 作为测速目标。
+
+`fleetctl nodes` 至少显示或可 JSON 输出：
+
+- `node_id`、`provider_id`、`mihomo_name`、`protocol`；
+- `availability`：`available|hidden|disabled|unknown`；
+- `selectable`：当前 `FLEET_PROXY` 是否可选；
+- `selected`：是否为当前 `FLEET_PROXY` 选择；
+- `last_delay_ms`：最近一次探测延迟，未知为 `null`；
+- `health_status`：`ok|timeout|failed|unknown|stale`；
+- `measured_at`：RFC 3339 UTC；
+- `freshness`：`fresh|stale|unknown`；
+- `release_revision`、`provider_revision`；
+- `last_error_code`。
+
+输出不得包含订阅 URL、节点密码、UUID 私密字段、Reality 私钥、API secret 或
+完整代理 URI。必要时只显示协议类型、脱敏指纹和稳定 `node_id`。
+
+新增或复用以下错误码：
+
+- `E_HEALTHCHECK_UNSUPPORTED`：当前 Mihomo/API 不支持所需测速能力；
+- `E_HEALTHCHECK_TIMEOUT`：测速超时；
+- `E_HEALTHCHECK_FAILED`：测速失败或响应不可解析；
+- `E_HEALTHCHECK_TARGET_BLOCKED`：测速 URL 不在 allowlist；
+- `E_HEALTHCHECK_RATE_LIMITED`：触发本地限频；
+- `E_LOCAL_API`：Mihomo API 不可用；
+- `E_NODE_NOT_FOUND`：目标节点不存在；
+- `E_PROVIDER_MISMATCH`：provider revision 不一致。
+
+测速失败不等同于节点切换失败，除非处于明确的 PREPARE 验证流程。
+
 ---
 
 ## 10. 订阅使用量与节点快照
@@ -530,9 +586,84 @@ build → offline validate → canary → health verify → batch rollout → co
 - Mihomo 版本和服务状态；
 - 最近应用时间与结果；
 - 订阅余额、到期时间和 fresh/stale；
+- 节点测速缓存的新鲜度、最近延迟和失败原因；
 - 漂移原因。
 
 所有写操作生成 operation ID，并记录操作者、目标、输入 revision、结果和回滚状态。
+
+### 15.1 最少步骤安装、配置、同步与切换体验
+
+用户日常操作必须以最少步骤和最少命令完成，但命令减少只能通过编排已审计的底层
+动作实现，不得绕过人工核验、组件锁、release hash、Mihomo API GET 再验证和
+回滚门禁。底层命令必须保留，方便排障和审计；常用路径提供组合命令。
+
+Master 推荐入口：
+
+```text
+sudo fleetctl master prepare
+sudo fleetctl master install
+sudo fleetctl master configure
+sudo fleetctl master setup
+fleetctl master status
+```
+
+`setup` 等价于 `prepare → install → configure → status`，但每一步必须可单独
+执行、可重复执行、失败可定位。
+
+- `prepare`：只读预检 Ubuntu 版本、架构、sudo、端口 4505/4506、APT 源可达性和已有 Salt 状态；
+- `install`：安装锁定版本 Salt，写入官方 DEB 源、APT pin、apt hold，并启动 `salt-master.service`；
+- `configure`：写入 ProxyFleet Master 配置、file roots、pillar roots 和受管 Salt module/state，不启用公网 `salt-api`；
+- `status`：展示 Salt 版本、hold/pin 状态、服务状态、监听端口、已接受和待接受 Minion key 数量。
+
+`setup` 不得自动接受任何 Minion key。
+
+Minion 推荐单命令 bootstrap：
+
+```text
+sudo fleetctl minion bootstrap \
+  --master <master-ip-or-dns> \
+  --id <minion-id> \
+  --environment production \
+  --driver native-mihomo \
+  --release-channel stable
+```
+
+该命令负责验证 Ubuntu 版本、架构和 Master TCP 4505/4506 可达，安装锁定版本
+Salt Minion，配置 APT pin 和 apt hold，写入 Minion ID、Master 地址和 Grains，
+启动 `salt-minion.service`，并输出本机 Minion key fingerprint 和下一步 Master
+端审核命令。它不得自动接受 key，不得自动安装 Mihomo，不得自动切换代理节点。
+
+用户日常不应手动执行 `build-release → publish-salt → sync`。推荐组合命令：
+
+```text
+fleetctl apply --target-group production
+fleetctl select <node-id> --target-group production
+fleetctl apply --select <node-id> --target-group production
+```
+
+`apply` 负责刷新订阅和用量、构建不可变 release、使用锁定版本 Mihomo 离线校验、
+发布 release 和 desired 到 Salt file_roots、通过 Salt 同步到目标 Minion，并输出
+convergence report。
+
+`select` 负责第 9 节 PREPARE/COMMIT 流程，只改变 `FLEET_PROXY` 期望选择，
+不重建 `config.yaml`。
+
+`apply --select` 的语义必须明确为“先 apply 新 release，再 select 节点”，审计
+记录中仍拆成两个 operation phase。
+
+所有组合命令必须支持 `--dry-run`，展示将读取、写入、同步和切换的对象。生产
+批量或网络高风险目标必须先 canary，再推广，或要求显式确认。
+
+减少命令不得省略以下人工核验：
+
+1. Master 上查看 pending key：`sudo salt-key -L`；
+2. Master 上查看 fingerprint：`sudo salt-key -F`；
+3. 与 Minion bootstrap 输出的 fingerprint、Minion ID、资产来源人工比对；
+4. 人工确认后执行：`sudo salt-key -a <minion-id>`；
+5. 接受后验证：`sudo salt '<minion-id>' test.ping` 和 `sudo salt '<minion-id>' grains.items`。
+
+禁止默认 `auto_accept`，禁止通配接受未知 key，禁止在 fingerprint 未核验时继续
+发布 release。
 
 ---
 
@@ -552,11 +683,34 @@ build → offline validate → canary → health verify → batch rollout → co
 ### 16.2 测试层级
 
 - 单元：订阅头、schema、ID、manifest、错误映射；
-- 契约：Salt 返回、Mihomo API、release manifest；
+- 单元：节点测速结果解析、stale 判定、错误码映射和 secret 脱敏；
+- 契约：Salt 返回、Mihomo API、release manifest、单节点 delay/provider healthcheck；
 - 集成：构建器、Salt State、原生 Mihomo；
 - 故障注入：订阅 5xx、空文件、Master 重启、Minion 离线、API 失败、磁盘满；
+- 故障注入：测速 API 超时、节点不存在、provider 不一致、健康检查 URL 被拒绝、限频；
 - 网络安全：SSH 不断联、metadata 可达、入站服务响应不被误代理；
 - 升级/回滚：Salt、Mihomo、Docker 控制面和 ShellCrash 接管。
+
+### 16.3 节点测速显示验收
+
+- `fleetctl nodes` 能按 release/provider revision 显示节点、当前选择、延迟、
+  freshness、失败原因和数据来源；
+- `fleetctl nodes --refresh` 或 `fleetctl health-check` 能主动刷新缓存；
+- 多个节点返回延迟时可排序，失败节点显示原因但不影响其他节点；
+- `--dry-run` 不写 release、desired、Salt file_roots 或 Mihomo 状态；
+- 测速不得改变 `FLEET_PROXY` 当前选择，不得关闭连接，不得触发 reload；
+- 日志、Result 和 Salt envelope 不得包含 secret、订阅 URL、节点密码或完整代理 URI。
+
+### 16.4 最少步骤体验验收
+
+- 单节点原生 Ubuntu 22.04 从空 runtime 完成 `master setup`、`minion bootstrap`、
+  key 人工核验、`apply`、`nodes --refresh`、`select`、Mihomo reload 和
+  `FLEET_PROXY` GET 再验证；
+- 多节点场景至少覆盖一个 online 成功、一个 offline 标记为 `OFFLINE`；
+- 重复执行相同输入不得破坏当前 release，desired revision 单调递增且可审计；
+- Salt key 未人工接受、组件锁缺失、release hash 不符、manifest path 逃逸、
+  Mihomo API 不可用、reload/restart 失败和回滚失败必须 fail-closed；
+- QA-RELEASE 或 SECURITY 任一阻断时，不得标记为发布可用。
 
 ---
 
@@ -574,15 +728,18 @@ build → offline validate → canary → health verify → batch rollout → co
 
 ### Phase 2：Salt 控制平面
 
-实现 Master/Minion 基线、分组、States、release 分发、reconcile 和结果模型。
+实现 Master/Minion 基线、分组、States、release 分发、reconcile、结果模型和
+最少步骤 setup/bootstrap/apply 编排。
 
 ### Phase 3：原生节点
 
-实现 Mihomo 安装、systemd、本机 API、release 切换、TUN/proxy-only profiles 和回滚。
+实现 Mihomo 安装、systemd、本机 API、release 切换、TUN/proxy-only profiles、
+节点健康检查/测速和回滚。
 
 ### Phase 4：统一节点切换
 
-实现稳定 node_id、PREPARE/COMMIT、strict/best-effort、验证、漂移和补偿回滚。
+实现稳定 node_id、PREPARE/COMMIT、strict/best-effort、验证、漂移、补偿回滚、
+节点测速显示和 convergence report。
 
 ### Phase 5：ShellCrash
 

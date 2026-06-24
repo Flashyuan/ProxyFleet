@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +47,14 @@ class SubscriptionStatus:
             "content_sha256": self.content_sha256,
             "last_error_code": self.last_error_code,
         }
+
+
+@dataclass(frozen=True)
+class SubscriptionFetchResult:
+    """订阅刷新结果，body 为已校验可转换的原始 Provider 快照。"""
+
+    body: bytes | None
+    status: dict[str, Any]
 
 
 def parse_subscription_userinfo(header: str | None) -> dict[str, int | None]:
@@ -89,6 +99,89 @@ def validate_subscription_body(body: bytes) -> str:
     if prefix.startswith(b"<!doctype html") or prefix.startswith(b"<html"):
         raise SubscriptionError("E_SUB_INVALID: 订阅正文疑似 HTML")
     return hashlib.sha256(body).hexdigest()
+
+
+def parse_provider_snapshot(body: bytes) -> dict[str, Any]:
+    """解析 Mihomo Provider 快照，无法确认格式时 fail-closed。"""
+
+    validate_subscription_body(body)
+    text = body.decode("utf-8")
+    data: Any
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = _parse_yaml(text)
+
+    if not isinstance(data, dict):
+        raise SubscriptionError("E_SUB_INVALID: Provider 快照必须是对象")
+    proxies = data.get("proxies")
+    if not isinstance(proxies, list) or not proxies:
+        raise SubscriptionError("E_SUB_INVALID: Provider 快照缺少 proxies")
+    for proxy in proxies:
+        if not isinstance(proxy, dict):
+            raise SubscriptionError("E_SUB_INVALID: Provider 节点必须是对象")
+        if not isinstance(proxy.get("name"), str) or not proxy["name"]:
+            raise SubscriptionError("E_SUB_INVALID: Provider 节点缺少 name")
+        if not isinstance(proxy.get("type"), str) or not proxy["type"]:
+            raise SubscriptionError("E_SUB_INVALID: Provider 节点缺少 type")
+        if not isinstance(proxy.get("server"), str) or not proxy["server"]:
+            raise SubscriptionError("E_SUB_INVALID: Provider 节点缺少 server")
+    return data
+
+
+def provider_snapshot_bytes(body: bytes, *, name_prefix: str = "") -> bytes:
+    """将订阅正文转换为规范 JSON Provider 快照。"""
+
+    snapshot = parse_provider_snapshot(body)
+    normalized = dict(snapshot)
+    proxies = []
+    for proxy in snapshot["proxies"]:
+        item = dict(proxy)
+        if name_prefix and not item["name"].startswith(name_prefix):
+            item["name"] = f"{name_prefix}{item['name']}"
+        proxies.append(item)
+    normalized["proxies"] = proxies
+    return json.dumps(normalized, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+
+
+def fetch_subscription_url(url: str, *, timeout: float = 15.0) -> tuple[bytes, str | None]:
+    """通过 HTTP 拉取订阅正文，返回 body 和 Subscription-Userinfo。"""
+
+    request = urllib.request.Request(url, headers={"User-Agent": "ProxyFleet/0.1"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = getattr(response, "status", 200)
+            if status < 200 or status >= 300:
+                raise SubscriptionError("E_SUB_FETCH: 订阅 HTTP 状态失败")
+            header = response.headers.get("Subscription-Userinfo")
+            return response.read(), header
+    except urllib.error.HTTPError as exc:
+        raise SubscriptionError("E_SUB_FETCH: 订阅 HTTP 状态失败") from exc
+    except urllib.error.URLError as exc:
+        raise SubscriptionError("E_SUB_FETCH: 订阅请求失败") from exc
+    except TimeoutError as exc:
+        raise SubscriptionError("E_SUB_FETCH: 订阅请求超时") from exc
+
+
+def refresh_subscription_url(
+    cache_dir: Path,
+    provider_id: str,
+    url: str,
+    *,
+    name_prefix: str = "",
+    timeout: float = 15.0,
+) -> SubscriptionFetchResult:
+    """刷新订阅并维护 Last Known Good；失败时只标记 stale。"""
+
+    try:
+        body, header = fetch_subscription_url(url, timeout=timeout)
+        snapshot = provider_snapshot_bytes(body, name_prefix=name_prefix)
+        status = update_last_known_good(cache_dir, provider_id, header, snapshot).to_dict()
+        return SubscriptionFetchResult(snapshot, status)
+    except SubscriptionError as exc:
+        error_code = _error_code(exc)
+        status = mark_subscription_failure(cache_dir, provider_id, error_code)
+        return SubscriptionFetchResult(None, status)
 
 
 def build_subscription_status(
@@ -141,6 +234,60 @@ def update_last_known_good(cache_dir: Path, provider_id: str, header: str | None
     return status
 
 
+def fetch_subscription(url: str, timeout: float = 10.0) -> tuple[bytes, str | None]:
+    """兼容旧调用名：从订阅 URL 拉取正文和用量头。"""
+
+    return fetch_subscription_url(url, timeout=timeout)
+
+
+def convert_subscription_to_provider(body: bytes) -> dict[str, Any]:
+    """把已拉取订阅快照转换为 Mihomo file provider。
+
+    当前实现支持已是 Mihomo/Clash provider 结构的 JSON/YAML 子集正文。其它
+    协议订阅必须交给后续锁定版本 subconverter；这里 fail-closed。
+    """
+
+    return parse_provider_snapshot(body)
+
+
+def refresh_subscription_provider(
+    cache_dir: Path,
+    provider_id: str,
+    url: str,
+    *,
+    name_prefix: str = "",
+    timeout: float = 10.0,
+) -> tuple[dict[str, Any], SubscriptionStatus]:
+    """拉取、校验并转换订阅 Provider；失败时使用 LKG。"""
+
+    try:
+        body, header = fetch_subscription_url(url, timeout=timeout)
+        snapshot = provider_snapshot_bytes(body, name_prefix=name_prefix)
+        provider = parse_provider_snapshot(snapshot)
+        status = update_last_known_good(cache_dir, provider_id, header, snapshot)
+        return provider, status
+    except SubscriptionError as exc:
+        status = mark_subscription_failure(cache_dir, provider_id, _error_code(exc))
+        try:
+            snapshot, _ = load_last_known_good(cache_dir, provider_id)
+        except SubscriptionError:
+            raise exc
+        provider = parse_provider_snapshot(snapshot)
+        return provider, SubscriptionStatus(
+            provider_id=str(status["provider_id"]),
+            freshness=str(status["freshness"]),
+            fetched_at=status.get("fetched_at"),
+            upload_bytes=status.get("upload_bytes"),
+            download_bytes=status.get("download_bytes"),
+            total_bytes=status.get("total_bytes"),
+            remaining_bytes=status.get("remaining_bytes"),
+            expire_at=status.get("expire_at"),
+            userinfo_source=str(status.get("userinfo_source", "cache")),
+            content_sha256=status.get("content_sha256"),
+            last_error_code=status.get("last_error_code"),
+        )
+
+
 def load_last_known_good(cache_dir: Path, provider_id: str) -> tuple[bytes, dict[str, Any]]:
     """读取最后有效 Provider 快照和状态。"""
 
@@ -155,6 +302,7 @@ def load_last_known_good(cache_dir: Path, provider_id: str) -> tuple[bytes, dict
 def mark_subscription_failure(cache_dir: Path, provider_id: str, error_code: str) -> dict[str, Any]:
     """订阅失败时返回 stale 状态，不覆盖 Provider 快照。"""
 
+    provider_dir = cache_dir / provider_id
     try:
         _, status = load_last_known_good(cache_dir, provider_id)
     except SubscriptionError:
@@ -175,6 +323,7 @@ def mark_subscription_failure(cache_dir: Path, provider_id: str, error_code: str
     else:
         status["freshness"] = "stale"
         status["last_error_code"] = error_code
+    _atomic_write_json(provider_dir / "subscription-status.json", status)
     return status
 
 
@@ -198,3 +347,65 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _parse_yaml(text: str) -> Any:
+    """解析受限 Mihomo provider YAML 子集。
+
+    这里故意不引入 PyYAML 依赖。复杂 YAML、锚点、多行字符串等都交给后续锁定
+    subconverter；当前只支持测试和手写 provider 常见的 `proxies:` 列表。
+    """
+
+    proxies: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    in_proxies = False
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        stripped = line.strip()
+        if stripped == "proxies:":
+            in_proxies = True
+            continue
+        if not in_proxies:
+            raise SubscriptionError("E_SUB_INVALID: Provider YAML 仅支持 proxies")
+        if stripped.startswith("- "):
+            if current is not None:
+                proxies.append(current)
+            current = {}
+            remainder = stripped[2:].strip()
+            if remainder:
+                key, value = _parse_yaml_pair(remainder)
+                current[key] = value
+            continue
+        if current is None:
+            raise SubscriptionError("E_SUB_INVALID: Provider YAML 节点格式无效")
+        key, value = _parse_yaml_pair(stripped)
+        current[key] = value
+    if current is not None:
+        proxies.append(current)
+    return {"proxies": proxies}
+
+
+def _parse_yaml_pair(raw: str) -> tuple[str, Any]:
+    if ":" not in raw:
+        raise SubscriptionError("E_SUB_INVALID: Provider YAML 字段格式无效")
+    key, value = raw.split(":", 1)
+    key = key.strip()
+    value = value.strip()
+    if not key:
+        raise SubscriptionError("E_SUB_INVALID: Provider YAML 字段名为空")
+    if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) >= 2:
+        return key, value[1:-1]
+    if value.isdigit():
+        return key, int(value)
+    return key, value
+
+
+def _error_code(exc: object) -> str:
+    message = str(exc)
+    if message.startswith("E_SUB_INVALID"):
+        return "E_SUB_INVALID"
+    if message.startswith("E_SUB_FETCH"):
+        return "E_SUB_FETCH"
+    return "E_SUB_INVALID"

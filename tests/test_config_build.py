@@ -1,8 +1,12 @@
 import json
+import os
 import shutil
 import tempfile
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from unittest import mock
 
 from proxyfleet.config_build import BuildOptions, ConfigBuildError, build_release, verify_release
 
@@ -122,6 +126,95 @@ class ConfigBuildTests(unittest.TestCase):
             (output / "000001").mkdir()
             with self.assertRaisesRegex(ConfigBuildError, "已存在"):
                 build_release(BuildOptions(FIXTURE, output, 1, "abc123", LOCKS))
+
+    def test_build_release_with_subscription_local_file_and_rules(self):
+        body = json.dumps(
+            {
+                "proxies": [
+                    {"name": "jp-01", "type": "socks5", "server": "127.0.0.1", "port": 1080}
+                ]
+            }
+        ).encode("utf-8")
+        with _subscription_server([(200, body, "upload=1; download=2; total=10")]) as url:
+            with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as out:
+                shutil.copytree(FIXTURE, src, dirs_exist_ok=True)
+                source_dir = Path(src)
+                providers = json.loads((source_dir / "providers.json").read_text(encoding="utf-8"))
+                providers["providers"].append(
+                    {
+                        "enabled": True,
+                        "id": "airport-main",
+                        "kind": "subscription",
+                        "name_prefix": "[A] ",
+                        "output": "providers/airport-main.yaml",
+                        "secret_ref": "AIRPORT_MAIN_URL",
+                    }
+                )
+                (source_dir / "providers.json").write_text(json.dumps(providers), encoding="utf-8")
+                groups = json.loads((source_dir / "groups.json").read_text(encoding="utf-8"))
+                groups["groups"][0]["use"] = ["self-hosted", "airport-main"]
+                (source_dir / "groups.json").write_text(json.dumps(groups), encoding="utf-8")
+
+                with mock.patch.dict(os.environ, {"AIRPORT_MAIN_URL": url}):
+                    release = build_release(
+                        BuildOptions(
+                            source_dir=source_dir,
+                            output_dir=Path(out) / "releases",
+                            revision=1,
+                            source_git_commit="abc123",
+                            component_locks=LOCKS,
+                            cache_dir=Path(out) / "cache",
+                        )
+                    )
+
+                config = json.loads((release / "config.yaml").read_text(encoding="utf-8"))
+                self.assertEqual({"self-hosted", "airport-main"}, set(config["proxy-providers"].keys()))
+                self.assertTrue((release / "providers" / "self-hosted.yaml").exists())
+                provider = json.loads((release / "providers" / "airport-main.yaml").read_text(encoding="utf-8"))
+                self.assertEqual("[A] jp-01", provider["proxies"][0]["name"])
+                self.assertTrue((release / "rules" / "force-proxy.yaml").exists())
+                status = json.loads((release / "subscription-status" / "airport-main.json").read_text(encoding="utf-8"))
+                self.assertEqual("fresh", status["freshness"])
+
+class _SubscriptionServer:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        responses_ref = self._responses
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                if responses_ref:
+                    status, body, userinfo = responses_ref.pop(0)
+                else:
+                    status, body, userinfo = 500, b"exhausted", None
+                self.send_response(status)
+                if userinfo is not None:
+                    self.send_header("Subscription-Userinfo", userinfo)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A003
+                return
+
+        class Server(ThreadingHTTPServer):
+            daemon_threads = True
+
+        self._server = Server(("127.0.0.1", 0), Handler)
+        self._thread = Thread(target=self._server.serve_forever, daemon=True)
+        self.url = f"http://127.0.0.1:{self._server.server_port}/sub"
+
+    def __enter__(self):
+        self._thread.start()
+        return self.url
+
+    def __exit__(self, exc_type, exc, tb):
+        self._server.shutdown()
+        self._thread.join(timeout=5)
+        self._server.server_close()
+
+
+def _subscription_server(responses):
+    return _SubscriptionServer(responses)
 
 
 if __name__ == "__main__":

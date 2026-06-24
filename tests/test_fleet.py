@@ -1,8 +1,10 @@
 import json
 import importlib.util
 import io
+import socket
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -43,6 +45,37 @@ class FleetTests(unittest.TestCase):
             self.assertEqual("[SELF] test-node", catalog[0].mihomo_name)
             self.assertEqual("self-hosted", catalog[0].provider_id)
 
+    def test_build_node_catalog_merges_health_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            cache = root / "health-cache.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "nodes": {
+                            node.node_id: {
+                                "last_delay_ms": 123,
+                                "health_status": "ok",
+                                "measured_at": "2026-06-24T00:00:00Z",
+                                "freshness": "fresh",
+                                "selected": True,
+                                "selectable": True,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            merged = build_node_catalog(release, cache)[0].to_dict()
+            self.assertEqual(123, merged["last_delay_ms"])
+            self.assertEqual("ok", merged["health_status"])
+            self.assertEqual("fresh", merged["freshness"])
+            self.assertTrue(merged["selected"])
+
     def test_select_node_writes_desired_and_increments_revision(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -69,9 +102,10 @@ class FleetTests(unittest.TestCase):
             release = _release(root / "releases")
             node = build_node_catalog(release)[0]
             select_node(release, root / "runtime", node.node_id, "production")
-            plan = prepare_salt_publish(release, root / "runtime" / "desired.yaml", root / "srv-salt")
+            plan = prepare_salt_publish(release, root / "runtime" / "desired.yaml", root / "srv-salt", LOCKS)
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "releases" / "000001" / "config.yaml").exists())
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "desired.yaml").exists())
+            self.assertTrue((root / "srv-salt" / "proxyfleet" / "component-locks.json").exists())
             self.assertEqual(1, plan.release_revision)
             self.assertEqual(1, plan.desired_revision)
 
@@ -103,6 +137,7 @@ class FleetTests(unittest.TestCase):
             pillar = next(item for item in cmd if item.startswith("pillar="))
             self.assertIn(str(root / "custom-salt" / "proxyfleet" / "releases"), pillar)
             self.assertIn(str(root / "custom-salt" / "proxyfleet" / "desired.yaml"), pillar)
+            self.assertIn(str(root / "custom-salt" / "proxyfleet" / "component-locks.json"), pillar)
 
     def test_salt_envelope_redacts_secret_fields(self):
         envelope = salt_envelope(
@@ -124,10 +159,21 @@ class FleetTests(unittest.TestCase):
 class MihomoHandler(BaseHTTPRequestHandler):
     selected = ""
     inconsistent = False
+    delay_mode = "ok"
     calls = []
 
     def do_GET(self):
         self.__class__.calls.append(("GET", self.path))
+        if self.path.startswith("/proxies/%5BSELF%5D%20test-node/delay"):
+            if self.__class__.delay_mode == "timeout":
+                time.sleep(0.2)
+                return
+            self._json({"delay": 123})
+            return
+        if self.path.startswith("/proxies/missing-node/delay"):
+            self.send_response(404)
+            self.end_headers()
+            return
         body = {"name": "FLEET_PROXY", "now": self.__class__.selected, "all": ["[SELF] test-node"]}
         self._json(body)
 
@@ -155,16 +201,24 @@ class MihomoClientTests(unittest.TestCase):
     def setUp(self):
         MihomoHandler.selected = ""
         MihomoHandler.inconsistent = False
+        MihomoHandler.delay_mode = "ok"
         MihomoHandler.calls = []
         self.server = HTTPServer(("127.0.0.1", 0), MihomoHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+        self._server_closed = False
 
     def tearDown(self):
+        if self._server_closed:
+            return
+        self._close_server()
+
+    def _close_server(self):
         self.server.shutdown()
         self.thread.join(timeout=5)
         self.server.server_close()
+        self._server_closed = True
 
     def test_select_node_puts_then_gets_to_verify(self):
         result = MihomoClient(self.base_url).select_node("FLEET_PROXY", "[SELF] test-node")
@@ -175,6 +229,81 @@ class MihomoClientTests(unittest.TestCase):
         MihomoHandler.inconsistent = True
         with self.assertRaisesRegex(FleetError, "回读结果不一致"):
             MihomoClient(self.base_url).select_node("FLEET_PROXY", "[SELF] test-node")
+
+    def test_health_check_uses_single_node_delay_without_changing_selection(self):
+        MihomoHandler.selected = "[SELF] previous"
+        result = MihomoClient(self.base_url).health_check("[SELF] test-node", "https://www.gstatic.com/generate_204")
+        self.assertEqual("ok", result["health_status"])
+        self.assertEqual(123, result["last_delay_ms"])
+        self.assertEqual("[SELF] previous", MihomoHandler.selected)
+        self.assertEqual(1, len(MihomoHandler.calls))
+        method, path = MihomoHandler.calls[0]
+        self.assertEqual("GET", method)
+        self.assertIn("/proxies/%5BSELF%5D%20test-node/delay", path)
+        self.assertNotIn("FLEET_PROXY", path)
+
+    def test_health_check_timeout_maps_error_code(self):
+        self._close_server()
+        with mock.patch("proxyfleet.fleet.request.urlopen", side_effect=socket.timeout):
+            with self.assertRaises(FleetError) as ctx:
+                MihomoClient(self.base_url, timeout=0.05).health_check("[SELF] test-node", "https://www.gstatic.com/generate_204")
+        self.assertEqual("E_HEALTHCHECK_TIMEOUT", ctx.exception.error_code)
+
+    def test_health_check_missing_node_maps_error_code(self):
+        with self.assertRaises(FleetError) as ctx:
+            MihomoClient(self.base_url).health_check("missing-node", "https://www.gstatic.com/generate_204")
+        self.assertEqual("E_NODE_NOT_FOUND", ctx.exception.error_code)
+
+    def test_health_check_blocks_non_allowlisted_url(self):
+        with self.assertRaises(FleetError) as ctx:
+            MihomoClient(self.base_url).health_check("[SELF] test-node", "https://www.gstatic.com/generate_204?debug=1")
+        self.assertEqual("E_HEALTHCHECK_TARGET_BLOCKED", ctx.exception.error_code)
+
+    def test_cli_health_check_writes_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            cache = root / "health.json"
+            with mock.patch("sys.stdout", new=io.StringIO()):
+                rc = main(
+                    [
+                        "health-check",
+                        str(release),
+                        str(cache),
+                        "--mihomo-api",
+                        self.base_url,
+                        "--all",
+                        "--url",
+                        "https://www.gstatic.com/generate_204",
+                    ]
+                )
+            self.assertEqual(0, rc)
+            data = json.loads(cache.read_text(encoding="utf-8"))
+            node_id = build_node_catalog(release)[0].node_id
+            self.assertEqual(123, data["nodes"][node_id]["last_delay_ms"])
+
+    def test_cli_apply_dry_run_does_not_write_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("sys.stdout", new=io.StringIO()):
+                rc = main(
+                    [
+                        "apply",
+                        str(FIXTURE),
+                        str(root / "releases"),
+                        str(root / "runtime"),
+                        str(root / "srv-salt"),
+                        "--revision",
+                        "1",
+                        "--source-git-commit",
+                        "abc123",
+                        "--dry-run",
+                    ]
+                )
+            self.assertEqual(0, rc)
+            self.assertFalse((root / "releases").exists())
+            self.assertFalse((root / "runtime").exists())
+            self.assertFalse((root / "srv-salt").exists())
 
     def test_cli_mihomo_failure_does_not_write_desired(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -295,6 +424,37 @@ class SaltModuleTests(unittest.TestCase):
             self.assertEqual("E_LOCAL_API", result["error_code"])
             self.assertEqual(previous_release, current.resolve())
             self.assertFalse((install_root / "desired.yaml").exists())
+
+    def test_install_mihomo_missing_sha_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locks = root / "component-locks.json"
+            locks.write_text(
+                json.dumps(
+                    {
+                        "components": [
+                            {
+                                "name": "mihomo",
+                                "version": "v1.19.27",
+                                "source": "https://example.invalid/mihomo",
+                                "integrity": {"sha256": None},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            module = self._module()
+            result = module.install_mihomo(
+                component_locks_path=str(locks),
+                binary_path=str(root / "mihomo"),
+                service_path=str(root / "mihomo.service"),
+                operation_id="op-test",
+            )
+
+            self.assertEqual("failed", result["status"])
+            self.assertEqual("E_COMPONENT_INTEGRITY_MISSING", result["error_code"])
+            self.assertFalse((root / "mihomo").exists())
 
 
 if __name__ == "__main__":

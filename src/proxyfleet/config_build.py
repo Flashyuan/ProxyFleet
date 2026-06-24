@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .component_locks import assert_valid_lock_file, load_lock_file
+from .subscription import SubscriptionError, refresh_subscription_provider
 
 
 class ConfigBuildError(ValueError):
@@ -25,6 +27,8 @@ class BuildOptions:
     revision: int
     source_git_commit: str
     component_locks: Path
+    cache_dir: Path | None = None
+    subscription_timeout: float = 10.0
 
 
 def build_release(options: BuildOptions) -> Path:
@@ -43,7 +47,13 @@ def build_release(options: BuildOptions) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".staging-", dir=output_dir) as tmp_name:
         staging = Path(tmp_name)
-        _write_release_files(staging, source_dir, source)
+        _write_release_files(
+            staging,
+            source_dir,
+            source,
+            options.cache_dir or (output_dir / ".subscription-cache"),
+            options.subscription_timeout,
+        )
         manifest = _build_manifest(
             staging,
             revision=options.revision,
@@ -116,7 +126,7 @@ def verify_release(release_dir: Path) -> None:
             raise ConfigBuildError(f"manifest size 不符: {relative.as_posix()}")
 
 
-def _write_release_files(staging: Path, source_dir: Path, source: dict[str, Any]) -> None:
+def _write_release_files(staging: Path, source_dir: Path, source: dict[str, Any], cache_dir: Path, subscription_timeout: float) -> None:
     providers_dir = staging / "providers"
     rules_dir = staging / "rules"
     providers_dir.mkdir(parents=True)
@@ -126,10 +136,28 @@ def _write_release_files(staging: Path, source_dir: Path, source: dict[str, Any]
         output = _safe_relative_path(provider["output"])
         if output.parts[0] != "providers":
             raise ConfigBuildError("Provider 输出必须位于 providers/ 下")
-        source_path = _safe_join(source_dir, provider["source"])
         target_path = staging / output
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source_path, target_path)
+        if provider["kind"] == "local_file":
+            source_path = _safe_join(source_dir, provider["source"])
+            shutil.copyfile(source_path, target_path)
+        elif provider["kind"] == "subscription":
+            url = _subscription_url(provider)
+            try:
+                provider_data, status = refresh_subscription_provider(
+                    cache_dir,
+                    provider["id"],
+                    url,
+                    name_prefix=provider.get("name_prefix", ""),
+                    timeout=subscription_timeout,
+                )
+            except SubscriptionError as exc:
+                raise ConfigBuildError(str(exc)) from exc
+            _write_json(target_path, provider_data)
+            status_path = staging / "subscription-status" / f"{provider['id']}.json"
+            _write_json(status_path, status.to_dict())
+        else:
+            raise ConfigBuildError(f"不支持的 Provider 类型: {provider['kind']}")
 
     for rule in source["rules"].get("rule_providers", []):
         output = _safe_relative_path(rule["output"])
@@ -226,10 +254,14 @@ def _validate_providers(data: dict[str, Any], source_dir: Path) -> None:
         if provider_id in seen:
             raise ConfigBuildError(f"Provider id 重复: {provider_id}")
         seen.add(provider_id)
-        if provider.get("kind") != "local_file":
-            raise ConfigBuildError("POC 阶段仅支持 local_file Provider")
+        kind = provider.get("kind")
+        if kind not in {"local_file", "subscription"}:
+            raise ConfigBuildError(f"不支持的 Provider 类型: {kind}")
         _safe_relative_path(_require_str(provider, "output"))
-        _safe_join(source_dir, _require_str(provider, "source"))
+        if kind == "local_file":
+            _safe_join(source_dir, _require_str(provider, "source"))
+        else:
+            _require_subscription_secret_ref(provider)
 
 
 def _validate_groups(data: dict[str, Any], providers: dict[str, Any]) -> None:
@@ -275,6 +307,23 @@ def _component_version(component_locks: Path, name: str) -> str:
     raise ConfigBuildError(f"组件锁缺少 {name}")
 
 
+def _subscription_url(provider: dict[str, Any]) -> str:
+    secret_ref = _require_subscription_secret_ref(provider)
+    value = os.environ.get(secret_ref)
+    if not value:
+        raise ConfigBuildError(f"订阅 URL 环境变量未设置: {secret_ref}")
+    if "://" not in value:
+        raise ConfigBuildError(f"订阅 URL 无效: {secret_ref}")
+    return value
+
+
+def _require_subscription_secret_ref(provider: dict[str, Any]) -> str:
+    value = provider.get("secret_ref", provider.get("env"))
+    if not isinstance(value, str) or not value:
+        raise ConfigBuildError("subscription Provider 必须设置 secret_ref 或 env")
+    return value
+
+
 def _assert_schema(data: dict[str, Any], filename: str) -> None:
     if data.get("schema_version") != "1.0":
         raise ConfigBuildError(f"{filename} schema_version 不受支持")
@@ -299,6 +348,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 

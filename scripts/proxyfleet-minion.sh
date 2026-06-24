@@ -33,8 +33,13 @@ install_salt_repo() {
     curl -fsSL "https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public" \
       | gpg --dearmor -o "${SALT_KEYRING}"
   fi
-  curl -fsSL "https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.sources" \
-    -o "${SALT_SOURCES}"
+  cat > "${SALT_SOURCES}" <<SOURCES
+Types: deb
+URIs: https://packages.broadcom.com/artifactory/saltproject-deb
+Suites: stable
+Components: main
+Signed-By: ${SALT_KEYRING}
+SOURCES
   cat > "${SALT_PIN}" <<PIN
 Package: salt-master salt-minion salt-common salt-ssh salt-syndic salt-cloud salt-api
 Pin: version ${SALT_VERSION}*
@@ -48,6 +53,9 @@ usage() {
 
 命令：
   preflight
+  bootstrap --master <master-host-or-ip> --id <minion-id>
+          [--environment production] [--driver native-mihomo]
+          [--release-channel stable]
   install --master <master-host-or-ip> --id <minion-id>
           [--environment production] [--driver native-mihomo]
           [--release-channel stable]
@@ -110,6 +118,9 @@ CONF
 
   systemctl enable --now salt-minion
   echo "Minion 安装完成。请回到 Master 人工核验并接受 key：${MINION_ID}"
+  echo "本机 Minion fingerprint："
+  salt-call --local key.finger || true
+  echo "Master 端下一步：sudo salt-key -F && sudo salt-key -a ${MINION_ID}"
 }
 
 start_minion() {
@@ -155,6 +166,7 @@ preflight() {
 command="${1:-}"
 case "${command}" in
   preflight) preflight ;;
+  bootstrap) shift; install_minion "$@" ;;
   install) shift; install_minion "$@" ;;
   start) start_minion ;;
   stop) stop_minion ;;

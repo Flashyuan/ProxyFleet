@@ -37,49 +37,57 @@
 
 8. Mihomo API
    https://wiki.metacubex.one/en/api/
-   用途：策略组选择、Provider 更新、配置重载、状态验证和连接操作。访问：2026-06-22。
+   用途：策略组选择、单节点 delay、Provider healthcheck、Provider 更新、配置重载、状态验证和连接操作。访问：2026-06-22；节点测速规划复核访问：2026-06-24。
+
+9. Mihomo proxy-providers health check
+   https://wiki.metacubex.one/en/config/proxy-providers/
+   用途：确认 Proxy Provider health-check 的 URL、interval、timeout 等测速/健康检查配置项。访问：2026-06-24。
+
+10. Salt Project DEB packages repository
+    https://docs.saltproject.io/salt/install-guide/en/latest/topics/install-by-operating-system/linux-deb.html
+    用途：确认 Salt DEB 官方仓库位于 `https://packages.broadcom.com/artifactory/saltproject-deb/`，并确认可安装精确版本 `3008.1`；项目脚本直接写固定仓库地址，不使用 `releases/latest/download/salt.sources`。访问：2026-06-24。
 
 ## Docker
 
-9. Docker host network driver
+10. Docker host network driver
    https://docs.docker.com/engine/network/drivers/host/
    用途：Linux host network 的能力和隔离权衡。访问：2026-06-22。
 
-10. Docker Compose services reference
+11. Docker Compose services reference
     https://docs.docker.com/reference/compose-file/services/
     用途：network_mode、ports、capabilities 和设备配置。访问：2026-06-22。
 
-11. Docker Compose trust model
+12. Docker Compose trust model
     https://docs.docker.com/compose/trust-model/
     用途：privileged、cap_add、host network、devices、bind mounts 的宿主机风险。访问：2026-06-22。
 
-12. Docker Engine container run
+13. Docker Engine container run
     https://docs.docker.com/engine/containers/run/
     用途：镜像 digest、挂载和容器隔离基本模型。访问：2026-06-22。
 
 ## Git / 远端认证
 
-13. Git `git-init` documentation
+14. Git `git-init` documentation
     https://git-scm.com/docs/git-init
     用途：确认 `git init`、`--initial-branch/-b` 和已有仓库安全重初始化语义。访问：2026-06-23。
 
-14. Git `git-config` documentation
+15. Git `git-config` documentation
     https://git-scm.com/docs/git-config
     用途：确认 `user.name`/`user.email` 是 commit author/committer 元数据，与认证凭据区分。访问：2026-06-23。
 
-15. Git `git-push` documentation
+16. Git `git-push` documentation
     https://git-scm.com/docs/git-push
     用途：upstream、非 fast-forward 拒绝、force 风险和远端更新语义。访问：2026-06-23。
 
-16. Git `git-fetch` documentation
+17. Git `git-fetch` documentation
     https://git-scm.com/docs/git-fetch
     用途：在写远端前获取和比较 remote refs。访问：2026-06-23。
 
-17. Git `git-status` documentation
+18. Git `git-status` documentation
     https://git-scm.com/docs/git-status
     用途：使用稳定 porcelain 格式记录和解析工作树状态。访问：2026-06-23。
 
-18. GitHub authentication overview（仅适用于远端为 GitHub 时）
+19. GitHub authentication overview（仅适用于远端为 GitHub 时）
     https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github
     用途：HTTPS token/credential helper 与 SSH key 认证方式；说明账号名/邮箱不足以完成 push。访问：2026-06-23。
 

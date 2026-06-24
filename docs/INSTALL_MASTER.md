@@ -24,12 +24,20 @@ scripts/proxyfleet-master.sh preflight
 - `/etc/apt/sources.list.d/salt.sources`
 - `/etc/apt/preferences.d/proxyfleet-salt-pin`
 - `/etc/salt/master.d/proxyfleet.conf`
-- `/srv/proxyfleet/salt/states/poc/init.sls`
+- `/srv/proxyfleet/salt/states/proxyfleet/sync.sls`
+- `/srv/proxyfleet/salt/states/_modules/proxyfleet_mihomo.py`
 
 执行：
 
 ```bash
 sudo scripts/proxyfleet-master.sh install
+```
+
+以后项目代码更新后，可只同步 Salt assets：
+
+```bash
+sudo scripts/proxyfleet-master.sh sync-assets
+sudo salt '*' saltutil.sync_modules
 ```
 
 安装完成后检查：
@@ -68,17 +76,37 @@ sudo salt '<minion-id>' state.apply poc
 ## 5. 配置代理、选择节点并同步
 
 以下命令在 Master 项目目录执行。示例使用测试 fixture；生产时应替换为真实
-`config-src/`、`runtime/` 和 `/srv/salt` 路径。
+`config-src/`、`runtime/` 和 `/srv/proxyfleet/salt/states` 路径。
+
+订阅 URL 不写入配置文件。Provider 使用 `env` 或 `secret_ref` 引用：
+
+```json
+{
+  "id": "airport-main",
+  "kind": "subscription",
+  "enabled": true,
+  "env": "PROXYFLEET_SUB_AIRPORT_MAIN",
+  "name_prefix": "[AIR] ",
+  "output": "providers/airport-main.yaml"
+}
+```
+
+构建前只在 Master 本机注入真实 URL：
+
+```bash
+export PROXYFLEET_SUB_AIRPORT_MAIN='https://subscription.example.invalid/subscription'
+```
 
 ### 5.1 构建 release
 
 ```bash
 PYTHONPATH=src python3 -m proxyfleet.cli build-release \
-  tests/fixtures/config-src \
+  config-src \
   releases \
   --revision 1 \
   --source-git-commit "$(git rev-parse HEAD)" \
-  --component-locks component-locks.json
+  --component-locks component-locks.json \
+  --subscription-cache runtime/subscriptions
 ```
 
 ### 5.2 查看可选代理节点
@@ -88,6 +116,21 @@ PYTHONPATH=src python3 -m proxyfleet.cli nodes releases/000001
 ```
 
 输出中的 `node_id` 是 Master 选择节点时使用的稳定 ID。
+
+如需显示测速结果，先刷新健康缓存，再合并查看：
+
+```bash
+PYTHONPATH=src python3 -m proxyfleet.cli health-check \
+  releases/000001 runtime/health.json \
+  --mihomo-api http://127.0.0.1:9090 \
+  --all
+
+PYTHONPATH=src python3 -m proxyfleet.cli nodes \
+  releases/000001 \
+  --health-cache runtime/health.json
+```
+
+测速只调用本机 Mihomo delay API，不改变当前选择。
 
 ### 5.3 选择节点
 
@@ -107,22 +150,21 @@ PYTHONPATH=src python3 -m proxyfleet.cli select-node \
 sudo PYTHONPATH=src python3 -m proxyfleet.cli publish-salt \
   releases/000001 \
   runtime/desired.yaml \
-  /srv/salt
+  /srv/proxyfleet/salt/states
 ```
 
 该命令会把 release 和 desired state 复制到：
 
 ```text
-/srv/salt/proxyfleet/releases/000001
-/srv/salt/proxyfleet/desired.yaml
+/srv/proxyfleet/salt/states/proxyfleet/releases/000001
+/srv/proxyfleet/salt/states/proxyfleet/desired.yaml
 ```
 
-首次使用前，还需要把项目 Salt module/state 同步到 Salt file_roots：
+首次使用前，还需要把项目 Salt module/state 同步到 Salt file_roots。安装脚本
+已内置同步入口：
 
 ```bash
-sudo mkdir -p /srv/salt/_modules /srv/salt/proxyfleet
-sudo cp salt/modules/proxyfleet_mihomo.py /srv/salt/_modules/
-sudo cp -r salt/states/proxyfleet /srv/salt/
+sudo scripts/proxyfleet-master.sh sync-assets
 sudo salt '*' saltutil.sync_modules
 ```
 
@@ -134,7 +176,7 @@ sudo salt '*' saltutil.sync_modules
 PYTHONPATH=src python3 -m proxyfleet.cli sync \
   releases/000001 \
   runtime/desired.yaml \
-  /srv/salt \
+  /srv/proxyfleet/salt/states \
   --target '<minion-id-or-target>' \
   --dry-run
 ```
@@ -145,12 +187,33 @@ PYTHONPATH=src python3 -m proxyfleet.cli sync \
 sudo PYTHONPATH=src python3 -m proxyfleet.cli sync \
   releases/000001 \
   runtime/desired.yaml \
-  /srv/salt \
+  /srv/proxyfleet/salt/states \
   --target '<minion-id-or-target>'
 ```
 
 Minion 会安装当前 release 到 `/etc/proxyfleet/releases/<revision>`，
 更新 `/etc/proxyfleet/current`，并通过本机 Mihomo API 选择 `FLEET_PROXY`。
+
+### 5.6 最少步骤入口
+
+已经知道 `node_id` 时，可用一条命令完成构建、选择、发布和同步：
+
+```bash
+sudo --preserve-env=PROXYFLEET_SUB_AIRPORT_MAIN \
+  PYTHONPATH=src python3 -m proxyfleet.cli apply \
+  config-src releases runtime /srv/proxyfleet/salt/states \
+  --revision 1 \
+  --source-git-commit "$(git rev-parse HEAD)" \
+  --component-locks component-locks.json \
+  --subscription-cache runtime/subscriptions \
+  --select <node-id> \
+  --target '<minion-id-or-target>'
+```
+
+首次执行建议增加 `--dry-run` 先看计划。
+
+注意：Mihomo 真安装受 `component-locks.json` 保护。Mihomo URL 和 SHA-256
+未补齐前，Minion 会返回 `E_COMPONENT_INTEGRITY_MISSING`，不会下载未锁定版本。
 
 ## 6. 启停与卸载
 

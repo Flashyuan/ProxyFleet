@@ -50,30 +50,117 @@ Master 的运行顺序：
 4. 发布 release/desired 到 Salt file_roots；
 5. 通过 Salt 让 Minion 安装 release 并切换 `FLEET_PROXY`。
 
-示例：
+### 订阅、自建节点和规则配置
+
+配置源目录至少包含：
+
+- `base.json`：Mihomo 基础配置；
+- `providers.json`：订阅 Provider 和自建节点 Provider；
+- `groups.json`：`FLEET_PROXY` 等策略组；
+- `rules.json`：规则顺序和 rule provider；
+- 自建节点 JSON 与自定义规则 JSON。
+
+订阅 URL 不写入 Git。推荐在 Master 本机用环境变量注入：
+
+```json
+{
+  "schema_version": "1.0",
+  "providers": [
+    {
+      "id": "airport-main",
+      "kind": "subscription",
+      "enabled": true,
+      "env": "PROXYFLEET_SUB_AIRPORT_MAIN",
+      "name_prefix": "[AIR] ",
+      "output": "providers/airport-main.yaml"
+    },
+    {
+      "id": "self-hosted",
+      "kind": "local_file",
+      "enabled": true,
+      "source": "provider-self-hosted.json",
+      "name_prefix": "[SELF] ",
+      "output": "providers/self-hosted.yaml"
+    }
+  ]
+}
+```
+
+构建前设置真实订阅 URL：
+
+```bash
+export PROXYFLEET_SUB_AIRPORT_MAIN='https://subscription.example.invalid/subscription'
+```
+
+### 分步执行
 
 ```bash
 PYTHONPATH=src python3 -m proxyfleet.cli build-release \
-  tests/fixtures/config-src releases --revision 1 \
+  config-src releases --revision 1 \
   --source-git-commit "$(git rev-parse HEAD)" \
-  --component-locks component-locks.json
+  --component-locks component-locks.json \
+  --subscription-cache runtime/subscriptions
 
 PYTHONPATH=src python3 -m proxyfleet.cli nodes releases/000001
+
+PYTHONPATH=src python3 -m proxyfleet.cli health-check \
+  releases/000001 runtime/health.json \
+  --mihomo-api http://127.0.0.1:9090 \
+  --all
+
+PYTHONPATH=src python3 -m proxyfleet.cli nodes \
+  releases/000001 \
+  --health-cache runtime/health.json
 
 PYTHONPATH=src python3 -m proxyfleet.cli select-node \
   releases/000001 runtime --node-id <node-id>
 
 sudo PYTHONPATH=src python3 -m proxyfleet.cli publish-salt \
-  releases/000001 runtime/desired.yaml /srv/salt
+  releases/000001 runtime/desired.yaml /srv/proxyfleet/salt/states
 
 PYTHONPATH=src python3 -m proxyfleet.cli sync \
-  releases/000001 runtime/desired.yaml /srv/salt \
+  releases/000001 runtime/desired.yaml /srv/proxyfleet/salt/states \
   --target '<minion-id-or-target>' --dry-run
 
 sudo PYTHONPATH=src python3 -m proxyfleet.cli sync \
-  releases/000001 runtime/desired.yaml /srv/salt \
+  releases/000001 runtime/desired.yaml /srv/proxyfleet/salt/states \
   --target '<minion-id-or-target>'
 ```
 
 `select-node` 不会重建 `config.yaml`；它只改变 desired state 中的
 `selected_node_id` 和 `selected_mihomo_name`。
+
+### 最少步骤执行
+
+已经知道目标 `node_id` 时，可以用一条命令完成构建、选择、发布和 Salt 同步：
+
+```bash
+sudo --preserve-env=PROXYFLEET_SUB_AIRPORT_MAIN \
+  PYTHONPATH=src python3 -m proxyfleet.cli apply \
+  config-src releases runtime /srv/proxyfleet/salt/states \
+  --revision 1 \
+  --source-git-commit "$(git rev-parse HEAD)" \
+  --component-locks component-locks.json \
+  --subscription-cache runtime/subscriptions \
+  --select <node-id> \
+  --target '<minion-id-or-target>'
+```
+
+首次执行或不确定影响范围时先加 `--dry-run`。`apply --dry-run` 只输出计划，
+不会写 runtime、Salt file_roots，也不会执行 Salt。
+
+### Mihomo 安装配置边界
+
+Salt state 会调用 `proxyfleet_mihomo.install_mihomo`。该步骤只接受
+`component-locks.json` 中已固定 URL 和 SHA-256 的 Mihomo 二进制。
+当前 SHA 缺失时会返回 `E_COMPONENT_INTEGRITY_MISSING` 并停止，不会自动下载
+`latest`。
+
+### 测速显示边界
+
+`health-check` 调用本机 Mihomo delay API，不修改 `FLEET_PROXY` 当前选择。
+测速 URL 限定为项目允许列表，默认是：
+
+```text
+https://www.gstatic.com/generate_204
+```

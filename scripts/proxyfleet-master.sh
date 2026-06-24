@@ -7,6 +7,8 @@ SALT_KEYRING="/etc/apt/keyrings/salt-archive-keyring.pgp"
 SALT_SOURCES="/etc/apt/sources.list.d/salt.sources"
 SALT_PIN="/etc/apt/preferences.d/proxyfleet-salt-pin"
 MASTER_CONF="/etc/salt/master.d/proxyfleet.conf"
+SALT_STATES_ROOT="/srv/proxyfleet/salt/states"
+SALT_PILLAR_ROOT="/srv/proxyfleet/salt/pillar"
 
 die() {
   echo "错误：$*" >&2
@@ -35,8 +37,13 @@ install_salt_repo() {
     curl -fsSL "https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public" \
       | gpg --dearmor -o "${SALT_KEYRING}"
   fi
-  curl -fsSL "https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.sources" \
-    -o "${SALT_SOURCES}"
+  cat > "${SALT_SOURCES}" <<SOURCES
+Types: deb
+URIs: https://packages.broadcom.com/artifactory/saltproject-deb
+Suites: stable
+Components: main
+Signed-By: ${SALT_KEYRING}
+SOURCES
   cat > "${SALT_PIN}" <<PIN
 Package: salt-master salt-minion salt-common salt-ssh salt-syndic salt-cloud salt-api
 Pin: version ${SALT_VERSION}*
@@ -55,8 +62,8 @@ install_master() {
   apt-mark hold salt-common salt-master
 
   install -d -m 0755 /etc/salt/master.d
-  install -d -m 0755 /srv/proxyfleet/salt/states/poc
-  install -d -m 0755 /srv/proxyfleet/salt/pillar
+  install -d -m 0755 "${SALT_STATES_ROOT}/poc"
+  install -d -m 0755 "${SALT_PILLAR_ROOT}"
   install -d -m 0755 "${PROJECT_ROOT}"
 
   cat > "${MASTER_CONF}" <<CONF
@@ -69,22 +76,36 @@ auto_accept: False
 open_mode: False
 file_roots:
   base:
-    - /srv/proxyfleet/salt/states
+    - ${SALT_STATES_ROOT}
 pillar_roots:
   base:
-    - /srv/proxyfleet/salt/pillar
+    - ${SALT_PILLAR_ROOT}
 CONF
 
-  cat > /srv/proxyfleet/salt/states/poc/init.sls <<'SLS'
+  cat > "${SALT_STATES_ROOT}/poc/init.sls" <<'SLS'
 proxyfleet_poc_marker:
   file.managed:
     - name: /tmp/proxyfleet-salt-poc
     - contents: "ProxyFleet Salt POC\n"
     - mode: "0644"
 SLS
+  sync_assets
 
   systemctl enable --now salt-master
   echo "Master 安装完成。请在防火墙/云安全组仅向受管 Minion 开放 TCP 4505/4506。"
+}
+
+sync_assets() {
+  need_root
+  [[ -f "${PROJECT_ROOT}/salt/modules/proxyfleet_mihomo.py" ]] || die "缺少 ${PROJECT_ROOT}/salt/modules/proxyfleet_mihomo.py"
+  [[ -d "${PROJECT_ROOT}/salt/states/proxyfleet" ]] || die "缺少 ${PROJECT_ROOT}/salt/states/proxyfleet"
+  install -d -m 0755 "${SALT_STATES_ROOT}/_modules"
+  install -m 0644 "${PROJECT_ROOT}/salt/modules/proxyfleet_mihomo.py" "${SALT_STATES_ROOT}/_modules/proxyfleet_mihomo.py"
+  rm -rf "${SALT_STATES_ROOT}/proxyfleet"
+  cp -R "${PROJECT_ROOT}/salt/states/proxyfleet" "${SALT_STATES_ROOT}/proxyfleet"
+  find "${SALT_STATES_ROOT}/proxyfleet" -type d -exec chmod 0755 {} +
+  find "${SALT_STATES_ROOT}/proxyfleet" -type f -exec chmod 0644 {} +
+  echo "ProxyFleet Salt assets 已同步到 ${SALT_STATES_ROOT}"
 }
 
 start_master() {
@@ -142,6 +163,7 @@ usage() {
   stop             停止 salt-master
   restart          重启 salt-master
   status           查看 salt-master 和 salt-key 状态
+  sync-assets      同步 ProxyFleet Salt module/state 到 file_roots
   uninstall        卸载 salt-master，默认保留 PKI 和状态目录
   uninstall --purge-data
                    危险：卸载并删除 Master PKI/配置/POC states
@@ -156,6 +178,7 @@ case "${command}" in
   stop) stop_master ;;
   restart) restart_master ;;
   status) status_master ;;
+  sync-assets) sync_assets ;;
   uninstall) shift; uninstall_master "${1:-}" ;;
   *) usage; exit 2 ;;
 esac

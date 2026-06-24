@@ -1,11 +1,15 @@
 import json
 import tempfile
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 
 from proxyfleet.subscription import (
     SubscriptionError,
     build_subscription_status,
+    parse_provider_snapshot,
+    refresh_subscription_provider,
     load_last_known_good,
     mark_subscription_failure,
     parse_subscription_userinfo,
@@ -78,6 +82,82 @@ class SubscriptionTests(unittest.TestCase):
         status = build_subscription_status("airport-main", None, b"valid").to_dict()
         encoded = json.dumps(status)
         self.assertIn('"download_bytes": null', encoded)
+
+    def test_parse_yaml_provider_snapshot(self):
+        parsed = parse_provider_snapshot(
+            b"""
+proxies:
+  - name: jp-01
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+"""
+        )
+        self.assertEqual("jp-01", parsed["proxies"][0]["name"])
+
+    def test_refresh_provider_writes_lkg_and_failure_does_not_overwrite(self):
+        first_body = json.dumps(
+            {
+                "proxies": [
+                    {"name": "jp-01", "type": "socks5", "server": "127.0.0.1", "port": 1080}
+                ]
+            }
+        ).encode("utf-8")
+        with _subscription_server(
+            [
+                (200, first_body, "upload=1; download=2; total=10"),
+                (200, b"<html>bad</html>", None),
+            ]
+        ) as url, tempfile.TemporaryDirectory() as tmp:
+            provider, status = refresh_subscription_provider(Path(tmp), "airport-main", url, name_prefix="[A] ")
+            self.assertEqual("[A] jp-01", provider["proxies"][0]["name"])
+            self.assertEqual("fresh", status.freshness)
+
+            provider, status = refresh_subscription_provider(Path(tmp), "airport-main", url, name_prefix="[A] ")
+            self.assertEqual("[A] jp-01", provider["proxies"][0]["name"])
+            self.assertEqual("stale", status.freshness)
+            body, _ = load_last_known_good(Path(tmp), "airport-main")
+            self.assertIn(b"[A] jp-01", body)
+
+class _SubscriptionServer:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        responses_ref = self._responses
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                if responses_ref:
+                    status, body, userinfo = responses_ref.pop(0)
+                else:
+                    status, body, userinfo = 500, b"exhausted", None
+                self.send_response(status)
+                if userinfo is not None:
+                    self.send_header("Subscription-Userinfo", userinfo)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A003
+                return
+
+        class Server(ThreadingHTTPServer):
+            daemon_threads = True
+
+        self._server = Server(("127.0.0.1", 0), Handler)
+        self._thread = Thread(target=self._server.serve_forever, daemon=True)
+        self.url = f"http://127.0.0.1:{self._server.server_port}/sub"
+
+    def __enter__(self):
+        self._thread.start()
+        return self.url
+
+    def __exit__(self, exc_type, exc, tb):
+        self._server.shutdown()
+        self._thread.join(timeout=5)
+        self._server.server_close()
+
+
+def _subscription_server(responses):
+    return _SubscriptionServer(responses)
 
 
 if __name__ == "__main__":
