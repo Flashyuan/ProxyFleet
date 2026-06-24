@@ -92,12 +92,21 @@ Master 的运行顺序：
 export PROXYFLEET_SUB_AIRPORT_MAIN='https://subscription.example.invalid/subscription'
 ```
 
+订阅 URL 可以返回两类内容：
+
+- 纯 Mihomo/Clash provider：顶层为 `proxies`；
+- 完整 Mihomo/Clash 配置：顶层包含 `proxies`、`proxy-groups`、`rules` 等。
+
+构建器会自动提取顶层 `proxies` 生成受管 Provider。订阅侧的
+`proxy-groups` 和 `rules` 不会进入 release；Master 仍以本地 `groups.json`
+和 `rules.json` 为准统一管理策略组和规则。
+
 ### 分步执行
 
 ```bash
 PYTHONPATH=src python3 -m proxyfleet.cli build-release \
   config-src releases --revision 1 \
-  --source-git-commit "$(git rev-parse HEAD)" \
+  --source-git-commit "${PROXYFLEET_SOURCE_REF:-manual-config}" \
   --component-locks component-locks.json \
   --subscription-cache runtime/subscriptions
 

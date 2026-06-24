@@ -13,6 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    import yaml  # type: ignore
+except ImportError:  # PyYAML 是可选能力；缺失时使用内置简易解析器。
+    yaml = None
+
 
 class SubscriptionError(ValueError):
     """订阅响应不可用于更新 Provider。"""
@@ -102,21 +107,27 @@ def validate_subscription_body(body: bytes) -> str:
 
 
 def parse_provider_snapshot(body: bytes) -> dict[str, Any]:
-    """解析 Mihomo Provider 快照，无法确认格式时 fail-closed。"""
+    """解析订阅正文并提取 Mihomo Provider 节点。
+
+    订阅服务常见返回有两种：
+
+    - 纯 provider 快照：顶层只有 `proxies`；
+    - 完整 Clash/Mihomo 配置：顶层同时包含 `proxy-groups`、`rules` 等。
+
+    ProxyFleet 只接收节点清单，订阅侧策略组和规则由 Master 本地配置统一管理，
+    因此这里会提取顶层 `proxies` 并丢弃其它字段。
+    """
 
     validate_subscription_body(body)
     text = body.decode("utf-8")
     data: Any
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        data = _parse_yaml(text)
+    data = _parse_structured_subscription(text)
 
     if not isinstance(data, dict):
-        raise SubscriptionError("E_SUB_INVALID: Provider 快照必须是对象")
+        raise SubscriptionError("E_SUB_INVALID: 订阅配置必须是对象")
     proxies = data.get("proxies")
     if not isinstance(proxies, list) or not proxies:
-        raise SubscriptionError("E_SUB_INVALID: Provider 快照缺少 proxies")
+        raise SubscriptionError("E_SUB_INVALID: 订阅配置缺少顶层 proxies")
     for proxy in proxies:
         if not isinstance(proxy, dict):
             raise SubscriptionError("E_SUB_INVALID: Provider 节点必须是对象")
@@ -126,7 +137,7 @@ def parse_provider_snapshot(body: bytes) -> dict[str, Any]:
             raise SubscriptionError("E_SUB_INVALID: Provider 节点缺少 type")
         if not isinstance(proxy.get("server"), str) or not proxy["server"]:
             raise SubscriptionError("E_SUB_INVALID: Provider 节点缺少 server")
-    return data
+    return {"proxies": proxies}
 
 
 def provider_snapshot_bytes(body: bytes, *, name_prefix: str = "") -> bytes:
@@ -243,8 +254,9 @@ def fetch_subscription(url: str, timeout: float = 10.0) -> tuple[bytes, str | No
 def convert_subscription_to_provider(body: bytes) -> dict[str, Any]:
     """把已拉取订阅快照转换为 Mihomo file provider。
 
-    当前实现支持已是 Mihomo/Clash provider 结构的 JSON/YAML 子集正文。其它
-    协议订阅必须交给后续锁定版本 subconverter；这里 fail-closed。
+    当前实现支持两类 JSON/YAML 订阅正文：纯 provider 快照，或包含顶层
+    `proxies` 的完整 Clash/Mihomo 配置。后者会丢弃订阅侧策略组和规则，
+    仅保留节点清单。
     """
 
     return parse_provider_snapshot(body)
@@ -349,11 +361,25 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _parse_structured_subscription(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    if yaml is not None:
+        try:
+            return yaml.safe_load(text)
+        except Exception as exc:
+            raise SubscriptionError("E_SUB_INVALID: 订阅 YAML 解析失败") from exc
+    return _parse_yaml(text)
+
+
 def _parse_yaml(text: str) -> Any:
     """解析受限 Mihomo provider YAML 子集。
 
     这里故意不引入 PyYAML 依赖。复杂 YAML、锚点、多行字符串等都交给后续锁定
-    subconverter；当前只支持测试和手写 provider 常见的 `proxies:` 列表。
+    subconverter；当前 fallback 只支持测试和手写 provider 常见的 `proxies:` 列表，
+    并允许在 `proxies:` 前后存在其它顶层字段。
     """
 
     proxies: list[dict[str, Any]] = []
@@ -364,11 +390,18 @@ def _parse_yaml(text: str) -> Any:
         if not line.strip():
             continue
         stripped = line.strip()
+        if not line.startswith(" ") and stripped.endswith(":"):
+            if stripped == "proxies:":
+                in_proxies = True
+                continue
+            if in_proxies:
+                break
+            continue
         if stripped == "proxies:":
             in_proxies = True
             continue
         if not in_proxies:
-            raise SubscriptionError("E_SUB_INVALID: Provider YAML 仅支持 proxies")
+            continue
         if stripped.startswith("- "):
             if current is not None:
                 proxies.append(current)

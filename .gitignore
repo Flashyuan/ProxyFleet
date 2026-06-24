@@ -23,6 +23,10 @@ dist/
 # Subscription snapshots and local overrides
 providers-cache/
 subscriptions-cache/
+*.yaml
+*.yml
+!*.example.yaml
+!*.example.yml
 *.local.yaml
 *.local.yml
 *.local.json

@@ -95,6 +95,38 @@ proxies:
         )
         self.assertEqual("jp-01", parsed["proxies"][0]["name"])
 
+    def test_parse_full_mihomo_config_extracts_only_proxies(self):
+        parsed = parse_provider_snapshot(
+            """
+mixed-port: 7890
+proxy-groups:
+  - name: 手动选择
+    type: select
+    proxies:
+      - jp-01
+rules:
+  - MATCH,DIRECT
+proxies:
+  - name: jp-01
+    type: vless
+    server: example.com
+    port: 443
+    uuid: 00000000-0000-0000-0000-000000000000
+    reality-opts:
+      public-key: abc
+      short-id: "01"
+  - name: hk-01
+    type: ss
+    server: 127.0.0.1
+    port: 8388
+    cipher: aes-256-gcm
+    password: test
+""".encode("utf-8")
+        )
+        self.assertEqual(["jp-01", "hk-01"], [item["name"] for item in parsed["proxies"]])
+        self.assertNotIn("proxy-groups", parsed)
+        self.assertEqual("abc", parsed["proxies"][0]["reality-opts"]["public-key"])
+
     def test_refresh_provider_writes_lkg_and_failure_does_not_overwrite(self):
         first_body = json.dumps(
             {
@@ -118,6 +150,28 @@ proxies:
             self.assertEqual("stale", status.freshness)
             body, _ = load_last_known_good(Path(tmp), "airport-main")
             self.assertIn(b"[A] jp-01", body)
+
+    def test_refresh_provider_converts_full_config_subscription(self):
+        body = b"""
+proxy-groups:
+  - name: manual
+    type: select
+    proxies:
+      - jp-01
+rules:
+  - MATCH,DIRECT
+proxies:
+  - name: jp-01
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+"""
+        with _subscription_server([(200, body, "upload=1; download=2; total=10")]) as url, tempfile.TemporaryDirectory() as tmp:
+            provider, status = refresh_subscription_provider(Path(tmp), "airport-main", url, name_prefix="[A] ")
+
+            self.assertEqual("fresh", status.freshness)
+            self.assertEqual("[A] jp-01", provider["proxies"][0]["name"])
+            self.assertNotIn("proxy-groups", provider)
 
 class _SubscriptionServer:
     def __init__(self, responses):

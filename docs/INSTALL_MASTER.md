@@ -10,13 +10,46 @@
 - 不启用公网 `salt-api`；
 - Salt 固定安装 `3008.1`，安装后 hold。
 
-## 2. 只读预检
+## 2. 通过 curl 获取项目和安装脚本
+
+Master 节点需要完整项目文件，因为后续 `sync-assets` 需要同步 `salt/`、
+`scripts/` 和 Python 模块。新机器不需要配置 Git 仓库，直接用 `curl`
+下载 `main` 分支压缩包即可。
+
+安装必要工具：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y curl tar ca-certificates
+```
+
+下载并解压完整项目：
+
+```bash
+mkdir -p ~/project/ProxyFleet
+curl -fsSL \
+  https://github.com/Flashyuan/ProxyFleet/archive/refs/heads/main.tar.gz \
+  | tar -xz --strip-components=1 -C ~/project/ProxyFleet
+
+cd ~/project/ProxyFleet
+chmod +x scripts/proxyfleet-master.sh scripts/proxyfleet-minion.sh
+```
+
+记录本次 curl 部署来源标识，后续构建 release 时使用：
+
+```bash
+export PROXYFLEET_SOURCE_REF="github-main-curl-$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+如果以后需要更新项目，重新执行上面的 `curl | tar` 解压命令即可。
+
+## 3. 只读预检
 
 ```bash
 scripts/proxyfleet-master.sh preflight
 ```
 
-## 3. 安装 Master
+## 4. 安装 Master
 
 安装会写入：
 
@@ -49,7 +82,7 @@ apt-mark showhold
 sudo ss -ltnp | grep -E ':4505|:4506'
 ```
 
-## 4. 接受 Minion Key
+## 5. 接受 Minion Key
 
 Minion 安装并启动后，在 Master 上查看 key：
 
@@ -73,7 +106,7 @@ sudo salt '<minion-id>' state.apply poc test=true
 sudo salt '<minion-id>' state.apply poc
 ```
 
-## 5. 配置代理、选择节点并同步
+## 6. 配置代理、选择节点并同步
 
 以下命令在 Master 项目目录执行。示例使用测试 fixture；生产时应替换为真实
 `config-src/`、`runtime/` 和 `/srv/proxyfleet/salt/states` 路径。
@@ -97,19 +130,19 @@ sudo salt '<minion-id>' state.apply poc
 export PROXYFLEET_SUB_AIRPORT_MAIN='https://subscription.example.invalid/subscription'
 ```
 
-### 5.1 构建 release
+### 6.1 构建 release
 
 ```bash
 PYTHONPATH=src python3 -m proxyfleet.cli build-release \
   config-src \
   releases \
   --revision 1 \
-  --source-git-commit "$(git rev-parse HEAD)" \
+  --source-git-commit "${PROXYFLEET_SOURCE_REF:-github-main-curl}" \
   --component-locks component-locks.json \
   --subscription-cache runtime/subscriptions
 ```
 
-### 5.2 查看可选代理节点
+### 6.2 查看可选代理节点
 
 ```bash
 PYTHONPATH=src python3 -m proxyfleet.cli nodes releases/000001
@@ -132,7 +165,7 @@ PYTHONPATH=src python3 -m proxyfleet.cli nodes \
 
 测速只调用本机 Mihomo delay API，不改变当前选择。
 
-### 5.3 选择节点
+### 6.3 选择节点
 
 ```bash
 PYTHONPATH=src python3 -m proxyfleet.cli select-node \
@@ -144,7 +177,7 @@ PYTHONPATH=src python3 -m proxyfleet.cli select-node \
 
 该命令只写入 `runtime/desired.yaml`，不会重建 `config.yaml`。
 
-### 5.4 发布到 Salt file_roots
+### 6.4 发布到 Salt file_roots
 
 ```bash
 sudo PYTHONPATH=src python3 -m proxyfleet.cli publish-salt \
@@ -168,7 +201,7 @@ sudo scripts/proxyfleet-master.sh sync-assets
 sudo salt '*' saltutil.sync_modules
 ```
 
-### 5.5 同步并应用到 Minion
+### 6.5 同步并应用到 Minion
 
 先查看 dry-run 计划：
 
@@ -194,7 +227,7 @@ sudo PYTHONPATH=src python3 -m proxyfleet.cli sync \
 Minion 会安装当前 release 到 `/etc/proxyfleet/releases/<revision>`，
 更新 `/etc/proxyfleet/current`，并通过本机 Mihomo API 选择 `FLEET_PROXY`。
 
-### 5.6 最少步骤入口
+### 6.6 最少步骤入口
 
 已经知道 `node_id` 时，可用一条命令完成构建、选择、发布和同步：
 
@@ -203,7 +236,7 @@ sudo --preserve-env=PROXYFLEET_SUB_AIRPORT_MAIN \
   PYTHONPATH=src python3 -m proxyfleet.cli apply \
   config-src releases runtime /srv/proxyfleet/salt/states \
   --revision 1 \
-  --source-git-commit "$(git rev-parse HEAD)" \
+  --source-git-commit "${PROXYFLEET_SOURCE_REF:-github-main-curl}" \
   --component-locks component-locks.json \
   --subscription-cache runtime/subscriptions \
   --select <node-id> \
@@ -216,7 +249,7 @@ sudo --preserve-env=PROXYFLEET_SUB_AIRPORT_MAIN \
 `v1.19.27` 的 `linux-amd64` 和 `linux-arm64` gzip 资产。Minion 会先校验
 gzip 包 SHA-256，再解压安装；SHA 不匹配或解压失败会 fail-closed。
 
-## 6. 启停与卸载
+## 7. 启停与卸载
 
 ```bash
 sudo scripts/proxyfleet-master.sh start
