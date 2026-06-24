@@ -17,6 +17,18 @@ class SecurityContractTests(unittest.TestCase):
             self.assertNotIn("releases/latest/download/salt.sources", text)
             self.assertIn("https://packages.broadcom.com/artifactory/saltproject-deb", text)
 
+    def test_minion_install_restarts_after_writing_proxyfleet_config(self):
+        text = (ROOT / "scripts" / "proxyfleet-minion.sh").read_text(encoding="utf-8")
+        self.assertIn("systemctl stop salt-minion || true", text)
+        self.assertIn("systemctl restart salt-minion", text)
+        self.assertNotIn("systemctl enable --now salt-minion", text)
+
+    def test_master_script_can_refresh_health_before_select_sync(self):
+        text = (ROOT / "scripts" / "proxyfleet-master.sh").read_text(encoding="utf-8")
+        self.assertIn("refresh_health()", text)
+        self.assertIn("--refresh-health", text)
+        self.assertIn("health_cache_has_useful_result", text)
+
     def test_proxyfleet_sync_sls_has_unique_state_ids(self):
         text = (ROOT / "salt" / "states" / "proxyfleet" / "sync.sls").read_text(encoding="utf-8")
         state_ids = []
@@ -39,6 +51,16 @@ class SecurityContractTests(unittest.TestCase):
         self.assertIn("proxyfleet-effective-port-policy:", text)
         self.assertIn("- module: proxyfleet-effective-port-policy", text)
         self.assertEqual(3, text.count("- fail_on_error: true"))
+
+    def test_sync_state_uses_minion_local_managed_release_paths(self):
+        text = (ROOT / "salt" / "states" / "proxyfleet" / "sync.sls").read_text(encoding="utf-8")
+        self.assertIn("proxyfleet-managed-releases:", text)
+        self.assertIn("source: salt://proxyfleet/releases", text)
+        self.assertIn("name: /etc/proxyfleet/managed/desired.yaml", text)
+        self.assertIn("release_root: /etc/proxyfleet/managed/releases", text)
+        self.assertIn("desired_path: /etc/proxyfleet/managed/desired.yaml", text)
+        self.assertNotIn("pillar.get('proxyfleet_release_root'", text)
+        self.assertNotIn("pillar.get('proxyfleet_desired_path'", text)
 
 
 if __name__ == "__main__":

@@ -67,6 +67,7 @@ usage() {
   uninstall --purge-data
 
 说明：
+  --master-ip 是 --master 的兼容别名。
   install 不会自动接受 key。安装后必须在 Master 上人工核验 fingerprint：
     sudo salt-key -F
     sudo salt-key -a <minion-id>
@@ -81,7 +82,7 @@ parse_install_args() {
   RELEASE_CHANNEL="stable"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --master) MASTER="${2:-}"; shift 2 ;;
+      --master|--master-ip) MASTER="${2:-}"; shift 2 ;;
       --id) MINION_ID="${2:-}"; shift 2 ;;
       --environment) ENVIRONMENT="${2:-}"; shift 2 ;;
       --driver) DRIVER="${2:-}"; shift 2 ;;
@@ -104,6 +105,7 @@ install_minion() {
     "salt-minion=${SALT_VERSION}*"
   apt-mark hold salt-common salt-minion
 
+  systemctl stop salt-minion || true
   install -d -m 0755 /etc/salt/minion.d
   cat > "${MINION_CONF}" <<CONF
 # ProxyFleet Salt Minion POC 配置。
@@ -116,7 +118,8 @@ grains:
   release_channel: ${RELEASE_CHANNEL}
 CONF
 
-  systemctl enable --now salt-minion
+  systemctl enable salt-minion
+  systemctl restart salt-minion
   echo "Minion 安装完成。请回到 Master 人工核验并接受 key：${MINION_ID}"
   echo "本机 Minion fingerprint："
   salt-call --local key.finger || true

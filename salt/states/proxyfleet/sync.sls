@@ -75,6 +75,28 @@ proxyfleet-component-locks:
     - require:
       - file: proxyfleet-install-root
 
+proxyfleet-managed-releases:
+  file.recurse:
+    - name: /etc/proxyfleet/managed/releases
+    - source: salt://proxyfleet/releases
+    - user: root
+    - group: root
+    - dir_mode: '0750'
+    - file_mode: '0640'
+    - clean: false
+    - require:
+      - file: proxyfleet-managed-dir
+
+proxyfleet-managed-desired:
+  file.managed:
+    - name: /etc/proxyfleet/managed/desired.yaml
+    - source: salt://proxyfleet/desired.yaml
+    - user: root
+    - group: root
+    - mode: '0640'
+    - require:
+      - file: proxyfleet-managed-dir
+
 proxyfleet-install-mihomo:
   module.run:
     - name: proxyfleet_mihomo.install_mihomo
@@ -90,8 +112,8 @@ proxyfleet-install-mihomo:
 proxyfleet-apply-desired:
   module.run:
     - name: proxyfleet_mihomo.apply_desired
-    - release_root: {{ pillar.get('proxyfleet_release_root', '/srv/proxyfleet/salt/states/proxyfleet/releases') }}
-    - desired_path: {{ pillar.get('proxyfleet_desired_path', '/srv/proxyfleet/salt/states/proxyfleet/desired.yaml') }}
+    - release_root: /etc/proxyfleet/managed/releases
+    - desired_path: /etc/proxyfleet/managed/desired.yaml
     - install_root: /etc/proxyfleet
     - mihomo_api: http://127.0.0.1:9090
     - api_secret: null
@@ -100,6 +122,8 @@ proxyfleet-apply-desired:
     - fail_on_error: true
     - require:
       - module: proxyfleet-install-mihomo
+      - file: proxyfleet-managed-releases
+      - file: proxyfleet-managed-desired
 {% if pillar.get('proxyfleet_port_policy_enabled', False) %}
       - module: proxyfleet-effective-port-policy
 {% endif %}

@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 from urllib import error, parse, request
@@ -101,6 +102,8 @@ def install_mihomo(
         )
     except _ApplyError as exc:
         return _failure(operation_id, "prepare", 0, 0, exc.error_code, str(exc), fail_on_error)
+    except CommandExecutionError:
+        raise
     except Exception as exc:
         return _failure(operation_id, "prepare", 0, 0, "E_COMPONENT_INSTALL", str(exc), fail_on_error)
 
@@ -147,6 +150,7 @@ def apply_desired(
         _point_current(current, target_release)
         try:
             _reload_or_restart(service_name)
+            _wait_mihomo_node(mihomo_api, api_secret, group, selected_name)
             _select_mihomo(mihomo_api, api_secret, group, selected_name)
         except _ApplyError:
             _restore_current(current, previous_current)
@@ -169,6 +173,8 @@ def apply_desired(
         )
     except _ApplyError as exc:
         return _failure(operation_id, "apply", 0, 0, exc.error_code, str(exc), fail_on_error)
+    except CommandExecutionError:
+        raise
     except Exception as exc:  # Salt execution modules should return structured failure.
         return _failure(operation_id, "apply", 0, 0, "E_LOCAL_API", str(exc), fail_on_error)
 
@@ -193,6 +199,38 @@ def _select_mihomo(base_url, api_secret, group, selected_name):
         raise _ApplyError("E_SELECT_VERIFY", "select verification failed")
 
 
+def _wait_mihomo_api(base_url, api_secret, group, timeout_seconds=20):
+    deadline = time.monotonic() + timeout_seconds
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            _api(base_url, api_secret, "GET", "/proxies/" + parse.quote(group, safe=""), None)
+            return
+        except _ApplyError as exc:
+            last_error = exc
+            time.sleep(0.5)
+    if last_error is not None:
+        raise last_error
+    raise _ApplyError("E_LOCAL_API", "mihomo api unavailable")
+
+
+def _wait_mihomo_node(base_url, api_secret, group, selected_name, timeout_seconds=30):
+    deadline = time.monotonic() + timeout_seconds
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            state = _api(base_url, api_secret, "GET", "/proxies/" + parse.quote(group, safe=""), None)
+            if selected_name in set(state.get("all", [])):
+                return
+            last_error = _ApplyError("E_NODE_NOT_FOUND", "target node is not selectable")
+        except _ApplyError as exc:
+            last_error = exc
+        time.sleep(0.5)
+    if last_error is not None:
+        raise last_error
+    raise _ApplyError("E_NODE_NOT_FOUND", "target node is not selectable")
+
+
 def health_check(base_url, api_secret=None, mihomo_name=None, test_url="https://www.gstatic.com/generate_204", timeout_ms=3000, operation_id="op-unknown"):
     """执行单节点 delay 检查，不读取或修改 FLEET_PROXY 选择。"""
 
@@ -209,6 +247,7 @@ def health_check(base_url, api_secret=None, mihomo_name=None, test_url="https://
             "/proxies/" + parse.quote(str(mihomo_name), safe="") + "/delay?" + query,
             None,
             timeout_error_code="E_HEALTHCHECK_TIMEOUT",
+            request_timeout=max(3, int(timeout_ms) / 1000 + 2),
         )
         delay = result.get("delay")
         if not isinstance(delay, int):
@@ -266,14 +305,14 @@ def apply_port_policy(
         return _failure(operation_id, "apply", 0, 0, exc.error_code, str(exc), fail_on_error)
 
 
-def _api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_API"):
+def _api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_API", request_timeout=3):
     payload = None if body is None else json.dumps(body).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_secret:
         headers["Authorization"] = "Bearer " + str(api_secret)
     req = request.Request(base_url.rstrip("/") + path, data=payload, method=method, headers=headers)
     try:
-        with request.urlopen(req, timeout=3) as resp:
+        with request.urlopen(req, timeout=request_timeout) as resp:
             raw = resp.read()
     except error.HTTPError as exc:
         if exc.code == 404:
@@ -465,7 +504,7 @@ def _load_component_lock(path, name):
 def _component_artifact(component):
     artifacts = component.get("artifacts")
     if isinstance(artifacts, dict):
-        arch = _arch_key()
+        arch = _select_artifact_key(artifacts)
         artifact = artifacts.get(arch)
         if not isinstance(artifact, dict):
             raise _ApplyError("E_COMPONENT_ARCH_UNSUPPORTED", "mihomo artifact for current architecture missing")
@@ -484,10 +523,67 @@ def _component_artifact(component):
 def _arch_key():
     machine = platform.machine().lower()
     if machine in ("x86_64", "amd64"):
-        return "linux-amd64"
+        return _amd64_level_key()
     if machine in ("aarch64", "arm64"):
         return "linux-arm64"
     raise _ApplyError("E_COMPONENT_ARCH_UNSUPPORTED", "unsupported architecture")
+
+
+def _select_artifact_key(artifacts):
+    preferred = _arch_key()
+    if preferred in artifacts:
+        return preferred
+    if preferred.startswith("linux-amd64"):
+        for fallback in ("linux-amd64-compatible", "linux-amd64"):
+            if fallback in artifacts:
+                return fallback
+    raise _ApplyError("E_COMPONENT_ARCH_UNSUPPORTED", "mihomo artifact for current architecture missing")
+
+
+def _amd64_level_key():
+    flags = _cpu_flags()
+    # x86-64-v3 roughly matches the common baseline expected by upstream v3 builds.
+    v3 = {
+        "avx",
+        "avx2",
+        "bmi1",
+        "bmi2",
+        "f16c",
+        "fma",
+        "abm",
+        "movbe",
+        "xsave",
+    }
+    v2 = {
+        "cx16",
+        "lahf_lm",
+        "popcnt",
+        "sse3",
+        "ssse3",
+        "sse4_1",
+        "sse4_2",
+    }
+    if v3.issubset(flags):
+        return "linux-amd64-v3"
+    if v2.issubset(flags):
+        return "linux-amd64-v2"
+    return "linux-amd64-v1"
+
+
+def _cpu_flags():
+    try:
+        text = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return set()
+    flags = set()
+    for line in text.splitlines():
+        if line.lower().startswith(("flags", "features")) and ":" in line:
+            flags.update(line.split(":", 1)[1].strip().split())
+    if "pni" in flags:
+        flags.add("sse3")
+    if "lzcnt" in flags:
+        flags.add("abm")
+    return flags
 
 
 def _download(source, target):
@@ -565,7 +661,8 @@ Wants=network-online.target
 Type=simple
 User={user}
 Group={group}
-ExecStart={binary} -f {config}
+WorkingDirectory={config.parent}
+ExecStart={binary} -d {config.parent} -f {config}
 Restart=on-failure
 RestartSec=3s
 LimitNOFILE=1048576

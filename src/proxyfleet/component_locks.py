@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 FLOATING_VERSION_WORDS = {"latest", "stable", "current", "master", "main", "dev"}
 HASH_RE = re.compile(r"^[a-fA-F0-9]{64}$")
 DIGEST_RE = re.compile(r"^sha256:[a-fA-F0-9]{64}$")
-ARCH_RE = re.compile(r"^linux-(amd64|arm64)$")
+ARCH_RE = re.compile(r"^linux-(arm64|amd64(?:-(?:compatible|v1|v2|v3))?)$")
 SUPPORTED_SCHEMA_MAJOR = "1"
 
 
@@ -198,7 +198,7 @@ def _validate_artifacts(artifacts: Any, architectures: list[str], path: str, iss
     for name, artifact in artifacts.items():
         artifact_path = f"{path}.{name}"
         if not isinstance(name, str) or not ARCH_RE.fullmatch(name):
-            issues.append(ValidationIssue(artifact_path, "artifact 架构键必须使用 linux-amd64/linux-arm64"))
+            issues.append(ValidationIssue(artifact_path, "artifact 架构键必须使用 linux-arm64、linux-amd64 或 linux-amd64-compatible/v1/v2/v3"))
         if not isinstance(artifact, dict):
             issues.append(ValidationIssue(artifact_path, "artifact 必须是对象"))
             continue

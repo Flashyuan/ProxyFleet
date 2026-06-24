@@ -50,13 +50,34 @@
       "status": "installable",
       "source": "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.27",
       "architectures": [
-        "linux-amd64",
+        "linux-amd64-compatible",
+        "linux-amd64-v1",
+        "linux-amd64-v2",
+        "linux-amd64-v3",
         "linux-arm64"
       ],
       "artifacts": {
-        "linux-amd64": {
-          "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v1.19.27.gz",
-          "sha256": "fb3e34c55844f389ff54679e5a3aec331d5ec38006c20f8dcc476fb47768a58f",
+        "linux-amd64-compatible": {
+          "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-compatible-v1.19.27.gz",
+          "sha256": "36850c946615f5c712946b62dbbbd06f6941d6d8a7543b315198bcb24ada3ea9",
+          "compression": "gzip",
+          "target_path": "/usr/local/bin/mihomo"
+        },
+        "linux-amd64-v1": {
+          "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v1-v1.19.27.gz",
+          "sha256": "b922f6fc90a232b9265db1cc9c5206fee8479dc2047bb037ebf09bc3c9e3b352",
+          "compression": "gzip",
+          "target_path": "/usr/local/bin/mihomo"
+        },
+        "linux-amd64-v2": {
+          "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v2-v1.19.27.gz",
+          "sha256": "eb052d1896b28bab7e027a34b1e610dfdb2a15f0807a1fac87a7768102e1060e",
+          "compression": "gzip",
+          "target_path": "/usr/local/bin/mihomo"
+        },
+        "linux-amd64-v3": {
+          "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v3-v1.19.27.gz",
+          "sha256": "c88b795ebad1f835156f17d33ca8d68bd6ea4dc68ba1be7f1d9910664faf4062",
           "compression": "gzip",
           "target_path": "/usr/local/bin/mihomo"
         },

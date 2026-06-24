@@ -165,7 +165,31 @@ PYTHONPATH=src python3 -m proxyfleet.cli nodes \
 
 测速只调用本机 Mihomo delay API，不改变当前选择。
 
-### 6.3 选择节点
+### 6.3 按序号选择并同步到所有 Minion
+
+最常用入口是一条命令：
+
+```bash
+sudo scripts/proxyfleet-master.sh select-sync
+```
+
+脚本会列出带序号的节点列表，节点名使用 `mihomo_name`。输入序号后会自动：
+
+1. 写入 `runtime/desired.yaml`；
+2. 发布当前 release 和 desired 到 Salt file_roots；
+3. 同步 Salt module；
+4. 对所有已接受 key 的 Minion 执行 `proxyfleet.sync`。
+
+只同步指定 Minion 或分组时：
+
+```bash
+sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id-or-target>'
+```
+
+如果存在 `runtime/health.json`，列表会显示测速状态和延迟；否则显示
+`unknown`，不影响选择和同步。
+
+### 6.4 手动选择节点
 
 ```bash
 PYTHONPATH=src python3 -m proxyfleet.cli select-node \
@@ -177,7 +201,7 @@ PYTHONPATH=src python3 -m proxyfleet.cli select-node \
 
 该命令只写入 `runtime/desired.yaml`，不会重建 `config.yaml`。
 
-### 6.4 发布到 Salt file_roots
+### 6.5 发布到 Salt file_roots
 
 ```bash
 sudo PYTHONPATH=src python3 -m proxyfleet.cli publish-salt \
@@ -201,7 +225,7 @@ sudo scripts/proxyfleet-master.sh sync-assets
 sudo salt '*' saltutil.sync_modules
 ```
 
-### 6.5 同步并应用到 Minion
+### 6.6 同步并应用到 Minion
 
 先查看 dry-run 计划：
 
@@ -227,7 +251,7 @@ sudo PYTHONPATH=src python3 -m proxyfleet.cli sync \
 Minion 会安装当前 release 到 `/etc/proxyfleet/releases/<revision>`，
 更新 `/etc/proxyfleet/current`，并通过本机 Mihomo API 选择 `FLEET_PROXY`。
 
-### 6.6 最少步骤入口
+### 6.7 最少步骤入口
 
 已经知道 `node_id` 时，可用一条命令完成构建、选择、发布和同步：
 

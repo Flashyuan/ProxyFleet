@@ -121,6 +121,20 @@ PYTHONPATH=src python3 -m proxyfleet.cli nodes \
   releases/000001 \
   --health-cache runtime/health.json
 
+sudo scripts/proxyfleet-master.sh select-sync
+```
+
+`select-sync` 会列出带序号的节点，节点名为 `mihomo_name`。输入序号后，
+脚本会写入 desired state、发布当前 release，并默认同步到所有 Minion。
+如需限制目标：
+
+```bash
+sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id-or-target>'
+```
+
+手动分步选择时：
+
+```bash
 PYTHONPATH=src python3 -m proxyfleet.cli select-node \
   releases/000001 runtime --node-id <node-id>
 

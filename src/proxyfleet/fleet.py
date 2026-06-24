@@ -264,16 +264,21 @@ def prepare_salt_publish(
     if release_target.exists():
         shutil.rmtree(release_target)
     shutil.copytree(release.release_dir, release_target)
+    _chmod_tree(release_target, dir_mode=0o755, file_mode=0o644)
     desired_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(desired_path, desired_target)
+    desired_target.chmod(0o644)
     if component_locks_path is not None:
         try:
             shutil.copyfile(component_locks_path, locks_target)
+            locks_target.chmod(0o644)
         except OSError as exc:
             raise FleetError("E_COMPONENT_INTEGRITY_MISSING", f"组件锁定清单不可用: {component_locks_path}") from exc
     if port_policy_path is not None:
         try:
-            shutil.copyfile(port_policy_path, salt_root / "proxyfleet" / "port-policy.yaml")
+            port_policy_target = salt_root / "proxyfleet" / "port-policy.yaml"
+            shutil.copyfile(port_policy_path, port_policy_target)
+            port_policy_target.chmod(0o644)
         except OSError as exc:
             raise FleetError("E_CONFIG_VALIDATE", f"端口白名单不可用: {port_policy_path}") from exc
     return _sync_plan(
@@ -380,6 +385,7 @@ class MihomoClient:
             None,
             timeout_error_code="E_HEALTHCHECK_TIMEOUT",
             not_found_error_code="E_NODE_NOT_FOUND",
+            request_timeout=max(self.timeout, int(timeout_ms) / 1000 + 2),
         )
         if not isinstance(response, dict):
             raise FleetError("E_HEALTHCHECK_FAILED", "Mihomo delay API 返回非对象")
@@ -402,6 +408,7 @@ class MihomoClient:
         *,
         timeout_error_code: str = "E_LOCAL_API",
         not_found_error_code: str = "E_NODE_NOT_FOUND",
+        request_timeout: float | None = None,
     ) -> Any:
         data = None if body is None else json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json"}
@@ -409,16 +416,18 @@ class MihomoClient:
             headers["Authorization"] = f"Bearer {self.secret}"
         req = request.Request(f"{self.base_url}{path}", data=data, method=method, headers=headers)
         try:
-            with request.urlopen(req, timeout=self.timeout) as resp:
+            with request.urlopen(req, timeout=self.timeout if request_timeout is None else request_timeout) as resp:
                 raw = resp.read()
         except error.HTTPError as exc:
             if exc.code == 404:
                 raise FleetError(not_found_error_code, "Mihomo API 目标不存在") from exc
             raise FleetError("E_LOCAL_API", "Mihomo 本地 API 返回错误状态") from exc
-        except socket.timeout as exc:
+        except (socket.timeout, TimeoutError) as exc:
             raise FleetError(timeout_error_code, "Mihomo 本地 API 超时") from exc
-        except (error.URLError, TimeoutError, socket.timeout) as exc:
-            raise FleetError(timeout_error_code, "Mihomo 本地 API 不可用") from exc
+        except error.URLError as exc:
+            if isinstance(exc.reason, (socket.timeout, TimeoutError)):
+                raise FleetError(timeout_error_code, "Mihomo 本地 API 超时") from exc
+            raise FleetError("E_LOCAL_API", "Mihomo 本地 API 不可用") from exc
         if not raw:
             return {}
         try:
@@ -477,6 +486,15 @@ def _sync_plan(
         port_policy_enabled=port_policy_enabled,
         port_policy_mode=port_policy_mode,
     )
+
+
+def _chmod_tree(root: Path, *, dir_mode: int, file_mode: int) -> None:
+    root.chmod(dir_mode)
+    for path in root.rglob("*"):
+        if path.is_dir():
+            path.chmod(dir_mode)
+        elif path.is_file():
+            path.chmod(file_mode)
 
 
 def _node_entry(provider_id: str, proxy: dict[str, Any]) -> NodeEntry:

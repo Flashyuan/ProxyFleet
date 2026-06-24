@@ -11,6 +11,7 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib import error
 from unittest import mock
 
 from proxyfleet.cli import main
@@ -141,6 +142,9 @@ proxies:
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "desired.yaml").exists())
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "component-locks.json").exists())
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "port-policy.yaml").exists())
+            self.assertEqual(0o755, (root / "srv-salt" / "proxyfleet" / "releases" / "000001").stat().st_mode & 0o777)
+            self.assertEqual(0o644, (root / "srv-salt" / "proxyfleet" / "releases" / "000001" / "config.yaml").stat().st_mode & 0o777)
+            self.assertEqual(0o644, (root / "srv-salt" / "proxyfleet" / "desired.yaml").stat().st_mode & 0o777)
             self.assertEqual(1, plan.release_revision)
             self.assertEqual(1, plan.desired_revision)
             self.assertTrue(plan.port_policy_enabled)
@@ -294,6 +298,29 @@ class MihomoClientTests(unittest.TestCase):
                 MihomoClient(self.base_url, timeout=0.05).health_check("[SELF] test-node", "https://www.gstatic.com/generate_204")
         self.assertEqual("E_HEALTHCHECK_TIMEOUT", ctx.exception.error_code)
 
+    def test_health_check_api_unavailable_is_not_node_timeout(self):
+        self._close_server()
+        with mock.patch("proxyfleet.fleet.request.urlopen", side_effect=error.URLError(ConnectionRefusedError())):
+            with self.assertRaises(FleetError) as ctx:
+                MihomoClient(self.base_url, timeout=0.05).health_check("[SELF] test-node", "https://www.gstatic.com/generate_204")
+        self.assertEqual("E_LOCAL_API", ctx.exception.error_code)
+
+    def test_health_check_http_timeout_exceeds_delay_timeout(self):
+        self._close_server()
+        response = mock.Mock()
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=None)
+        response.read.return_value = b'{"delay":123}'
+
+        with mock.patch("proxyfleet.fleet.request.urlopen", return_value=response) as urlopen:
+            MihomoClient(self.base_url, timeout=0.05).health_check(
+                "[SELF] test-node",
+                "https://www.gstatic.com/generate_204",
+                timeout_ms=3000,
+            )
+
+        self.assertEqual(5.0, urlopen.call_args.kwargs["timeout"])
+
     def test_health_check_missing_node_maps_error_code(self):
         with self.assertRaises(FleetError) as ctx:
             MihomoClient(self.base_url).health_check("missing-node", "https://www.gstatic.com/generate_204")
@@ -427,6 +454,7 @@ class SaltModuleTests(unittest.TestCase):
 
             module = self._module()
             module._reload_or_restart = lambda service_name: order.append("reload")
+            module._wait_mihomo_node = lambda api, secret, group, name: order.append("wait")
             module._select_mihomo = lambda api, secret, group, name: order.append("select")
             result = module.apply_desired(
                 release_root=str(root / "salt" / "releases"),
@@ -436,9 +464,32 @@ class SaltModuleTests(unittest.TestCase):
             )
 
             self.assertEqual("success", result["status"])
-            self.assertEqual(["reload", "select"], order)
+            self.assertEqual(["reload", "wait", "select"], order)
             self.assertEqual(install_root / "releases" / "000001", (install_root / "current").resolve())
             self.assertTrue((install_root / "desired.yaml").exists())
+
+    def test_apply_desired_waits_for_mihomo_api_before_selecting_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "salt" / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            order = []
+
+            module = self._module()
+            module._reload_or_restart = lambda service_name: order.append("reload")
+            module._wait_mihomo_node = lambda api, secret, group, name: order.append("wait")
+            module._select_mihomo = lambda api, secret, group, name: order.append("select")
+
+            result = module.apply_desired(
+                release_root=str(root / "salt" / "releases"),
+                desired_path=str(root / "runtime" / "desired.yaml"),
+                install_root=str(root / "install"),
+                operation_id="op-test",
+            )
+
+            self.assertEqual("success", result["status"])
+            self.assertEqual(["reload", "wait", "select"], order)
 
     def test_apply_desired_reload_failure_rolls_back_current(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -603,6 +654,60 @@ class SaltModuleTests(unittest.TestCase):
             self.assertEqual("E_PORT_POLICY_SCHEMA", result["error_code"])
             self.assertFalse(effective.exists())
 
+    def test_mihomo_artifact_selects_highest_supported_amd64_variant(self):
+        module = self._module()
+        component = {
+            "artifacts": {
+                "linux-amd64-compatible": {"url": "file:///compatible", "sha256": "0" * 64},
+                "linux-amd64-v1": {"url": "file:///v1", "sha256": "1" * 64},
+                "linux-amd64-v2": {"url": "file:///v2", "sha256": "2" * 64},
+                "linux-amd64-v3": {"url": "file:///v3", "sha256": "3" * 64},
+            }
+        }
+        v3_flags = {
+            "avx",
+            "avx2",
+            "bmi1",
+            "bmi2",
+            "f16c",
+            "fma",
+            "abm",
+            "movbe",
+            "xsave",
+            "cx16",
+            "lahf_lm",
+            "popcnt",
+            "sse3",
+            "ssse3",
+            "sse4_1",
+            "sse4_2",
+        }
+
+        with mock.patch.object(module.platform, "machine", return_value="x86_64"), mock.patch.object(module, "_cpu_flags", return_value=v3_flags):
+            artifact = module._component_artifact(component)
+
+        self.assertEqual("file:///v3", artifact["url"])
+
+    def test_mihomo_artifact_selects_v2_or_v1_or_compatible(self):
+        module = self._module()
+        v2_flags = {"cx16", "lahf_lm", "popcnt", "sse3", "ssse3", "sse4_1", "sse4_2"}
+        component = {
+            "artifacts": {
+                "linux-amd64-compatible": {"url": "file:///compatible", "sha256": "0" * 64},
+                "linux-amd64-v1": {"url": "file:///v1", "sha256": "1" * 64},
+                "linux-amd64-v2": {"url": "file:///v2", "sha256": "2" * 64},
+            }
+        }
+
+        with mock.patch.object(module.platform, "machine", return_value="x86_64"), mock.patch.object(module, "_cpu_flags", return_value=v2_flags):
+            self.assertEqual("file:///v2", module._component_artifact(component)["url"])
+        with mock.patch.object(module.platform, "machine", return_value="x86_64"), mock.patch.object(module, "_cpu_flags", return_value=set()):
+            self.assertEqual("file:///v1", module._component_artifact(component)["url"])
+
+        component = {"artifacts": {"linux-amd64-compatible": {"url": "file:///compatible", "sha256": "0" * 64}}}
+        with mock.patch.object(module.platform, "machine", return_value="x86_64"), mock.patch.object(module, "_cpu_flags", return_value=set()):
+            self.assertEqual("file:///compatible", module._component_artifact(component)["url"])
+
     def test_install_mihomo_gzip_artifact_with_sha(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -646,6 +751,9 @@ class SaltModuleTests(unittest.TestCase):
             systemctl.assert_called_once_with(["daemon-reload"])
             self.assertTrue((root / "mihomo").exists())
             self.assertTrue((root / "mihomo").stat().st_mode & 0o111)
+            unit_text = (root / "mihomo.service").read_text(encoding="utf-8")
+            self.assertIn("WorkingDirectory=/etc/proxyfleet/current", unit_text)
+            self.assertIn(f"ExecStart={root / 'mihomo'} -d /etc/proxyfleet/current -f /etc/proxyfleet/current/config.yaml", unit_text)
             receipt = json.loads((root / "mihomo.proxyfleet-install.json").read_text(encoding="utf-8"))
             self.assertEqual(asset_sha, receipt["artifact_sha256"])
             self.assertEqual("gzip", receipt["compression"])
@@ -789,7 +897,7 @@ class SaltModuleTests(unittest.TestCase):
             {"now": "[SELF] previous", "all": ["[SELF] previous", "[SELF] test-node"]},
         ]
 
-        def fake_api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_API"):
+        def fake_api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_API", request_timeout=3):
             calls.append((method, body))
             if method == "GET":
                 return states.pop(0)
@@ -811,7 +919,7 @@ class SaltModuleTests(unittest.TestCase):
             {"now": "[SELF] other", "all": ["[SELF] previous", "[SELF] test-node"]},
         ]
 
-        def fake_api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_API"):
+        def fake_api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_API", request_timeout=3):
             calls.append((method, body))
             if method == "GET":
                 return states.pop(0)
@@ -823,6 +931,23 @@ class SaltModuleTests(unittest.TestCase):
 
         self.assertEqual("E_ROLLBACK_FAILED", ctx.exception.error_code)
         self.assertEqual(("PUT", {"name": "[SELF] previous"}), calls[-2])
+
+    def test_salt_health_check_http_timeout_exceeds_delay_timeout(self):
+        module = self._module()
+        response = mock.Mock()
+        response.__enter__ = mock.Mock(return_value=response)
+        response.__exit__ = mock.Mock(return_value=None)
+        response.read.return_value = b'{"delay":123}'
+
+        with mock.patch.object(module.request, "urlopen", return_value=response) as urlopen:
+            result = module.health_check(
+                "http://127.0.0.1:9090",
+                mihomo_name="[SELF] test-node",
+                timeout_ms=5000,
+            )
+
+        self.assertEqual("success", result["status"])
+        self.assertEqual(7.0, urlopen.call_args.kwargs["timeout"])
 
     def test_native_mihomo_local_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -867,6 +992,9 @@ class SaltModuleTests(unittest.TestCase):
             def fake_select(api, secret, group, selected_name):
                 order.append(("select", group, selected_name))
 
+            def fake_wait(api, secret, group, selected_name):
+                order.append(("wait", group, selected_name))
+
             with mock.patch.object(module.platform, "machine", return_value="x86_64"), mock.patch.object(module, "_systemctl"):
                 install = module.install_mihomo(
                     component_locks_path=str(locks),
@@ -876,6 +1004,7 @@ class SaltModuleTests(unittest.TestCase):
                     operation_id="op-install",
                 )
             module._reload_or_restart = fake_reload
+            module._wait_mihomo_node = fake_wait
             module._select_mihomo = fake_select
             apply = module.apply_desired(
                 release_root=str(root / "srv-salt" / "proxyfleet" / "releases"),

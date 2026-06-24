@@ -46,9 +46,24 @@ artifacts: linux-amd64, linux-arm64
 name: mihomo
 version: v1.19.27
 artifacts:
-  linux-amd64:
-    url: https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v1.19.27.gz
-    sha256: fb3e34c55844f389ff54679e5a3aec331d5ec38006c20f8dcc476fb47768a58f
+  linux-amd64-compatible:
+    url: https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-compatible-v1.19.27.gz
+    sha256: 36850c946615f5c712946b62dbbbd06f6941d6d8a7543b315198bcb24ada3ea9
+    compression: gzip
+    target_path: /usr/local/bin/mihomo
+  linux-amd64-v1:
+    url: https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v1-v1.19.27.gz
+    sha256: b922f6fc90a232b9265db1cc9c5206fee8479dc2047bb037ebf09bc3c9e3b352
+    compression: gzip
+    target_path: /usr/local/bin/mihomo
+  linux-amd64-v2:
+    url: https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v2-v1.19.27.gz
+    sha256: eb052d1896b28bab7e027a34b1e610dfdb2a15f0807a1fac87a7768102e1060e
+    compression: gzip
+    target_path: /usr/local/bin/mihomo
+  linux-amd64-v3:
+    url: https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v3-v1.19.27.gz
+    sha256: c88b795ebad1f835156f17d33ca8d68bd6ea4dc68ba1be7f1d9910664faf4062
     compression: gzip
     target_path: /usr/local/bin/mihomo
   linux-arm64:
@@ -64,9 +79,13 @@ artifacts:
 2. `preflight()` 比对实际版本、release manifest 中的 `mihomo_version`
    和组件锁版本。
 3. 版本不一致时不得应用 release，返回 `E_MIHOMO_VERSION`。
-4. 缺少当前架构二进制 SHA-256 锁定值时，不得安装或升级 Mihomo 二进制，
+4. amd64 Minion 必须根据 CPU flags 在同一版本的
+   `linux-amd64-v3`、`linux-amd64-v2`、`linux-amd64-v1` 和
+   `linux-amd64-compatible` 中选择可运行的最高锁定资产；arm64 Minion
+   选择 `linux-arm64`。
+5. 缺少当前架构二进制 SHA-256 锁定值时，不得安装或升级 Mihomo 二进制，
    返回 `E_COMPONENT_INTEGRITY_MISSING`。
-5. 禁止自动更新 Mihomo；升级必须经过新锁条目、canary、QA 证据和
+6. 禁止自动更新 Mihomo；升级必须经过新锁条目、canary、QA 证据和
    SECURITY 评审。
 
 版本比较必须使用完整版本字符串，不得使用前缀、语义化近似或“最新版本”。

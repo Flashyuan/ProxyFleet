@@ -28,10 +28,30 @@ components:
     kind: "binary"
     version: "v1.19.27"
     source: "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.27"
-    architectures: ["linux-amd64", "linux-arm64"]
+    architectures:
+      - "linux-amd64-compatible"
+      - "linux-amd64-v1"
+      - "linux-amd64-v2"
+      - "linux-amd64-v3"
+      - "linux-arm64"
     artifacts:
-      linux-amd64:
-        url: "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v1.19.27.gz"
+      linux-amd64-compatible:
+        url: "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-compatible-v1.19.27.gz"
+        sha256: "<hex>"
+        compression: "gzip"
+        target_path: "/usr/local/bin/mihomo"
+      linux-amd64-v1:
+        url: "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v1-v1.19.27.gz"
+        sha256: "<hex>"
+        compression: "gzip"
+        target_path: "/usr/local/bin/mihomo"
+      linux-amd64-v2:
+        url: "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v2-v1.19.27.gz"
+        sha256: "<hex>"
+        compression: "gzip"
+        target_path: "/usr/local/bin/mihomo"
+      linux-amd64-v3:
+        url: "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v3-v1.19.27.gz"
         sha256: "<hex>"
         compression: "gzip"
         target_path: "/usr/local/bin/mihomo"
@@ -72,7 +92,11 @@ components:
 - 所有远程来源必须显式记录 `source`，不得依赖隐式下载地址；
 - 可执行文件、归档、镜像和规则数据必须至少具备一种强校验方式；
 - `binary`/`archive`/`ruleset`/`data_file` 进入 `installable` 状态时，若存在多架构资产，必须使用 `artifacts` 对象；
-- `artifacts` 的键必须与 `architectures[]` 完全一致，当前 canonical 键为 `linux-amd64`、`linux-arm64`；
+- `artifacts` 的键必须与 `architectures[]` 完全一致，当前 canonical 键为
+  `linux-arm64`、`linux-amd64-compatible`、`linux-amd64-v1`、
+  `linux-amd64-v2`、`linux-amd64-v3`；
+- Mihomo 的 `version` 锁定上游版本，例如 `v1.19.27`；Minion 只能在该版本下，
+  根据本机 CPU 能力选择已锁定 URL/SHA 的具体资产，不能拉取未声明资产；
 - `artifact.url` 只允许无凭据的 `https://` 或本地测试用 `file://`；
 - `artifact.sha256` 必须是 64 位十六进制 SHA-256，且校验对象是下载后的压缩资产本身；
 - `artifact.compression` 当前仅支持 `none` 或 `gzip`；
