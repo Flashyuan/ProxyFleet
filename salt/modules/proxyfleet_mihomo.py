@@ -7,13 +7,23 @@ Salt Master 负责分发文件；本模块不接触订阅 URL 或节点密钥。
 from __future__ import annotations
 
 import json
+import gzip
 import hashlib
+import ipaddress
+import platform
 import shutil
 import socket
 import subprocess
+import tempfile
 import urllib.request
 from pathlib import Path
 from urllib import error, parse, request
+
+try:
+    from salt.exceptions import CommandExecutionError
+except ImportError:  # 单元测试环境不加载 Salt 包。
+    class CommandExecutionError(RuntimeError):
+        pass
 
 
 MANAGED_POLICY_GROUP = "FLEET_PROXY"
@@ -37,35 +47,48 @@ def install_mihomo(
     user="root",
     group="root",
     operation_id="op-unknown",
+    fail_on_error=False,
 ):
-    """按组件锁安装 Mihomo；缺少 SHA 时 fail-closed。"""
+    """按组件锁安装 Mihomo；缺少架构级 SHA 时 fail-closed。"""
 
     try:
         component = _load_component_lock(Path(component_locks_path), "mihomo")
         version = str(component.get("version"))
-        sha256 = _component_sha256(component)
-        source = str(component.get("source", ""))
-        if not sha256:
+        artifact = _component_artifact(component)
+        sha256 = artifact.get("sha256")
+        source = artifact.get("url")
+        compression = artifact.get("compression", "none")
+        if not isinstance(sha256, str) or len(sha256) != 64:
             raise _ApplyError("E_COMPONENT_INTEGRITY_MISSING", "mihomo sha256 missing")
-        if not source.startswith(("http://", "https://", "file://")):
+        if not isinstance(source, str) or not source.startswith(("https://", "file://")):
             raise _ApplyError("E_COMPONENT_SOURCE", "mihomo source is not installable")
 
+        artifact_target = artifact.get("target_path")
+        if artifact_target is not None and Path(str(artifact_target)) != Path(str(binary_path)):
+            raise _ApplyError("E_COMPONENT_TARGET", "mihomo target_path does not match Salt target")
         binary = Path(binary_path)
-        if binary.exists() and _sha256(binary) == sha256:
+        receipt = binary.with_name(binary.name + ".proxyfleet-install.json")
+        if binary.exists() and _installed_receipt_matches(receipt, binary, sha256):
             changed = False
         else:
-            temp = binary.parent / (binary.name + ".download")
             binary.parent.mkdir(parents=True, exist_ok=True)
-            _download(source, temp)
-            if _sha256(temp) != sha256:
-                temp.unlink(missing_ok=True)
-                raise _ApplyError("E_COMPONENT_HASH", "mihomo binary hash mismatch")
-            temp.chmod(0o755)
-            temp.replace(binary)
+            with tempfile.TemporaryDirectory(prefix="proxyfleet-mihomo-", dir=str(binary.parent)) as tmpdir:
+                tmp = Path(tmpdir)
+                downloaded = tmp / "mihomo.asset"
+                unpacked = tmp / "mihomo"
+                _download(source, downloaded)
+                if _sha256(downloaded) != sha256:
+                    raise _ApplyError("E_COMPONENT_HASH", "mihomo asset hash mismatch")
+                _unpack_artifact(downloaded, unpacked, compression)
+                unpacked.chmod(0o755)
+                _verify_mihomo_version(unpacked, version)
+                binary_sha256 = _sha256(unpacked)
+                unpacked.replace(binary)
+            _write_install_receipt(receipt, version, _arch_key(), source, sha256, compression, binary_sha256)
             changed = True
 
         _write_systemd_unit(Path(service_path), binary, Path(config_path), user, group)
-        subprocess.run(["systemctl", "daemon-reload"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        _systemctl(["daemon-reload"])
         return _envelope(
             operation_id,
             "prepare",
@@ -74,12 +97,12 @@ def install_mihomo(
             0,
             None,
             "mihomo installed",
-            {"mihomo_version": version, "binary_path": str(binary), "changed": changed},
+            {"mihomo_version": version, "binary_path": str(binary), "artifact_sha256": sha256, "changed": changed},
         )
     except _ApplyError as exc:
-        return _envelope(operation_id, "prepare", "failed", 0, 0, exc.error_code, str(exc))
+        return _failure(operation_id, "prepare", 0, 0, exc.error_code, str(exc), fail_on_error)
     except Exception as exc:
-        return _envelope(operation_id, "prepare", "failed", 0, 0, "E_COMPONENT_INSTALL", str(exc))
+        return _failure(operation_id, "prepare", 0, 0, "E_COMPONENT_INSTALL", str(exc), fail_on_error)
 
 
 def apply_desired(
@@ -90,6 +113,7 @@ def apply_desired(
     api_secret=None,
     service_name="mihomo.service",
     operation_id="op-unknown",
+    fail_on_error=False,
 ):
     """安装当前 release 并应用 desired state。"""
 
@@ -100,11 +124,11 @@ def apply_desired(
         selected_name = str(desired["selected_mihomo_name"])
         group = str(desired.get("managed_policy_group", MANAGED_POLICY_GROUP))
         if group != MANAGED_POLICY_GROUP:
-            return _envelope(operation_id, "apply", "failed", release_revision, desired_revision, "E_SCHEMA_UNSUPPORTED", "unsupported managed group")
+            return _failure(operation_id, "apply", release_revision, desired_revision, "E_SCHEMA_UNSUPPORTED", "unsupported managed group", fail_on_error)
 
         source_release = Path(release_root) / f"{release_revision:06d}"
         if not source_release.exists():
-            return _envelope(operation_id, "apply", "failed", release_revision, desired_revision, "E_RELEASE_HASH", "release not found")
+            return _failure(operation_id, "apply", release_revision, desired_revision, "E_RELEASE_HASH", "release not found", fail_on_error)
         _verify_release(source_release)
 
         target_release = Path(install_root) / "releases" / f"{release_revision:06d}"
@@ -144,9 +168,9 @@ def apply_desired(
             {"selected_node_id": desired["selected_node_id"], "selected_mihomo_name": selected_name},
         )
     except _ApplyError as exc:
-        return _envelope(operation_id, "apply", "failed", 0, 0, exc.error_code, str(exc))
+        return _failure(operation_id, "apply", 0, 0, exc.error_code, str(exc), fail_on_error)
     except Exception as exc:  # Salt execution modules should return structured failure.
-        return _envelope(operation_id, "apply", "failed", 0, 0, "E_LOCAL_API", str(exc))
+        return _failure(operation_id, "apply", 0, 0, "E_LOCAL_API", str(exc), fail_on_error)
 
 
 def _select_mihomo(base_url, api_secret, group, selected_name):
@@ -154,9 +178,18 @@ def _select_mihomo(base_url, api_secret, group, selected_name):
     all_names = set(before.get("all", []))
     if selected_name not in all_names:
         raise _ApplyError("E_NODE_NOT_FOUND", "target node is not selectable")
+    previous_name = before.get("now")
     _api(base_url, api_secret, "PUT", "/proxies/" + parse.quote(group, safe=""), {"name": selected_name})
     after = _api(base_url, api_secret, "GET", "/proxies/" + parse.quote(group, safe=""), None)
     if after.get("now") != selected_name:
+        if isinstance(previous_name, str) and previous_name in all_names:
+            try:
+                _api(base_url, api_secret, "PUT", "/proxies/" + parse.quote(group, safe=""), {"name": previous_name})
+                restored = _api(base_url, api_secret, "GET", "/proxies/" + parse.quote(group, safe=""), None)
+                if restored.get("now") != previous_name:
+                    raise _ApplyError("E_ROLLBACK_FAILED", "select rollback verification failed")
+            except _ApplyError:
+                raise _ApplyError("E_ROLLBACK_FAILED", "select rollback failed")
         raise _ApplyError("E_SELECT_VERIFY", "select verification failed")
 
 
@@ -194,6 +227,45 @@ def health_check(base_url, api_secret=None, mihomo_name=None, test_url="https://
         return _envelope(operation_id, "status", "failed", 0, 0, exc.error_code, str(exc))
 
 
+def apply_port_policy(
+    managed_path="/etc/proxyfleet/managed/port-policy.yaml",
+    local_path="/etc/proxyfleet/local/port-policy.yaml",
+    effective_path="/etc/proxyfleet/effective/port-policy.yaml",
+    mode="merge",
+    operation_id="op-unknown",
+    fail_on_error=False,
+):
+    """合并端口白名单，不覆盖 Minion 本地 local override。"""
+
+    try:
+        managed = _load_port_policy(Path(managed_path), "master")
+        local = _load_port_policy(Path(local_path), "local")
+        effective = _merge_port_policy(managed, local, str(mode))
+        target = Path(effective_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(effective, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        temp = target.with_name(target.name + ".next")
+        temp.write_text(payload, encoding="utf-8")
+        temp.replace(target)
+        return _envelope(
+            operation_id,
+            "apply",
+            "success",
+            0,
+            0,
+            None,
+            "port policy applied",
+            {
+                "mode": mode,
+                "managed_sha256": _optional_sha256(Path(managed_path)),
+                "local_sha256": _optional_sha256(Path(local_path)),
+                "effective_sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+            },
+        )
+    except _ApplyError as exc:
+        return _failure(operation_id, "apply", 0, 0, exc.error_code, str(exc), fail_on_error)
+
+
 def _api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_API"):
     payload = None if body is None else json.dumps(body).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -212,6 +284,92 @@ def _api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_A
     return json.loads(raw.decode("utf-8")) if raw else {}
 
 
+def _load_port_policy(path, expected_owner):
+    if not path.exists():
+        return {"schema_version": "1.0", "owner": expected_owner, "allow": [], "deny": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "port policy is not valid JSON/YAML subset") from exc
+    if not isinstance(data, dict):
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "port policy root must be object")
+    if data.get("schema_version", "1.0") != "1.0":
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "port policy schema_version must be 1.0")
+    if data.get("owner") != expected_owner:
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "port policy owner mismatch")
+    for key in ("allow", "deny"):
+        if key not in data:
+            data[key] = []
+        if not isinstance(data[key], list):
+            raise _ApplyError("E_PORT_POLICY_SCHEMA", "port policy allow/deny must be list")
+    return data
+
+
+def _merge_port_policy(managed, local, mode):
+    if mode not in {"merge", "master-only", "local-only", "disabled"}:
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "port policy mode invalid")
+    selected = []
+    if mode == "merge":
+        selected = [managed, local]
+    elif mode == "master-only":
+        selected = [managed]
+    elif mode == "local-only":
+        selected = [local]
+    allow = []
+    deny = []
+    seen = {}
+    conflicts = []
+    for policy in selected:
+        for action in ("allow", "deny"):
+            for rule in policy.get(action, []):
+                normalized = _normalize_port_rule(rule, str(policy.get("owner", "unknown")), action)
+                key = (normalized["protocol"], normalized["port"], normalized["source"])
+                previous = seen.get(key)
+                if previous and previous != action:
+                    conflicts.append(f"{normalized['protocol']}/{normalized['port']} from {normalized['source']}")
+                seen[key] = action
+                (allow if action == "allow" else deny).append(normalized)
+    if conflicts:
+        raise _ApplyError("E_PORT_POLICY_CONFLICT", "port policy conflict: " + ", ".join(conflicts))
+    return {"schema_version": "1.0", "owner": "effective", "mode": mode, "allow": allow, "deny": deny}
+
+
+def _normalize_port_rule(rule, owner, action):
+    if not isinstance(rule, dict):
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "port rule must be object")
+    protocol = str(rule.get("protocol", "")).lower()
+    if protocol not in {"tcp", "udp"}:
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "port rule protocol invalid")
+    port = rule.get("port")
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "port rule port invalid")
+    source = str(rule.get("source", "")).strip()
+    if not _valid_port_source(source):
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "port rule source invalid")
+    return {
+        "action": action,
+        "protocol": protocol,
+        "port": port,
+        "source": source,
+        "comment": str(rule.get("comment", "")),
+        "owner": owner,
+    }
+
+
+def _optional_sha256(path):
+    return _sha256(path) if path.exists() else None
+
+
+def _valid_port_source(source):
+    if source == "any":
+        return True
+    try:
+        ipaddress.ip_network(source, strict=False)
+    except ValueError:
+        return False
+    return True
+
+
 def _health_url_allowed(test_url):
     parsed = parse.urlparse(str(test_url))
     return (
@@ -227,9 +385,13 @@ def _health_url_allowed(test_url):
 
 
 def _reload_or_restart(service_name):
-    completed = subprocess.run(["systemctl", "reload-or-restart", str(service_name)], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    _systemctl(["reload-or-restart", str(service_name)])
+
+
+def _systemctl(args):
+    completed = subprocess.run(["systemctl", *args], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if completed.returncode != 0:
-        raise _ApplyError("E_LOCAL_API", "mihomo reload-or-restart failed")
+        raise _ApplyError("E_SERVICE_SYSTEMD", "systemd operation failed: " + " ".join(args))
 
 
 def _current_target(current):
@@ -300,14 +462,32 @@ def _load_component_lock(path, name):
     raise _ApplyError("E_COMPONENT_INTEGRITY_MISSING", "mihomo lock missing")
 
 
-def _component_sha256(component):
+def _component_artifact(component):
+    artifacts = component.get("artifacts")
+    if isinstance(artifacts, dict):
+        arch = _arch_key()
+        artifact = artifacts.get(arch)
+        if not isinstance(artifact, dict):
+            raise _ApplyError("E_COMPONENT_ARCH_UNSUPPORTED", "mihomo artifact for current architecture missing")
+        return artifact
+
     integrity = component.get("integrity")
     if not isinstance(integrity, dict):
-        return None
-    sha256 = integrity.get("sha256")
-    if not isinstance(sha256, str) or len(sha256) != 64:
-        return None
-    return sha256.lower()
+        return {}
+    return {
+        "url": component.get("source"),
+        "sha256": integrity.get("sha256"),
+        "compression": "none",
+    }
+
+
+def _arch_key():
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return "linux-amd64"
+    if machine in ("aarch64", "arm64"):
+        return "linux-arm64"
+    raise _ApplyError("E_COMPONENT_ARCH_UNSUPPORTED", "unsupported architecture")
 
 
 def _download(source, target):
@@ -317,6 +497,61 @@ def _download(source, target):
     with urllib.request.urlopen(source, timeout=30) as resp:
         with target.open("wb") as fh:
             shutil.copyfileobj(resp, fh)
+
+
+def _unpack_artifact(source, target, compression):
+    if compression in (None, "", "none"):
+        shutil.copyfile(source, target)
+        return
+    if compression == "gzip":
+        try:
+            with gzip.open(source, "rb") as src, target.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+        except OSError as exc:
+            raise _ApplyError("E_COMPONENT_UNPACK", "mihomo gzip unpack failed") from exc
+        return
+    raise _ApplyError("E_COMPONENT_UNPACK", "mihomo compression unsupported")
+
+
+def _installed_receipt_matches(receipt, binary, artifact_sha256):
+    try:
+        data = _read_json(receipt)
+    except Exception:
+        return False
+    if data.get("artifact_sha256") != artifact_sha256:
+        return False
+    binary_sha256 = data.get("binary_sha256")
+    return isinstance(binary_sha256, str) and _sha256(binary) == binary_sha256
+
+
+def _write_install_receipt(path, version, arch, source, artifact_sha256, compression, binary_sha256):
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "component": "mihomo",
+                "version": version,
+                "arch": arch,
+                "source": source,
+                "artifact_sha256": artifact_sha256,
+                "compression": compression,
+                "binary_sha256": binary_sha256,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _verify_mihomo_version(binary, expected_version):
+    completed = subprocess.run([str(binary), "-v"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    output = (completed.stdout or "") + (completed.stderr or "")
+    expected = str(expected_version).lstrip("v")
+    if completed.returncode != 0 or expected not in output:
+        raise _ApplyError("E_MIHOMO_VERSION", "mihomo version probe failed")
 
 
 def _write_systemd_unit(path, binary, config, user, group):
@@ -369,6 +604,13 @@ def _envelope(operation_id, phase, status, release_revision, desired_revision, e
         "desired_revision": desired_revision,
         "evidence": _redact_obj(evidence or {}),
     }
+
+
+def _failure(operation_id, phase, release_revision, desired_revision, error_code, message, fail_on_error):
+    envelope = _envelope(operation_id, phase, "failed", release_revision, desired_revision, error_code, message)
+    if fail_on_error:
+        raise CommandExecutionError(json.dumps(envelope, ensure_ascii=False, sort_keys=True))
+    return envelope
 
 
 def _redact(message):

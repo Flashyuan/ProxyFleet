@@ -152,9 +152,36 @@ sudo --preserve-env=PROXYFLEET_SUB_AIRPORT_MAIN \
 ### Mihomo 安装配置边界
 
 Salt state 会调用 `proxyfleet_mihomo.install_mihomo`。该步骤只接受
-`component-locks.json` 中已固定 URL 和 SHA-256 的 Mihomo 二进制。
-当前 SHA 缺失时会返回 `E_COMPONENT_INTEGRITY_MISSING` 并停止，不会自动下载
-`latest`。
+`component-locks.json` 中已固定 URL、SHA-256 和压缩格式的 Mihomo 资产。
+当前已锁定 Mihomo `v1.19.27` 的 `linux-amd64` 和 `linux-arm64` gzip 资产。
+下载后先校验 gzip 包 SHA-256，再解压并原子安装；不会自动下载 `latest`。
+
+### 端口白名单分层配置
+
+Master 可发布公共端口白名单：
+
+```bash
+sudo PYTHONPATH=src python3 -m proxyfleet.cli publish-salt \
+  releases/000001 runtime/desired.yaml /srv/proxyfleet/salt/states \
+  --component-locks component-locks.json \
+  --port-policy config-src/port-policy.json \
+  --port-policy-mode merge
+```
+
+Minion 本机可维护：
+
+```text
+/etc/proxyfleet/local/port-policy.yaml
+```
+
+Salt state 只确保 `/etc/proxyfleet/local` 目录存在，不覆盖、不删除本机文件。
+最终合并输出为：
+
+```text
+/etc/proxyfleet/effective/port-policy.yaml
+```
+
+本轮实现的是策略合并和防覆盖保护；UFW/nftables 真正落地后端仍是后续任务。
 
 ### 测速显示边界
 

@@ -26,6 +26,7 @@ def minimal_component(**overrides):
 def lock_with(component):
     return {
         "schema_version": "1.0",
+        "generated_at": "2026-06-24T00:00:00Z",
         "policy": {
             "no_floating_versions": True,
             "no_automatic_updates": True,
@@ -58,6 +59,99 @@ class ComponentLockTests(unittest.TestCase):
     def test_installable_binary_requires_sha256(self):
         issues = validate_lock_data(lock_with(minimal_component(status="installable")))
         self.assertTrue(any("SHA-256" in issue.message for issue in issues))
+
+    def test_installable_binary_accepts_arch_artifacts(self):
+        issues = validate_lock_data(
+            lock_with(
+                minimal_component(
+                    status="installable",
+                    artifacts={
+                        "linux-amd64": {
+                            "url": "https://example.invalid/mihomo.gz",
+                            "sha256": "a" * 64,
+                            "compression": "gzip",
+                            "target_path": "/usr/local/bin/mihomo",
+                        }
+                    },
+                )
+            )
+        )
+        self.assertEqual([], issues)
+
+    def test_installable_artifact_rejects_missing_sha(self):
+        issues = validate_lock_data(
+            lock_with(
+                minimal_component(
+                    status="installable",
+                    artifacts={
+                        "linux-amd64": {
+                            "url": "https://example.invalid/mihomo.gz",
+                            "compression": "gzip",
+                        }
+                    },
+                )
+            )
+        )
+        self.assertTrue(any("artifacts.linux-amd64.sha256" in issue.path for issue in issues))
+
+    def test_unsupported_schema_major_is_rejected(self):
+        data = lock_with(minimal_component())
+        data["schema_version"] = "2.0"
+        issues = validate_lock_data(data)
+        self.assertTrue(any("schema_version" in issue.path for issue in issues))
+
+    def test_generated_at_must_be_rfc3339_utc(self):
+        data = lock_with(minimal_component())
+        data["generated_at"] = "2026-06-24"
+        issues = validate_lock_data(data)
+        self.assertTrue(any("generated_at" in issue.path for issue in issues))
+
+    def test_installable_artifacts_must_cover_architectures_exactly(self):
+        issues = validate_lock_data(
+            lock_with(
+                minimal_component(
+                    status="installable",
+                    architectures=["linux-amd64", "linux-arm64"],
+                    artifacts={
+                        "linux-amd64": {
+                            "url": "https://example.invalid/mihomo.gz",
+                            "sha256": "a" * 64,
+                            "compression": "gzip",
+                        },
+                        "linux-riscv64": {
+                            "url": "https://example.invalid/mihomo.gz",
+                            "sha256": "b" * 64,
+                            "compression": "gzip",
+                        },
+                    },
+                )
+            )
+        )
+        self.assertTrue(any("linux-arm64" in issue.path for issue in issues))
+        self.assertTrue(any("linux-riscv64" in issue.path for issue in issues))
+
+    def test_installable_artifact_rejects_credential_url_and_unsafe_target(self):
+        issues = validate_lock_data(
+            lock_with(
+                minimal_component(
+                    status="installable",
+                    artifacts={
+                        "linux-amd64": {
+                            "url": "https://user:pass@example.invalid/mihomo.gz",
+                            "sha256": "a" * 64,
+                            "compression": "gzip",
+                            "target_path": "/bin/sh",
+                        }
+                    },
+                )
+            )
+        )
+        self.assertTrue(any(issue.path.endswith(".url") for issue in issues))
+        self.assertTrue(any(issue.path.endswith(".target_path") for issue in issues))
+
+    def test_source_url_rejects_credentials(self):
+        issues = validate_lock_data(lock_with(minimal_component(source="https://user:pass@example.invalid/release")))
+        self.assertTrue(any(issue.path.endswith(".source") for issue in issues))
 
     def test_installable_container_requires_digest(self):
         component = minimal_component(

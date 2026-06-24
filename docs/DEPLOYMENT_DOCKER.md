@@ -13,14 +13,14 @@
 | Salt Minion | 是 | 技术上可行但不便 | 原生 |
 | Mihomo proxy-only | 是 | 可行 | 原生优先 |
 | Mihomo TUN/透明代理 | 是 | 高权限可行 | V1 原生，不支持容器方式 |
-| ShellCrash | 是 | 不适合迁移 | 保留原生 |
+| ShellCrash | 是 | 不适合迁移 | 生产卸载后转 native-mihomo |
 
 最终用户体验应是：
 
 ```text
 管理节点可选：docker compose up -d
 每个子节点：只执行一次 bootstrap，安装 salt-minion 和需要的 mihomo 服务
-已有 ShellCrash 节点：只增加 salt-minion，不安装第二个 mihomo
+已有 ShellCrash 节点：先备份和卸载 ShellCrash，再执行 native-mihomo bootstrap
 ```
 
 ## 2. 管理端 Docker 的便利性
@@ -103,7 +103,7 @@ fleetctl 在主节点获取订阅、响应头和快照
 
 ## 7. 为什么 Salt Minion 不放容器
 
-Minion 的任务是修改宿主机 `/etc/mihomo`、systemd 服务、文件权限和可能的路由。普通容器看不到或不能控制这些资源；为了实现同样能力，需要挂载宿主机根目录、systemd socket、网络命名空间或 Docker socket，并授予高权限。这样既弱化隔离，也让故障排查和回滚更复杂。
+Minion 的任务是修改宿主机 `/etc/proxyfleet`、`mihomo.service`、文件权限和可能的路由。普通容器看不到或不能控制这些资源；为了实现同样能力，需要挂载宿主机根目录、systemd socket、网络命名空间或 Docker socket，并授予高权限。这样既弱化隔离，也让故障排查和回滚更复杂。
 
 因此 V1 将 `salt-minion.service` 原生安装到 Ubuntu 宿主机。
 
@@ -125,15 +125,18 @@ CAP_NET_RAW
 
 ## 9. 已安装 ShellCrash 的节点
 
-不将 ShellCrash 搬入容器。节点上：
+不将 ShellCrash 搬入容器，也不作为生产主路径接管。生产迁移顺序：
 
 ```text
-保留 ShellCrash + Mihomo + 原有 TUN/TProxy
+只读探测 ShellCrash 和现有配置
+备份订阅、节点和规则
+停止并卸载 ShellCrash
 原生安装 salt-minion
-通过 localhost Mihomo API 和持久化适配层接管 FLEET_PROXY
+由 ProxyFleet 安装锁定 Mihomo
+应用 release、端口白名单和 desired state
 ```
 
-若 ShellCrash 使用 sing-box 或无法持久化本地 API，V1 标记 unsupported，不通过容器绕过。
+若 ShellCrash 使用 sing-box、路径未知或无法安全备份，V1 标记 unsupported，不通过容器绕过。
 
 ## 10. Docker 管理端上线门槛
 

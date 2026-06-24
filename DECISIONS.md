@@ -1,7 +1,7 @@
 # ProxyFleet 决策索引
 
-> 版本：1.1
-> 更新日期：2026-06-23
+> 版本：1.2
+> 更新日期：2026-06-24
 > 最终技术决策者：ARCH-ORCH
 
 ## 有效 ADR
@@ -14,6 +14,7 @@
 | [ADR-0004](adr/ADR-0004-containerization-boundary.md) | Accepted | 管理端可 Docker 化，子节点 V1 原生 systemd | 2026-06-22 |
 | [ADR-0005](adr/ADR-0005-config-build-and-release-ownership.md) | Accepted | 主节点配置源唯一所有权，生成不可变 release | 2026-06-22 |
 | [ADR-0006](adr/ADR-0006-git-scm-and-repository-operations.md) | Accepted | 固定 GIT-SCM 岗位，安全初始化、提交、推送、核验和错误处理 | 2026-06-23 |
+| [ADR-0007](adr/ADR-0007-native-mihomo-production-and-local-overrides.md) | Accepted | 生产节点统一 native-mihomo；ShellCrash 降级为迁移工具；端口白名单支持 Master 管理层与 Minion 本地 override | 2026-06-24 |
 
 ## 决策修改规则
 

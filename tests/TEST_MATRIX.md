@@ -85,13 +85,16 @@
 - **目标**：确认 Mihomo 二进制下载、安装和运行前必须通过 SHA 校验。
 - **覆盖点**：
   - 下载产物 SHA 与 manifest 完全一致才允许安装。
+  - `.gz` 资产必须先校验压缩包 SHA，再解压并原子替换目标二进制。
   - SHA 不匹配、下载截断、文件替换、权限异常必须 fail-closed。
+  - gzip 解压失败、目标架构缺失、版本输出不匹配必须 fail-closed。
   - systemd 启动前校验通过，失败时不覆盖 Last Known Good。
   - Mihomo API 最小健康检查可验证。
 - **最小证据**：
   - SHA 校验成功记录
   - SHA 不匹配失败记录
   - systemd 与 API 健康检查结果
+  - gzip 解压与版本探测证据
 
 ### 3.3 subconverter digest
 
@@ -148,6 +151,40 @@
   - 对应日志位置
   - 是否触发 `RELEASE_BLOCKED` 或 `SCM_BLOCKED`
 
+### 3.7 native-mihomo 端到端
+
+- **目标**：确认生产主路径不依赖 ShellCrash，单台真实 Minion 可完整接收并应用
+  ProxyFleet 管理。
+- **覆盖点**：
+  - ShellCrash 已卸载或未安装；
+  - `proxyfleet-minion.sh bootstrap` 安装固定 Salt Minion；
+  - Master 人工核验 Salt key；
+  - Salt state 安装锁定 Mihomo，启动 `mihomo.service`；
+  - release 校验、应用、`FLEET_PROXY` 选择和 GET 再验证；
+  - `health-check` 能返回节点延迟或明确失败原因；
+  - 重启后 `mihomo.service` 和当前 release 持久。
+- **最小证据**：
+  - `salt '<minion-id>' test.ping`
+  - `systemctl status mihomo`
+  - Mihomo API 策略组 GET/PUT/GET 摘要
+  - release manifest SHA 校验摘要
+
+### 3.8 端口白名单与本地 override
+
+- **目标**：确认 Master 可统一下发公共端口白名单，同时 Minion 本地规则不会被覆盖。
+- **覆盖点**：
+  - `merge/master-only/local-only/disabled` 四种模式；
+  - `/etc/proxyfleet/local/port-policy.yaml` 不被 Salt 同步覆盖或删除；
+  - managed/local 合并结果保留规则来源；
+  - 冲突、local 语法错误、effective 应用失败均 fail-closed；
+  - 回滚到 Last Known Good effective policy；
+  - canary 期间不切断当前管理连接。
+- **最小证据**：
+  - managed/local/effective 三层 SHA-256；
+  - dry-run 输出；
+  - 冲突失败样例；
+  - Salt state 对 `/etc/proxyfleet/local` 的防覆盖测试。
+
 ## 4. 最小通过标准
 
 Phase 0 通过条件：
@@ -160,10 +197,12 @@ Phase 0 通过条件：
 Phase 1 通过条件：
 
 1. Salt 3008.x point release 安装、连通性和升级/失败路径通过。
-2. Mihomo SHA、subconverter digest、Docker digest 均完成成功与失败样例验证。
+2. Mihomo SHA/gzip 安装、subconverter digest、Docker digest 均完成成功与失败样例验证。
 3. 回滚路径完成至少一次端到端演练。
 4. 失败路径均有错误、日志、阻断状态和恢复建议。
-5. QA-RELEASE 与 SECURITY 均未设置 `RELEASE_BLOCKED`。
+5. native-mihomo 真实 Minion 端到端通过。
+6. 端口白名单本地 override 防覆盖测试通过。
+7. QA-RELEASE 与 SECURITY 均未设置 `RELEASE_BLOCKED`。
 
 ## 5. 结果记录要求
 

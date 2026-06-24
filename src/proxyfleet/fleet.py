@@ -87,6 +87,8 @@ class SyncPlan:
     release_source: Path
     salt_release_dir: Path
     salt_desired_path: Path
+    port_policy_enabled: bool = False
+    port_policy_mode: str = "merge"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -97,6 +99,8 @@ class SyncPlan:
             "release_source": str(self.release_source),
             "salt_release_dir": str(self.salt_release_dir),
             "salt_desired_path": str(self.salt_desired_path),
+            "port_policy_enabled": self.port_policy_enabled,
+            "port_policy_mode": self.port_policy_mode,
         }
 
 
@@ -234,7 +238,14 @@ def load_desired_state(path: Path) -> dict[str, Any]:
     return data
 
 
-def prepare_salt_publish(release_dir: Path, desired_path: Path, salt_root: Path, component_locks_path: Path | None = None) -> SyncPlan:
+def prepare_salt_publish(
+    release_dir: Path,
+    desired_path: Path,
+    salt_root: Path,
+    component_locks_path: Path | None = None,
+    port_policy_path: Path | None = None,
+    port_policy_mode: str = "merge",
+) -> SyncPlan:
     """准备 Salt file_roots 中的 release 和 desired state。"""
 
     release = load_release_info(release_dir)
@@ -259,10 +270,32 @@ def prepare_salt_publish(release_dir: Path, desired_path: Path, salt_root: Path,
             shutil.copyfile(component_locks_path, locks_target)
         except OSError as exc:
             raise FleetError("E_COMPONENT_INTEGRITY_MISSING", f"组件锁定清单不可用: {component_locks_path}") from exc
-    return _sync_plan(release, desired, release.release_dir, release_target, desired_target, target="*")
+    if port_policy_path is not None:
+        try:
+            shutil.copyfile(port_policy_path, salt_root / "proxyfleet" / "port-policy.yaml")
+        except OSError as exc:
+            raise FleetError("E_CONFIG_VALIDATE", f"端口白名单不可用: {port_policy_path}") from exc
+    return _sync_plan(
+        release,
+        desired,
+        release.release_dir,
+        release_target,
+        desired_target,
+        target="*",
+        port_policy_enabled=port_policy_path is not None,
+        port_policy_mode=port_policy_mode,
+    )
 
 
-def build_sync_plan(release_dir: Path, desired_path: Path, salt_root: Path, target: str) -> SyncPlan:
+def build_sync_plan(
+    release_dir: Path,
+    desired_path: Path,
+    salt_root: Path,
+    target: str,
+    *,
+    port_policy_enabled: bool = False,
+    port_policy_mode: str = "merge",
+) -> SyncPlan:
     """生成同步计划，不写入 Salt 目录。"""
 
     release = load_release_info(release_dir)
@@ -273,7 +306,16 @@ def build_sync_plan(release_dir: Path, desired_path: Path, salt_root: Path, targ
         raise FleetError("E_PROVIDER_MISMATCH", "desired provider_revision 与 release 不一致")
     salt_release_dir = salt_root.resolve() / "proxyfleet" / "releases" / f"{release.release_revision:06d}"
     salt_desired_path = salt_root.resolve() / "proxyfleet" / "desired.yaml"
-    return _sync_plan(release, desired, release.release_dir, salt_release_dir, salt_desired_path, target)
+    return _sync_plan(
+        release,
+        desired,
+        release.release_dir,
+        salt_release_dir,
+        salt_desired_path,
+        target,
+        port_policy_enabled=port_policy_enabled,
+        port_policy_mode=port_policy_mode,
+    )
 
 
 def run_salt_sync(plan: SyncPlan, salt_bin: str = "salt") -> int:
@@ -284,7 +326,7 @@ def run_salt_sync(plan: SyncPlan, salt_bin: str = "salt") -> int:
         plan.target,
         "state.apply",
         "proxyfleet.sync",
-        f"pillar={json.dumps({'proxyfleet_operation_id': plan.operation_id, 'proxyfleet_release_root': str(plan.salt_release_dir.parent), 'proxyfleet_desired_path': str(plan.salt_desired_path), 'proxyfleet_component_locks_path': str(plan.salt_desired_path.parent / 'component-locks.json')}, separators=(',', ':'))}",
+        f"pillar={json.dumps({'proxyfleet_operation_id': plan.operation_id, 'proxyfleet_release_root': str(plan.salt_release_dir.parent), 'proxyfleet_desired_path': str(plan.salt_desired_path), 'proxyfleet_component_locks_path': str(plan.salt_desired_path.parent / 'component-locks.json'), 'proxyfleet_port_policy_enabled': plan.port_policy_enabled, 'proxyfleet_port_policy_mode': plan.port_policy_mode}, separators=(',', ':'))}",
     ]
     completed = subprocess.run(cmd, check=False)
     return int(completed.returncode)
@@ -418,6 +460,9 @@ def _sync_plan(
     salt_release_dir: Path,
     salt_desired_path: Path,
     target: str,
+    *,
+    port_policy_enabled: bool = False,
+    port_policy_mode: str = "merge",
 ) -> SyncPlan:
     operation_id = f"op-{_now_utc().replace(':', '').replace('-', '')}-{desired['desired_revision']}"
     return SyncPlan(
@@ -428,6 +473,8 @@ def _sync_plan(
         release_source=release_source,
         salt_release_dir=salt_release_dir,
         salt_desired_path=salt_desired_path,
+        port_policy_enabled=port_policy_enabled,
+        port_policy_mode=port_policy_mode,
     )
 
 

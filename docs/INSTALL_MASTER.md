@@ -212,8 +212,9 @@ sudo --preserve-env=PROXYFLEET_SUB_AIRPORT_MAIN \
 
 首次执行建议增加 `--dry-run` 先看计划。
 
-注意：Mihomo 真安装受 `component-locks.json` 保护。Mihomo URL 和 SHA-256
-未补齐前，Minion 会返回 `E_COMPONENT_INTEGRITY_MISSING`，不会下载未锁定版本。
+注意：Mihomo 真安装受 `component-locks.json` 保护。当前已锁定 Mihomo
+`v1.19.27` 的 `linux-amd64` 和 `linux-arm64` gzip 资产。Minion 会先校验
+gzip 包 SHA-256，再解压安装；SHA 不匹配或解压失败会 fail-closed。
 
 ## 6. 启停与卸载
 

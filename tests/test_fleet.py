@@ -1,4 +1,6 @@
 import json
+import gzip
+import hashlib
 import importlib.util
 import io
 import socket
@@ -102,12 +104,23 @@ class FleetTests(unittest.TestCase):
             release = _release(root / "releases")
             node = build_node_catalog(release)[0]
             select_node(release, root / "runtime", node.node_id, "production")
-            plan = prepare_salt_publish(release, root / "runtime" / "desired.yaml", root / "srv-salt", LOCKS)
+            port_policy = root / "port-policy.json"
+            port_policy.write_text(json.dumps({"owner": "master", "allow": [], "deny": []}), encoding="utf-8")
+            plan = prepare_salt_publish(
+                release,
+                root / "runtime" / "desired.yaml",
+                root / "srv-salt",
+                LOCKS,
+                port_policy,
+                "merge",
+            )
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "releases" / "000001" / "config.yaml").exists())
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "desired.yaml").exists())
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "component-locks.json").exists())
+            self.assertTrue((root / "srv-salt" / "proxyfleet" / "port-policy.yaml").exists())
             self.assertEqual(1, plan.release_revision)
             self.assertEqual(1, plan.desired_revision)
+            self.assertTrue(plan.port_policy_enabled)
 
     def test_sync_plan_rejects_provider_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -128,7 +141,14 @@ class FleetTests(unittest.TestCase):
             release = _release(root / "releases")
             node = build_node_catalog(release)[0]
             select_node(release, root / "runtime", node.node_id, "production")
-            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", root / "custom-salt", "minion-1")
+            plan = build_sync_plan(
+                release,
+                root / "runtime" / "desired.yaml",
+                root / "custom-salt",
+                "minion-1",
+                port_policy_enabled=True,
+                port_policy_mode="merge",
+            )
             with mock.patch("proxyfleet.fleet.subprocess.run") as run:
                 run.return_value.returncode = 0
                 self.assertEqual(0, run_salt_sync(plan, "salt"))
@@ -138,6 +158,8 @@ class FleetTests(unittest.TestCase):
             self.assertIn(str(root / "custom-salt" / "proxyfleet" / "releases"), pillar)
             self.assertIn(str(root / "custom-salt" / "proxyfleet" / "desired.yaml"), pillar)
             self.assertIn(str(root / "custom-salt" / "proxyfleet" / "component-locks.json"), pillar)
+            self.assertIn('"proxyfleet_port_policy_enabled":true', pillar)
+            self.assertIn('"proxyfleet_port_policy_mode":"merge"', pillar)
 
     def test_salt_envelope_redacts_secret_fields(self):
         envelope = salt_envelope(
@@ -410,7 +432,7 @@ class SaltModuleTests(unittest.TestCase):
             module = self._module()
 
             def fail_reload(service_name):
-                raise module._ApplyError("E_LOCAL_API", "mihomo reload-or-restart failed")
+                raise module._ApplyError("E_SERVICE_SYSTEMD", "mihomo reload-or-restart failed")
 
             module._reload_or_restart = fail_reload
             result = module.apply_desired(
@@ -421,7 +443,7 @@ class SaltModuleTests(unittest.TestCase):
             )
 
             self.assertEqual("failed", result["status"])
-            self.assertEqual("E_LOCAL_API", result["error_code"])
+            self.assertEqual("E_SERVICE_SYSTEMD", result["error_code"])
             self.assertEqual(previous_release, current.resolve())
             self.assertFalse((install_root / "desired.yaml").exists())
 
@@ -455,6 +477,394 @@ class SaltModuleTests(unittest.TestCase):
             self.assertEqual("failed", result["status"])
             self.assertEqual("E_COMPONENT_INTEGRITY_MISSING", result["error_code"])
             self.assertFalse((root / "mihomo").exists())
+
+    def test_install_mihomo_fail_on_error_raises_for_salt_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locks = root / "component-locks.json"
+            locks.write_text(json.dumps({"components": [{"name": "mihomo", "version": "v1.19.27", "integrity": {"sha256": None}}]}), encoding="utf-8")
+            module = self._module()
+
+            with self.assertRaises(module.CommandExecutionError) as ctx:
+                module.install_mihomo(
+                    component_locks_path=str(locks),
+                    binary_path=str(root / "mihomo"),
+                    service_path=str(root / "mihomo.service"),
+                    operation_id="op-test",
+                    fail_on_error=True,
+                )
+
+            self.assertIn("E_COMPONENT_INTEGRITY_MISSING", str(ctx.exception))
+
+    def test_apply_desired_fail_on_error_raises_on_early_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            desired = root / "desired.yaml"
+            desired.write_text(
+                json.dumps(
+                    {
+                        "release_revision": 1,
+                        "desired_revision": 1,
+                        "selected_mihomo_name": "[SELF] test-node",
+                        "managed_policy_group": "OTHER",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            module = self._module()
+
+            with self.assertRaises(module.CommandExecutionError) as ctx:
+                module.apply_desired(
+                    release_root=str(root / "missing-releases"),
+                    desired_path=str(desired),
+                    install_root=str(root / "install"),
+                    operation_id="op-test",
+                    fail_on_error=True,
+                )
+
+            self.assertIn("E_SCHEMA_UNSUPPORTED", str(ctx.exception))
+
+    def test_apply_port_policy_preserves_local_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            managed = root / "managed" / "port-policy.yaml"
+            local = root / "local" / "port-policy.yaml"
+            effective = root / "effective" / "port-policy.yaml"
+            managed.parent.mkdir()
+            local.parent.mkdir()
+            managed.write_text(
+                json.dumps({"owner": "master", "allow": [{"protocol": "tcp", "port": 22, "source": "192.168.1.0/24"}], "deny": []}),
+                encoding="utf-8",
+            )
+            local_payload = json.dumps({"owner": "local", "allow": [{"protocol": "tcp", "port": 8080, "source": "any"}], "deny": []})
+            local.write_text(local_payload, encoding="utf-8")
+            module = self._module()
+
+            result = module.apply_port_policy(
+                managed_path=str(managed),
+                local_path=str(local),
+                effective_path=str(effective),
+                mode="merge",
+                operation_id="op-test",
+            )
+
+            self.assertEqual("success", result["status"])
+            self.assertEqual(local_payload, local.read_text(encoding="utf-8"))
+            data = json.loads(effective.read_text(encoding="utf-8"))
+            self.assertEqual(["master", "local"], [rule["owner"] for rule in data["allow"]])
+
+    def test_apply_port_policy_rejects_bad_schema_and_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            managed = root / "managed" / "port-policy.yaml"
+            local = root / "local" / "port-policy.yaml"
+            effective = root / "effective" / "port-policy.yaml"
+            managed.parent.mkdir()
+            local.parent.mkdir()
+            managed.write_text(
+                json.dumps({"schema_version": "2.0", "owner": "master", "allow": [{"protocol": "tcp", "port": 22, "source": "office"}], "deny": []}),
+                encoding="utf-8",
+            )
+            local.write_text(json.dumps({"owner": "local", "allow": [], "deny": []}), encoding="utf-8")
+            module = self._module()
+
+            result = module.apply_port_policy(
+                managed_path=str(managed),
+                local_path=str(local),
+                effective_path=str(effective),
+                mode="merge",
+                operation_id="op-test",
+            )
+
+            self.assertEqual("failed", result["status"])
+            self.assertEqual("E_PORT_POLICY_SCHEMA", result["error_code"])
+            self.assertFalse(effective.exists())
+
+    def test_install_mihomo_gzip_artifact_with_sha(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asset = root / "mihomo.gz"
+            with gzip.open(asset, "wb") as fh:
+                fh.write(b"#!/bin/sh\necho 'Mihomo Meta v1.19.27'\n")
+            asset_sha = hashlib.sha256(asset.read_bytes()).hexdigest()
+            locks = root / "component-locks.json"
+            locks.write_text(
+                json.dumps(
+                    {
+                        "components": [
+                            {
+                                "name": "mihomo",
+                                "version": "v1.19.27",
+                                "artifacts": {
+                                    "linux-amd64": {
+                                        "url": asset.as_uri(),
+                                        "sha256": asset_sha,
+                                        "compression": "gzip",
+                                        "target_path": str(root / "mihomo"),
+                                    }
+                                },
+                                "integrity": {},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            module = self._module()
+            with mock.patch.object(module.platform, "machine", return_value="x86_64"), mock.patch.object(module, "_systemctl") as systemctl:
+                result = module.install_mihomo(
+                    component_locks_path=str(locks),
+                    binary_path=str(root / "mihomo"),
+                    service_path=str(root / "mihomo.service"),
+                    operation_id="op-test",
+                )
+
+            self.assertEqual("success", result["status"])
+            systemctl.assert_called_once_with(["daemon-reload"])
+            self.assertTrue((root / "mihomo").exists())
+            self.assertTrue((root / "mihomo").stat().st_mode & 0o111)
+            receipt = json.loads((root / "mihomo.proxyfleet-install.json").read_text(encoding="utf-8"))
+            self.assertEqual(asset_sha, receipt["artifact_sha256"])
+            self.assertEqual("gzip", receipt["compression"])
+
+    def test_install_mihomo_daemon_reload_failure_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asset = root / "mihomo.gz"
+            with gzip.open(asset, "wb") as fh:
+                fh.write(b"#!/bin/sh\necho 'Mihomo Meta v1.19.27'\n")
+            asset_sha = hashlib.sha256(asset.read_bytes()).hexdigest()
+            locks = root / "component-locks.json"
+            locks.write_text(
+                json.dumps(
+                    {
+                        "components": [
+                            {
+                                "name": "mihomo",
+                                "version": "v1.19.27",
+                                "artifacts": {
+                                    "linux-amd64": {
+                                        "url": asset.as_uri(),
+                                        "sha256": asset_sha,
+                                        "compression": "gzip",
+                                        "target_path": str(root / "mihomo"),
+                                    }
+                                },
+                                "integrity": {},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            module = self._module()
+            with mock.patch.object(module.platform, "machine", return_value="x86_64"), mock.patch.object(
+                module,
+                "_systemctl",
+                side_effect=module._ApplyError("E_SERVICE_SYSTEMD", "daemon reload failed"),
+            ):
+                result = module.install_mihomo(
+                    component_locks_path=str(locks),
+                    binary_path=str(root / "mihomo"),
+                    service_path=str(root / "mihomo.service"),
+                    operation_id="op-test",
+                )
+
+            self.assertEqual("failed", result["status"])
+            self.assertEqual("E_SERVICE_SYSTEMD", result["error_code"])
+
+    def test_install_mihomo_target_path_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asset = root / "mihomo.gz"
+            with gzip.open(asset, "wb") as fh:
+                fh.write(b"#!/bin/sh\necho 'Mihomo Meta v1.19.27'\n")
+            asset_sha = hashlib.sha256(asset.read_bytes()).hexdigest()
+            locks = root / "component-locks.json"
+            locks.write_text(
+                json.dumps(
+                    {
+                        "components": [
+                            {
+                                "name": "mihomo",
+                                "version": "v1.19.27",
+                                "artifacts": {
+                                    "linux-amd64": {
+                                        "url": asset.as_uri(),
+                                        "sha256": asset_sha,
+                                        "compression": "gzip",
+                                        "target_path": str(root / "locked-mihomo"),
+                                    }
+                                },
+                                "integrity": {},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            module = self._module()
+            with mock.patch.object(module.platform, "machine", return_value="x86_64"):
+                result = module.install_mihomo(
+                    component_locks_path=str(locks),
+                    binary_path=str(root / "mihomo"),
+                    service_path=str(root / "mihomo.service"),
+                    operation_id="op-test",
+                )
+
+            self.assertEqual("failed", result["status"])
+            self.assertEqual("E_COMPONENT_TARGET", result["error_code"])
+
+    def test_install_mihomo_version_probe_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asset = root / "mihomo.gz"
+            with gzip.open(asset, "wb") as fh:
+                fh.write(b"#!/bin/sh\necho 'wrong version'\n")
+            asset_sha = hashlib.sha256(asset.read_bytes()).hexdigest()
+            locks = root / "component-locks.json"
+            locks.write_text(
+                json.dumps(
+                    {
+                        "components": [
+                            {
+                                "name": "mihomo",
+                                "version": "v1.19.27",
+                                "artifacts": {
+                                    "linux-amd64": {
+                                        "url": asset.as_uri(),
+                                        "sha256": asset_sha,
+                                        "compression": "gzip",
+                                    }
+                                },
+                                "integrity": {},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            module = self._module()
+            with mock.patch.object(module.platform, "machine", return_value="x86_64"):
+                result = module.install_mihomo(
+                    component_locks_path=str(locks),
+                    binary_path=str(root / "mihomo"),
+                    service_path=str(root / "mihomo.service"),
+                    operation_id="op-test",
+                )
+
+            self.assertEqual("failed", result["status"])
+            self.assertEqual("E_MIHOMO_VERSION", result["error_code"])
+            self.assertFalse((root / "mihomo").exists())
+
+    def test_select_mihomo_rolls_back_previous_on_verify_mismatch(self):
+        module = self._module()
+        calls = []
+        states = [
+            {"now": "[SELF] previous", "all": ["[SELF] previous", "[SELF] test-node"]},
+            {"now": "[SELF] previous", "all": ["[SELF] previous", "[SELF] test-node"]},
+            {"now": "[SELF] previous", "all": ["[SELF] previous", "[SELF] test-node"]},
+        ]
+
+        def fake_api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_API"):
+            calls.append((method, body))
+            if method == "GET":
+                return states.pop(0)
+            return {}
+
+        module._api = fake_api
+        with self.assertRaises(module._ApplyError) as ctx:
+            module._select_mihomo("http://127.0.0.1:9090", None, "FLEET_PROXY", "[SELF] test-node")
+
+        self.assertEqual("E_SELECT_VERIFY", ctx.exception.error_code)
+        self.assertEqual(("PUT", {"name": "[SELF] previous"}), calls[-2])
+
+    def test_select_mihomo_reports_rollback_failure(self):
+        module = self._module()
+        calls = []
+        states = [
+            {"now": "[SELF] previous", "all": ["[SELF] previous", "[SELF] test-node"]},
+            {"now": "[SELF] previous", "all": ["[SELF] previous", "[SELF] test-node"]},
+            {"now": "[SELF] other", "all": ["[SELF] previous", "[SELF] test-node"]},
+        ]
+
+        def fake_api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_API"):
+            calls.append((method, body))
+            if method == "GET":
+                return states.pop(0)
+            return {}
+
+        module._api = fake_api
+        with self.assertRaises(module._ApplyError) as ctx:
+            module._select_mihomo("http://127.0.0.1:9090", None, "FLEET_PROXY", "[SELF] test-node")
+
+        self.assertEqual("E_ROLLBACK_FAILED", ctx.exception.error_code)
+        self.assertEqual(("PUT", {"name": "[SELF] previous"}), calls[-2])
+
+    def test_native_mihomo_local_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            desired = select_node(release, root / "runtime", node.node_id, "production")
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", root / "srv-salt", LOCKS)
+
+            asset = root / "mihomo.gz"
+            with gzip.open(asset, "wb") as fh:
+                fh.write(b"#!/bin/sh\necho 'Mihomo Meta v1.19.27'\n")
+            asset_sha = hashlib.sha256(asset.read_bytes()).hexdigest()
+            locks = root / "component-locks.json"
+            locks.write_text(
+                json.dumps(
+                    {
+                        "components": [
+                            {
+                                "name": "mihomo",
+                                "version": "v1.19.27",
+                                "artifacts": {
+                                    "linux-amd64": {
+                                        "url": asset.as_uri(),
+                                        "sha256": asset_sha,
+                                        "compression": "gzip",
+                                    }
+                                },
+                                "integrity": {},
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            module = self._module()
+            order = []
+
+            def fake_reload(service_name):
+                order.append(("reload", service_name))
+
+            def fake_select(api, secret, group, selected_name):
+                order.append(("select", group, selected_name))
+
+            with mock.patch.object(module.platform, "machine", return_value="x86_64"), mock.patch.object(module, "_systemctl"):
+                install = module.install_mihomo(
+                    component_locks_path=str(locks),
+                    binary_path=str(root / "mihomo"),
+                    service_path=str(root / "mihomo.service"),
+                    config_path=str(root / "install" / "current" / "config.yaml"),
+                    operation_id="op-install",
+                )
+            module._reload_or_restart = fake_reload
+            module._select_mihomo = fake_select
+            apply = module.apply_desired(
+                release_root=str(root / "srv-salt" / "proxyfleet" / "releases"),
+                desired_path=str(root / "srv-salt" / "proxyfleet" / "desired.yaml"),
+                install_root=str(root / "install"),
+                operation_id="op-apply",
+            )
+
+            self.assertEqual("success", install["status"])
+            self.assertEqual("success", apply["status"])
+            self.assertTrue((root / "install" / "current" / "config.yaml").exists())
+            self.assertEqual(("select", "FLEET_PROXY", desired["selected_mihomo_name"]), order[-1])
 
 
 if __name__ == "__main__":

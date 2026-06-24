@@ -21,25 +21,27 @@
 
 ```yaml
 schema_version: "1.0"
-generated_at: "2026-06-23T00:00:00Z"
+generated_at: "2026-06-24T00:00:00Z"
 source_git_commit: "<sha>"
 components:
   - name: "mihomo"
     kind: "binary"
-    version: "v1.19.8"
-    source:
-      type: "github_release"
-      url: "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.8/mihomo-linux-amd64-v1.19.8.gz"
-      repository: "MetaCubeX/mihomo"
-      ref: "v1.19.8"
-    architecture: "linux/amd64"
-    sha256: "<hex>"
-    digest: null
-    signature:
-      type: "cosign|minisign|gpg|none"
-      identity: null
-      value: null
-      certificate_sha256: null
+    version: "v1.19.27"
+    source: "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.27"
+    architectures: ["linux-amd64", "linux-arm64"]
+    artifacts:
+      linux-amd64:
+        url: "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v1.19.27.gz"
+        sha256: "<hex>"
+        compression: "gzip"
+        target_path: "/usr/local/bin/mihomo"
+      linux-arm64:
+        url: "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-arm64-v1.19.27.gz"
+        sha256: "<hex>"
+        compression: "gzip"
+        target_path: "/usr/local/bin/mihomo"
+    integrity:
+      signature: "unknown"
     install_policy:
       mode: "managed"
       target_path: "/usr/local/bin/mihomo"
@@ -63,12 +65,20 @@ components:
 
 约束：
 
-- `schema_version` 必填；不支持 major 时必须 fail-closed；
+- `schema_version` 必填；当前仅支持 major `1`，不支持 major 时必须 fail-closed；
 - `components[]` 必填；为空表示没有任何外部组件被授权安装；
 - `name` 在同一清单内必须唯一；
 - 所有时间必须使用 RFC 3339 UTC；
 - 所有远程来源必须显式记录 `source`，不得依赖隐式下载地址；
 - 可执行文件、归档、镜像和规则数据必须至少具备一种强校验方式；
+- `binary`/`archive`/`ruleset`/`data_file` 进入 `installable` 状态时，若存在多架构资产，必须使用 `artifacts` 对象；
+- `artifacts` 的键必须与 `architectures[]` 完全一致，当前 canonical 键为 `linux-amd64`、`linux-arm64`；
+- `artifact.url` 只允许无凭据的 `https://` 或本地测试用 `file://`；
+- `artifact.sha256` 必须是 64 位十六进制 SHA-256，且校验对象是下载后的压缩资产本身；
+- `artifact.compression` 当前仅支持 `none` 或 `gzip`；
+- `artifact.target_path` 必须是绝对路径，且只能落在受控安装目录，例如 `/usr/local/bin/` 或 `/opt/proxyfleet/`；
+- `signature: "unknown"` 仅表示上游签名材料暂不可用；进入生产发布前必须由
+  SECURITY 在 Result Packet 中显式接受 SHA-256-only 风险，或补充签名验证。
 - 未知字段允许保留，但未知必填语义不得静默忽略。
 
 ## 3. Component 字段
@@ -120,12 +130,17 @@ components:
 
 ### 3.4 `source`
 
-组件来源。
+组件来源。当前支持两种写法：
+
+- 字符串 URL：用于简单 release 页面或固定下载源；
+- 结构化对象：用于需要记录 repository/ref/package/image 的组件。
 
 伪结构：
 
 ```yaml
-source:
+source: "https://example.invalid/release"
+
+structured_source:
   type: "apt|github_release|url|oci_registry|git|local|salt_repo|docker_repo"
   url: "https://example.invalid/artifact"
   repository: "owner/project"
@@ -137,7 +152,7 @@ source:
 
 约束：
 
-- `type` 必填；
+- 结构化对象中 `type` 必填；
 - 远程 URL 不得包含 token、密码、订阅地址或其它 secret；
 - `local` 来源只能引用仓库内受管路径或已记录的构建产物；
 - `git` 来源必须记录 commit 或 tag；只记录 branch 不足以锁定版本。
@@ -148,13 +163,12 @@ source:
 
 推荐格式：
 
-- `linux/amd64`
-- `linux/arm64`
-- `linux/arm/v7`
+- `linux-amd64`
+- `linux-arm64`
 - `all`
 
-约束：同一组件需要多架构时，应为每个架构写独立条目，或在 `variants[]`
-中显式枚举；不得让安装器根据当前机器自动下载未锁定产物。
+约束：同一组件需要多架构时，应使用 `architectures[]` 和同名
+`artifacts{}` 显式枚举；不得让安装器根据当前机器自动下载未锁定产物。
 
 ### 3.6 `sha256`
 
@@ -433,36 +447,25 @@ Docker 应拆分表达：
 
 ## 5. 多架构与变体
 
-同一组件存在多架构产物时推荐写多个组件条目：
-
-```yaml
-components:
-  - name: "mihomo-linux-amd64"
-    kind: "binary"
-    architecture: "linux/amd64"
-  - name: "mihomo-linux-arm64"
-    kind: "binary"
-    architecture: "linux/arm64"
-```
-
-如必须保持同一 `name`，可使用 `variants[]`：
+同一组件存在多架构产物时，当前推荐使用一个稳定组件名和架构级
+`artifacts`：
 
 ```yaml
 components:
   - name: "mihomo"
     kind: "binary"
-    version: "v1.19.8"
-    variants:
-      - architecture: "linux/amd64"
+    version: "v1.19.27"
+    status: "installable"
+    architectures: ["linux-amd64", "linux-arm64"]
+    artifacts:
+      linux-amd64:
+        url: "https://example.invalid/mihomo-linux-amd64.gz"
         sha256: "<hex>"
-        source:
-          type: "github_release"
-          url: "https://example.invalid/mihomo-linux-amd64.gz"
-      - architecture: "linux/arm64"
+        compression: "gzip"
+      linux-arm64:
+        url: "https://example.invalid/mihomo-linux-arm64.gz"
         sha256: "<hex>"
-        source:
-          type: "github_release"
-          url: "https://example.invalid/mihomo-linux-arm64.gz"
+        compression: "gzip"
 ```
 
 约束：安装器必须先选择匹配架构，再执行下载和校验；无匹配架构时必须失败。
@@ -488,7 +491,7 @@ components:
 
 ```yaml
 schema_version: "1.0"
-generated_at: "2026-06-23T00:00:00Z"
+generated_at: "2026-06-24T00:00:00Z"
 source_git_commit: "<sha>"
 components:
   - name: "base-image-ubuntu-24.04"
@@ -498,7 +501,7 @@ components:
       type: "oci_registry"
       registry: "docker.io"
       image: "library/ubuntu"
-    architecture: "linux/amd64"
+    architecture: "linux-amd64"
     sha256: null
     digest: "sha256:<hex>"
     signature:

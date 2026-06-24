@@ -22,6 +22,7 @@ from .fleet import (
     write_desired_state,
     write_node_catalog,
 )
+from .port_policy import PortPolicyError, build_effective_policy, status as port_policy_status
 from .subscription import SubscriptionError, build_subscription_status
 
 
@@ -81,6 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("desired_path", help="desired.yaml 路径")
     publish.add_argument("salt_root", help="Salt file_roots 根目录")
     publish.add_argument("--component-locks", default="component-locks.json", help="组件锁定清单")
+    publish.add_argument("--port-policy", default=None, help="可选：Master managed 端口白名单文件")
+    publish.add_argument("--port-policy-mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
 
     sync = subparsers.add_parser("sync", help="通过 Salt 同步 release 并应用节点选择")
     sync.add_argument("release_dir", help="release 目录")
@@ -88,6 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("salt_root", help="Salt file_roots 根目录")
     sync.add_argument("--target", default="*", help="Salt target")
     sync.add_argument("--salt-bin", default="salt", help="salt 命令路径")
+    sync.add_argument("--port-policy-enabled", action="store_true", help="同步时应用已发布的 managed 端口白名单")
+    sync.add_argument("--port-policy-mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
     sync.add_argument("--dry-run", action="store_true", help="只输出同步计划，不执行 Salt")
 
     apply_parser = subparsers.add_parser("apply", help="最少步骤：构建、可选选择、发布并同步")
@@ -104,7 +109,24 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--target-group", default="production", help="目标分组")
     apply_parser.add_argument("--target", default="*", help="Salt target")
     apply_parser.add_argument("--salt-bin", default="salt", help="salt 命令路径")
+    apply_parser.add_argument("--port-policy", default=None, help="可选：Master managed 端口白名单文件")
+    apply_parser.add_argument("--port-policy-mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
     apply_parser.add_argument("--dry-run", action="store_true", help="只输出计划，不写 runtime/Salt、不执行 Salt")
+
+    port_policy = subparsers.add_parser("port-policy", help="端口白名单分层配置")
+    port_subparsers = port_policy.add_subparsers(dest="port_command", required=True)
+    port_build = port_subparsers.add_parser("build", help="合并 managed/local 端口策略")
+    port_build.add_argument("managed_path", help="Master managed port-policy 文件")
+    port_build.add_argument("local_path", help="Minion local port-policy 文件")
+    port_build.add_argument("effective_path", help="输出 effective port-policy 文件")
+    port_build.add_argument("--mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
+    port_build.add_argument("--lkg-path", default=None, help="可选：Last Known Good 输出路径")
+    port_build.add_argument("--dry-run", action="store_true", help="只验证并输出计划，不写 effective")
+    port_status = port_subparsers.add_parser("status", help="查看端口策略三层状态")
+    port_status.add_argument("managed_path")
+    port_status.add_argument("local_path")
+    port_status.add_argument("effective_path")
+    port_status.add_argument("--mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
 
     return parser
 
@@ -251,7 +273,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "publish-salt":
         try:
-            plan = prepare_salt_publish(Path(args.release_dir), Path(args.desired_path), Path(args.salt_root), Path(args.component_locks))
+            plan = prepare_salt_publish(
+                Path(args.release_dir),
+                Path(args.desired_path),
+                Path(args.salt_root),
+                Path(args.component_locks),
+                Path(args.port_policy) if args.port_policy else None,
+                args.port_policy_mode,
+            )
         except FleetError as exc:
             print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
             return 2
@@ -260,7 +289,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "sync":
         try:
-            plan = build_sync_plan(Path(args.release_dir), Path(args.desired_path), Path(args.salt_root), args.target)
+            plan = build_sync_plan(
+                Path(args.release_dir),
+                Path(args.desired_path),
+                Path(args.salt_root),
+                args.target,
+                port_policy_enabled=args.port_policy_enabled,
+                port_policy_mode=args.port_policy_mode,
+            )
             if args.dry_run:
                 payload = {"dry_run": True, "plan": plan.to_dict()}
                 print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
@@ -307,8 +343,22 @@ def main(argv: list[str] | None = None) -> int:
                 desired = load_desired_state(desired_path)
             else:
                 raise FleetError("E_NODE_NOT_FOUND", "未指定 --select，且 runtime/desired.yaml 不存在")
-            publish_plan = prepare_salt_publish(release_dir, desired_path, Path(args.salt_root), Path(args.component_locks))
-            sync_plan = build_sync_plan(release_dir, desired_path, Path(args.salt_root), args.target)
+            publish_plan = prepare_salt_publish(
+                release_dir,
+                desired_path,
+                Path(args.salt_root),
+                Path(args.component_locks),
+                Path(args.port_policy) if args.port_policy else None,
+                args.port_policy_mode,
+            )
+            sync_plan = build_sync_plan(
+                release_dir,
+                desired_path,
+                Path(args.salt_root),
+                args.target,
+                port_policy_enabled=args.port_policy is not None,
+                port_policy_mode=args.port_policy_mode,
+            )
             rc = run_salt_sync(sync_plan, args.salt_bin)
         except (ComponentLockError, ConfigBuildError) as exc:
             print(str(exc), file=sys.stderr)
@@ -320,6 +370,39 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Salt 同步失败，退出码: {rc}", file=sys.stderr)
             return rc
         print(json.dumps({"status": "success", "desired": desired, "publish": publish_plan.to_dict(), "sync": sync_plan.to_dict()}, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "port-policy":
+        try:
+            if args.port_command == "build":
+                if args.dry_run:
+                    payload = {
+                        "dry_run": True,
+                        "mode": args.mode,
+                        "managed_path": args.managed_path,
+                        "local_path": args.local_path,
+                        "effective_path": args.effective_path,
+                    }
+                else:
+                    result = build_effective_policy(
+                        Path(args.managed_path),
+                        Path(args.local_path),
+                        Path(args.effective_path),
+                        mode=args.mode,
+                        lkg_path=Path(args.lkg_path) if args.lkg_path else None,
+                    )
+                    payload = result.to_dict()
+            else:
+                payload = port_policy_status(
+                    Path(args.managed_path),
+                    Path(args.local_path),
+                    Path(args.effective_path),
+                    mode=args.mode,
+                )
+        except PortPolicyError as exc:
+            print(f"{exc.error_code}: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
     parser.error("未知命令")

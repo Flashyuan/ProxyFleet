@@ -34,6 +34,12 @@ class SecurityContractTests(unittest.TestCase):
             self.assertIn('parsed.path == "/generate_204"', text)
             self.assertIn("not parsed.query", text)
 
+    def test_apply_desired_is_gated_by_port_policy_when_enabled(self):
+        text = (ROOT / "salt" / "states" / "proxyfleet" / "sync.sls").read_text(encoding="utf-8")
+        self.assertIn("proxyfleet-effective-port-policy:", text)
+        self.assertIn("- module: proxyfleet-effective-port-policy", text)
+        self.assertEqual(3, text.count("- fail_on_error: true"))
+
 
 if __name__ == "__main__":
     unittest.main()

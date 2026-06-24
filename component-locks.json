@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "generated_at": "2026-06-23",
+  "generated_at": "2026-06-24T00:00:00Z",
   "policy": {
     "no_floating_versions": true,
     "no_automatic_updates": true,
@@ -47,14 +47,27 @@
       "kind": "binary",
       "role": "data-plane",
       "version": "v1.19.27",
-      "status": "candidate",
+      "status": "installable",
       "source": "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.27",
       "architectures": [
         "linux-amd64",
         "linux-arm64"
       ],
+      "artifacts": {
+        "linux-amd64": {
+          "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-amd64-v1.19.27.gz",
+          "sha256": "fb3e34c55844f389ff54679e5a3aec331d5ec38006c20f8dcc476fb47768a58f",
+          "compression": "gzip",
+          "target_path": "/usr/local/bin/mihomo"
+        },
+        "linux-arm64": {
+          "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-linux-arm64-v1.19.27.gz",
+          "sha256": "87db0c6660a9557a901b5750f997967e71d8c0af07ea1d1dd4d04c28da7f7e6f",
+          "compression": "gzip",
+          "target_path": "/usr/local/bin/mihomo"
+        }
+      },
       "integrity": {
-        "sha256": null,
         "signature": "unknown"
       },
       "install_policy": {

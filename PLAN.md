@@ -1,7 +1,7 @@
 # ProxyFleet 工程化实施计划
 
-> 文档状态：Accepted Baseline v2.2
-> 更新日期：2026-06-23
+> 文档状态：Accepted Baseline v2.3
+> 更新日期：2026-06-24
 > 目标平台：Ubuntu Server 22.04 LTS（主基线）/ 24.04 LTS（兼容基线）
 > 核心选型：Salt 3008 LTS + Mihomo + subconverter + Git
 > 管理方式：纯命令行；不开发 Web UI；不以 SSH 作为日常控制平面
@@ -11,7 +11,7 @@
 
 ## 0. 文档目的
 
-本文定义 ProxyFleet 的产品边界、系统架构、配置构建、子节点接入、统一节点切换、ShellCrash 兼容、容器化边界、发布与回滚、测试验收，以及多 Subagent 协作和上下文恢复制度。
+本文定义 ProxyFleet 的产品边界、系统架构、配置构建、子节点接入、统一节点切换、ShellCrash 迁移边界、端口白名单分层配置、容器化边界、发布与回滚、测试验收，以及多 Subagent 协作和上下文恢复制度。
 
 以下文件与本计划共同组成规范，缺一不可：
 
@@ -35,13 +35,14 @@
 4. 所有严格受管子节点使用同一 release revision、同一文件 SHA-256 和同一 Mihomo 版本。
 5. 节点切换不重新生成 `config.yaml`，只改变 `FLEET_PROXY` 的期望选择。
 6. 日常控制使用 Salt Master/Minion，不使用 SSH 批量执行。
-7. 子节点不安装 ShellCrash；原生节点只安装 Salt Minion 和 Mihomo。已有 ShellCrash 节点优先复用其 Mihomo。
+7. 生产子节点统一使用 `native-mihomo`：生产机器应卸载 ShellCrash 后由 ProxyFleet Minion 安装并拥有 Mihomo；ShellCrash 仅作为迁移前只读探测和应急兼容工具。
 8. 订阅 URL 只保存在主节点；子节点只收到构建后的 Provider 快照。
 9. 每次执行操作类 `fleetctl` 命令时刷新订阅用量；失败时显示缓存和 stale 状态，不伪造剩余量。
 10. 不开发公开管理 API 和 Web UI；管理员在主节点使用 CLI。
 11. 管理端支持 Docker 化部署；子节点 V1 默认原生 systemd 部署，不要求 Docker。
 12. Git、ADR、契约、状态文件和测试证据是事实来源；聊天记忆不是事实来源。
 13. 固定 `GIT-SCM` 岗位负责仓库初始化、commit、tag、remote、push、错误处理和远端核验；其他 Subagent 不自行改写 Git 历史。
+14. 端口白名单采用分层所有权：Master 管理公共规则，Minion 保留本机 override，Master 不覆盖 `/etc/proxyfleet/local`。
 
 对应 ADR 见 `DECISIONS.md`。
 
@@ -57,7 +58,8 @@
 - 一条命令让某个分组所有在线子节点切换到同一稳定节点 ID；
 - 收集逐节点 READY/APPLIED/FAILED/OFFLINE 状态；
 - 离线节点恢复后自动追平最新 release 和 desired state；
-- 支持原生 Mihomo 节点和 ShellCrash/Mihomo 接管节点；
+- 支持生产原生 Mihomo 节点；ShellCrash 仅作为迁移前探测、卸载评估和应急兼容路径；
+- 支持 Master 统一端口白名单和 Minion 本地端口白名单分层合并；
 - 配置失败、订阅异常和节点切换失败均可回滚；
 - 只通过 CLI 管理；
 - 管理主节点可以选择原生或 Docker Compose 部署；
@@ -70,7 +72,7 @@ V1 不实现：
 - 业务流量经过中央网关；
 - 自研代理核心、TUN 栈或代理协议；
 - Web 面板；
-- ShellCrash/sing-box 的直接接管；
+- ShellCrash/sing-box 的生产接管；
 - 每台服务器单独的订阅账单；
 - Kubernetes；
 - 子节点全容器化透明代理；
@@ -84,10 +86,11 @@ V1 不实现：
 3. Salt Master 停机时，子节点继续使用最后有效配置和当前选择。
 4. 订阅服务返回空内容、HTML、5xx 或超时时不会覆盖有效 Provider。
 5. Ubuntu 22.04/24.04 原生节点均通过安装、重启、升级和回滚测试。
-6. 至少一台 ShellCrash/Mihomo 节点通过接管、重启持久性和解除接管测试。
+6. 至少一台真实 `native-mihomo` Minion 完成锁定 Mihomo 安装、release 应用、节点测速、节点选择和回滚验证。
 7. Docker 管理端通过备份恢复、镜像升级和 Salt 密钥持久化测试。
 8. 高风险网络配置必须先 canary，再批量发布。
 9. 首个工程提交可被远端 SHA 验证，后续每个发布可追溯到唯一 Git commit。
+10. 端口白名单 `merge/master-only/local-only/disabled` 四种模式均有 dry-run、应用和回滚证据；Minion 本地 override 不被 Master 覆盖。
 
 ---
 
@@ -113,10 +116,11 @@ V1 不实现：
                           │ Salt 4505/4506
             ┌─────────────┼─────────────┐
             ▼             ▼             ▼
-     原生节点 A       原生节点 B     ShellCrash 节点 C
-     salt-minion      salt-minion    salt-minion
-     mihomo.service   mihomo.service ShellCrash + Mihomo
-     localhost API    localhost API  localhost API
+     原生节点 A       原生节点 B       原生节点 C
+     salt-minion      salt-minion      salt-minion
+     mihomo.service   mihomo.service   mihomo.service
+     localhost API    localhost API    localhost API
+     local override   local override   local override
             └─────────────┬─────────────┘
                           ▼
                  统一选中的真实代理节点
@@ -460,30 +464,114 @@ HTTP response body    → 节点快照
 
 ---
 
-## 11. ShellCrash 兼容
+## 11. 端口白名单分层配置
 
-### 11.1 驱动状态
+生产节点的端口白名单由 Master 管理层和 Minion 本地层共同组成。该能力用于
+控制子节点本机入站端口策略，不用于管理订阅节点、代理协议或云厂商安全组。
+
+### 11.1 文件所有权
+
+```text
+/etc/proxyfleet/
+├── managed/
+│   └── port-policy.yaml       # Master 同步，可覆盖
+├── local/
+│   └── port-policy.yaml       # Minion 本机维护，Master 禁止覆盖
+└── effective/
+    └── port-policy.yaml       # Minion 合并生成，可覆盖
+```
+
+Master 只能写 `managed/`。Salt state 不得对 `/etc/proxyfleet/local` 使用
+`file.managed`、`file.recurse clean=True`、`file.absent` 或其它会覆盖/删除本机
+配置的操作。若需要创建目录，只能确保目录存在和权限正确。
+
+### 11.2 策略模式
+
+每台 Minion 必须显式或默认选择一个模式：
+
+- `merge`：默认，公共规则和本机规则合并；
+- `master-only`：只使用 Master 公共规则，忽略本机规则但不删除本机文件；
+- `local-only`：只使用本机规则，必须在状态报告中标记为策略例外；
+- `disabled`：ProxyFleet 不管理端口白名单，必须记录审计原因。
+
+`merge` 模式下，Master 规则和 local 规则都保留来源字段。若出现同一端口/协议
+的冲突，默认 fail-closed 并要求用户修正，不静默选择任一侧。
+
+### 11.3 建议 schema
+
+```yaml
+schema_version: "1.0"
+owner: master | local
+mode: merge
+allow:
+  - protocol: tcp
+    port: 22
+    source: 192.168.1.0/24
+    comment: ssh management
+deny: []
+```
+
+约束：
+
+- 端口必须是 `1..65535`，协议只能是 `tcp|udp`；
+- `source` 必须是 CIDR、明确 IP 或 `any`；
+- `local` 文件不得包含订阅 URL、节点凭据或 API secret；
+- Master 发布不得因为 local 文件不存在而失败；
+- local 文件语法错误时，不应用新的 effective 规则，保留 Last Known Good。
+
+### 11.4 CLI 与状态
+
+推荐入口：
+
+```text
+fleetctl port-policy build --target-group production --dry-run
+fleetctl port-policy apply --target-group production
+fleetctl port-policy status --target-group production
+```
+
+状态报告至少包含：
+
+- 当前模式；
+- managed/local/effective 三层文件 SHA-256；
+- 本地 override 是否存在；
+- 冲突列表；
+- Last Known Good effective 文件；
+- 最近一次应用结果和错误码。
+
+---
+
+## 11A. ShellCrash 迁移边界
+
+### 11A.1 驱动状态
 
 - `NATIVE_MIHOMO`：ProxyFleet 安装并拥有 Mihomo；
-- `SHELLCRASH_ADOPTED`：保留 ShellCrash/Mihomo，ProxyFleet 管理最终 release、Provider 和选择；
-- `SHELLCRASH_COMPAT`：仅控制已存在的统一策略组，作为迁移态；
+- `SHELLCRASH_DISCOVERY`：只读探测 ShellCrash、Mihomo 版本、路径和 API 能力；
+- `SHELLCRASH_COMPAT`：仅用于迁移窗口内的有限应急操作；
 - `UNSUPPORTED`：ShellCrash 使用 sing-box、API 不可持久化或环境未知。
 
-### 11.2 接管原则
+### 11A.2 迁移原则
 
-1. 不启动第二个 Mihomo；
-2. 不直接编辑临时运行配置；
-3. 先只读探测和完整备份；
-4. 必须使用 Mihomo 内核；
-5. 受管策略组固定名为 `FLEET_PROXY`；
-6. Mihomo API 仅本机访问；
-7. ShellCrash 与 ProxyFleet 不得同时拥有同一 Provider 或最终 `config.yaml`；
-8. 接管后验证 ShellCrash 重启和服务器重启持久性；
-9. 任何未知差异 fail-closed。
+1. 生产目标是卸载 ShellCrash 后进入 `native-mihomo`；
+2. 迁移前只读探测版本、目录、内核类型、API 和现有代理能力；
+3. 不猜测 ShellCrash 私有路径；
+4. 不启动第二个 Mihomo；
+5. 不让 ShellCrash 与 ProxyFleet 同时拥有同一 `config.yaml`；
+6. 迁移窗口必须保留回滚说明和原始配置备份；
+7. 不满足条件时 fail-closed，不进入生产发布。
 
-### 11.3 完全同配置的约束
+### 11A.3 推荐迁移路径
 
-若要求所有服务器 `config.yaml` 哈希完全一致，ShellCrash 节点必须进入 `SHELLCRASH_ADOPTED`，关闭 ShellCrash 对相同配置的自动生成/覆盖；兼容模式只能保证受管 Provider 和选择一致，不能保证最终配置完全相同。
+```text
+只读探测 ShellCrash
+→ 导出现有订阅/自建节点信息
+→ 备份 ShellCrash 配置
+→ 停止并卸载 ShellCrash
+→ 安装 ProxyFleet Minion
+→ native-mihomo 端到端 apply
+→ 验证代理、端口白名单和重启持久性
+```
+
+V1 不以 ShellCrash adopted 作为生产成功条件。
 
 ---
 
@@ -498,7 +586,7 @@ HTTP response body    → 节点快照
 构建器/subconverter：一次性容器
 子节点 Salt Minion：宿主机 systemd
 子节点 Mihomo：宿主机 systemd
-已有 ShellCrash：宿主机保留
+已有 ShellCrash：迁移前只读探测和备份，生产目标为卸载后进入 native-mihomo
 ```
 
 ### 12.2 为什么管理端适合 Docker
@@ -530,7 +618,7 @@ HTTP response body    → 节点快照
 
 透明代理需要宿主机 TUN、路由、nftables 和网络能力。容器化后通常需要 `network_mode: host`、`CAP_NET_ADMIN`、`CAP_NET_RAW`、`/dev/net/tun` 和宿主机目录挂载；这显著削弱隔离，还会增加与 Docker 自身网络规则冲突的风险。
 
-Salt Minion 若要管理宿主机 systemd、文件、路由和 ShellCrash，也需要大量宿主机权限和挂载，复杂度高于原生安装。
+Salt Minion 若要管理宿主机 systemd、文件、路由和本地端口白名单，也需要大量宿主机权限和挂载，复杂度高于原生安装。
 
 ### 12.5 支持级别
 
@@ -642,8 +730,8 @@ fleetctl apply --select <node-id> --target-group production
 ```
 
 `apply` 负责刷新订阅和用量、构建不可变 release、使用锁定版本 Mihomo 离线校验、
-发布 release 和 desired 到 Salt file_roots、通过 Salt 同步到目标 Minion，并输出
-convergence report。
+发布 release、desired 和 managed port policy 到 Salt file_roots、通过 Salt 同步到
+目标 Minion，并输出 convergence report。
 
 `select` 负责第 9 节 PREPARE/COMMIT 流程，只改变 `FLEET_PROXY` 期望选择，
 不重建 `config.yaml`。
@@ -677,7 +765,8 @@ convergence report。
 - UFW 开启/关闭；
 - IPv4-only 和双栈；
 - Docker 已安装但 Mihomo 原生运行；
-- ShellCrash/Mihomo canary；
+- native-mihomo canary；
+- ShellCrash 卸载迁移前只读探测；
 - Salt Master 原生与 Docker 两种管理端。
 
 ### 16.2 测试层级
@@ -688,8 +777,9 @@ convergence report。
 - 集成：构建器、Salt State、原生 Mihomo；
 - 故障注入：订阅 5xx、空文件、Master 重启、Minion 离线、API 失败、磁盘满；
 - 故障注入：测速 API 超时、节点不存在、provider 不一致、健康检查 URL 被拒绝、限频；
+- 故障注入：端口白名单冲突、local 语法错误、managed 同步失败、effective 应用失败；
 - 网络安全：SSH 不断联、metadata 可达、入站服务响应不被误代理；
-- 升级/回滚：Salt、Mihomo、Docker 控制面和 ShellCrash 接管。
+- 升级/回滚：Salt、Mihomo、Docker 控制面、端口白名单和 ShellCrash 卸载迁移。
 
 ### 16.3 节点测速显示验收
 
@@ -712,6 +802,26 @@ convergence report。
   Mihomo API 不可用、reload/restart 失败和回滚失败必须 fail-closed；
 - QA-RELEASE 或 SECURITY 任一阻断时，不得标记为发布可用。
 
+### 16.5 native-mihomo 端到端验收
+
+- `component-locks.json` 必须记录目标架构 Mihomo 资产 URL、SHA-256、压缩格式和
+  期望版本输出；
+- `install_mihomo` 必须支持 `.gz` 解压安装，下载文件和最终二进制均有可复现
+  校验证据；
+- Ubuntu 22.04 x86_64 至少完成一次真实 Minion 端到端：bootstrap、key 人工核验、
+  Mihomo 安装、systemd 启动、release 应用、`FLEET_PROXY` 选择、测速和回滚；
+- 缺 SHA、SHA 不匹配、gzip 解压失败、版本不匹配、systemd 启动失败必须
+  fail-closed，不能覆盖 Last Known Good。
+
+### 16.6 端口白名单与本地 override 验收
+
+- Master 发布 managed port policy 后，Minion 可生成 effective policy；
+- `/etc/proxyfleet/local/port-policy.yaml` 存在时，Salt 同步不得覆盖、删除或清空；
+- `merge/master-only/local-only/disabled` 四种模式均有 dry-run 和状态输出；
+- local 语法错误或冲突时不应用新的 effective policy，保留 Last Known Good；
+- 状态报告必须展示 managed/local/effective SHA-256 和策略模式；
+- 端口白名单变更必须 canary，避免误关闭当前管理连接。
+
 ---
 
 ## 17. 实施阶段
@@ -733,17 +843,23 @@ convergence report。
 
 ### Phase 3：原生节点
 
-实现 Mihomo 安装、systemd、本机 API、release 切换、TUN/proxy-only profiles、
-节点健康检查/测速和回滚。
+按以下顺序实现：
+
+1. 补齐 Mihomo 固定资产 URL、SHA-256、gzip 解压安装和版本校验；
+2. 完成真实 `native-mihomo` Minion 端到端；
+3. 增加端口白名单分层配置；
+4. 增加 Minion 本地 override 保护机制；
+5. 完成 TUN/proxy-only profiles、节点健康检查/测速和回滚。
 
 ### Phase 4：统一节点切换
 
 实现稳定 node_id、PREPARE/COMMIT、strict/best-effort、验证、漂移、补偿回滚、
 节点测速显示和 convergence report。
 
-### Phase 5：ShellCrash
+### Phase 5：ShellCrash 迁移工具
 
-先只读探测，再 switch-only，最后 adopted release；每一步都有脱离和恢复测试。
+只保留只读探测、配置导出、卸载前备份和迁移核验；不作为生产主路径，不要求
+ShellCrash 接管式发布进入 V1 成功条件。
 
 ### Phase 6：Docker 管理端
 

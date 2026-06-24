@@ -59,8 +59,8 @@ Mihomo 必须锁定具体版本和二进制 SHA-256。
 - 每个 Mihomo 二进制必须记录下载来源、版本、平台架构和 SHA-256；
 - 安装前必须校验 SHA-256，校验失败立即停止；
 - release manifest 必须记录 Mihomo 版本；
-- 所有严格受管节点必须运行同一已批准 Mihomo 版本；
-- ShellCrash adopted 节点复用现有 Mihomo 时，必须记录探测到的版本和兼容性结论，未知差异 fail-closed。
+- 所有严格受管生产节点必须运行同一已批准 Mihomo 版本；
+- 已有 ShellCrash 节点应在迁移前备份和卸载，再由 ProxyFleet 安装锁定 Mihomo。
 
 禁止：
 

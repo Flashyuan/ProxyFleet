@@ -47,6 +47,10 @@
     https://docs.saltproject.io/salt/install-guide/en/latest/topics/install-by-operating-system/linux-deb.html
     用途：确认 Salt DEB 官方仓库位于 `https://packages.broadcom.com/artifactory/saltproject-deb/`，并确认可安装精确版本 `3008.1`；项目脚本直接写固定仓库地址，不使用 `releases/latest/download/salt.sources`。访问：2026-06-24。
 
+11. MetaCubeX/mihomo v1.19.27 release assets
+    https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.27
+    用途：锁定 Mihomo `linux-amd64` 与 `linux-arm64` gzip 资产 URL 和 SHA-256。访问：2026-06-24。
+
 ## Docker
 
 10. Docker host network driver
