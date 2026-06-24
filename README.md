@@ -4,7 +4,9 @@
 > 日期：2026-06-23
 > 目标系统：Ubuntu Server 22.04 LTS（主基线）、Ubuntu Server 24.04 LTS（兼容基线）
 
-本目录是 ProxyFleet 的完整工程治理与实施文档基线。当前仍处于架构与工程准备阶段，不包含生产代码。
+本目录是 ProxyFleet 的完整工程治理与实施文档基线，并包含当前 POC 代码。
+已实现的主干能力包括组件锁校验、release 构建、订阅状态解析、代理节点目录、
+desired state 写入、Mihomo API 节点选择和 Salt 同步计划。
 
 ## 入口
 
@@ -16,6 +18,26 @@
 6. [docs/GIT_OPERATIONS.md](docs/GIT_OPERATIONS.md)：Git 初始化、提交、推送、错误处理和远端验证。
 7. [docs/DEPLOYMENT_DOCKER.md](docs/DEPLOYMENT_DOCKER.md)：Docker 可行性、边界和推荐部署方式。
 8. [SOURCES.md](SOURCES.md)：外部事实与官方证据索引。
+
+## 当前 CLI 快速入口
+
+```bash
+PYTHONPATH=src python3 -m proxyfleet.cli build-release \
+  tests/fixtures/config-src releases --revision 1 \
+  --source-git-commit "$(git rev-parse HEAD)" \
+  --component-locks component-locks.json
+
+PYTHONPATH=src python3 -m proxyfleet.cli nodes releases/000001
+
+PYTHONPATH=src python3 -m proxyfleet.cli select-node \
+  releases/000001 runtime --node-id <node-id>
+
+PYTHONPATH=src python3 -m proxyfleet.cli publish-salt \
+  releases/000001 runtime/desired.yaml /srv/salt
+
+PYTHONPATH=src python3 -m proxyfleet.cli sync \
+  releases/000001 runtime/desired.yaml /srv/salt --target '*' --dry-run
+```
 
 ## 固定 Subagent 岗位
 

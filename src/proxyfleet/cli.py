@@ -9,6 +9,19 @@ from pathlib import Path
 
 from .component_locks import ComponentLockError, assert_valid_lock_file
 from .config_build import BuildOptions, ConfigBuildError, build_release, verify_release
+from .fleet import (
+    FleetError,
+    MihomoClient,
+    build_desired_state,
+    build_node_catalog,
+    build_sync_plan,
+    load_desired_state,
+    prepare_salt_publish,
+    run_salt_sync,
+    select_node,
+    write_desired_state,
+    write_node_catalog,
+)
 from .subscription import SubscriptionError, build_subscription_status
 
 
@@ -33,6 +46,35 @@ def build_parser() -> argparse.ArgumentParser:
     subscription_status.add_argument("--provider-id", default="provider", help="Provider ID")
     subscription_status.add_argument("--header", default=None, help="Subscription-Userinfo 头内容")
     subscription_status.add_argument("--body-file", default=None, help="订阅正文文件；省略时使用占位正文")
+
+    nodes = subparsers.add_parser("nodes", help="查看 release 内可选代理节点")
+    nodes.add_argument("release_dir", help="release 目录")
+    nodes.add_argument("--write-catalog", action="store_true", help="写入 release/node-catalog.json")
+
+    select = subparsers.add_parser("select-node", help="选择代理节点并写入 desired state")
+    select.add_argument("release_dir", help="release 目录")
+    select.add_argument("runtime_dir", help="runtime 目录")
+    select.add_argument("--node-id", required=True, help="稳定 node_id")
+    select.add_argument("--target-group", default="production", help="目标分组")
+    select.add_argument("--connection-policy", default="preserve", choices=["preserve"], help="连接处理策略")
+    select.add_argument("--mihomo-api", default=None, help="可选：本机 Mihomo API，例如 http://127.0.0.1:9090")
+    select.add_argument("--mihomo-secret", default=None, help="可选：Mihomo API secret；不会写入 desired state")
+
+    desired = subparsers.add_parser("desired-status", help="查看 desired state")
+    desired.add_argument("desired_path", help="desired.yaml 路径")
+
+    publish = subparsers.add_parser("publish-salt", help="复制 release/desired 到 Salt file_roots")
+    publish.add_argument("release_dir", help="release 目录")
+    publish.add_argument("desired_path", help="desired.yaml 路径")
+    publish.add_argument("salt_root", help="Salt file_roots 根目录")
+
+    sync = subparsers.add_parser("sync", help="通过 Salt 同步 release 并应用节点选择")
+    sync.add_argument("release_dir", help="release 目录")
+    sync.add_argument("desired_path", help="desired.yaml 路径")
+    sync.add_argument("salt_root", help="Salt file_roots 根目录")
+    sync.add_argument("--target", default="*", help="Salt target")
+    sync.add_argument("--salt-bin", default="salt", help="salt 命令路径")
+    sync.add_argument("--dry-run", action="store_true", help="只输出同步计划，不执行 Salt")
 
     return parser
 
@@ -84,6 +126,82 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 2
         print(json.dumps(status.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "nodes":
+        try:
+            nodes = [entry.to_dict() for entry in build_node_catalog(Path(args.release_dir))]
+            payload = {"schema_version": "1.0", "nodes": nodes}
+            if args.write_catalog:
+                payload["catalog_path"] = str(write_node_catalog(Path(args.release_dir)))
+        except FleetError as exc:
+            print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
+            return 2
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "select-node":
+        try:
+            if args.mihomo_api:
+                desired = build_desired_state(
+                    Path(args.release_dir),
+                    Path(args.runtime_dir),
+                    node_id=args.node_id,
+                    target_group=args.target_group,
+                    connection_policy=args.connection_policy,
+                )
+                MihomoClient(args.mihomo_api, args.mihomo_secret).select_node(
+                    desired["managed_policy_group"],
+                    desired["selected_mihomo_name"],
+                )
+                write_desired_state(Path(args.runtime_dir) / "desired.yaml", desired)
+            else:
+                desired = select_node(
+                    Path(args.release_dir),
+                    Path(args.runtime_dir),
+                    node_id=args.node_id,
+                    target_group=args.target_group,
+                    connection_policy=args.connection_policy,
+                )
+        except FleetError as exc:
+            print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
+            return 2
+        print(json.dumps(desired, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "desired-status":
+        try:
+            desired = load_desired_state(Path(args.desired_path))
+        except FleetError as exc:
+            print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
+            return 2
+        print(json.dumps(desired, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "publish-salt":
+        try:
+            plan = prepare_salt_publish(Path(args.release_dir), Path(args.desired_path), Path(args.salt_root))
+        except FleetError as exc:
+            print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
+            return 2
+        print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "sync":
+        try:
+            plan = build_sync_plan(Path(args.release_dir), Path(args.desired_path), Path(args.salt_root), args.target)
+            if args.dry_run:
+                payload = {"dry_run": True, "plan": plan.to_dict()}
+                print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+                return 0
+            rc = run_salt_sync(plan, args.salt_bin)
+        except FleetError as exc:
+            print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
+            return 2
+        if rc != 0:
+            print(f"Salt 同步失败，退出码: {rc}", file=sys.stderr)
+            return rc
+        print(json.dumps({"status": "success", "plan": plan.to_dict()}, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
     parser.error("未知命令")

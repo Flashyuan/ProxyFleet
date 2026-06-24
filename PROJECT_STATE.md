@@ -2,8 +2,8 @@
 
 > State 版本：1.1
 > 更新时间：2026-06-23
-> 当前阶段：Phase 1 / Subscription Cache POC
-> 当前 Git commit：7cd89810e409b4210d7e694f4d9c71e9664c7798（组件锁定基线 commit 已推送并核验远端 SHA）
+> 当前阶段：Phase 2 / Proxy Selection Sync POC
+> 当前 Git commit：TP-0015 提交完成后以 Git 远端核验结果为准
 
 ## 1. 当前结论
 
@@ -20,6 +20,7 @@
 - `ACCEPTED`：安装和发布必须使用固定开源组件版本；禁止 `latest`、浮动 tag 和自动升级关键组件。
 - `VERIFIED-TEST`：本地配置源校验与 release compiler POC 可生成 release manifest 并验证文件哈希。
 - `VERIFIED-TEST`：订阅状态解析与 Provider 级 Last Known Good 缓存 POC 可阻止空正文/HTML/失败覆盖有效快照。
+- `VERIFIED-TEST`：代理节点目录、desired state、Mihomo API PUT 后 GET 验证、Salt publish/sync dry-run 已有本地 POC 和单元测试。
 
 ## 2. 当前产物
 
@@ -41,17 +42,18 @@
 - [x] 组件版本锁定清单与本地校验工具
 - [x] 配置源校验与 release compiler POC
 - [x] 订阅状态解析与 Provider 级 Last Known Good 缓存 POC
+- [x] 代理配置、节点选择与 Salt 同步 POC
 - [ ] 测试环境
-- [ ] 可运行 POC
+- [x] 可运行 POC
 
 ## 3. Workstream 状态
 
 | Workstream | Owner | 状态 | 当前输出 | 阻塞 |
 |---|---|---|---|---|
 | 产品规格 | PRODUCT-SPEC | BASELINED | PLAN 目标/非目标/验收 | 需真实 CLI 场景评审 |
-| Salt 控制平面 | CONTROL-SALT | READY | TP-0012 Salt 3008.1 POC | 需 Ubuntu 测试机 |
-| 配置构建 | CONFIG-BUILD | ACTIVE | release compiler + subscription cache POC | 需真实订阅/subconverter 集成 |
-| Mihomo 数据面 | DATA-MIHOMO | BASELINED | Native driver 最小契约 | 需 Ubuntu 测试机 |
+| Salt 控制平面 | CONTROL-SALT | ACTIVE | 安装脚本 + publish/sync state POC | 需真实 Minion 验证 |
+| 配置构建 | CONFIG-BUILD | ACTIVE | release compiler + subscription cache + node catalog POC | 需真实订阅/subconverter 集成 |
+| Mihomo 数据面 | DATA-MIHOMO | ACTIVE | Mihomo API select driver POC | 需 Ubuntu 测试机 |
 | ShellCrash 兼容 | COMPAT-SHELLCRASH | NOT_STARTED | 接管状态模型 | 需样本版本 |
 | Docker/平台 | OPS-PLATFORM | BASELINED | ADR-0004、Docker 文档 | 需 Compose POC |
 | 安全 | SECURITY | ACTIVE | 供应链版本锁定基线 | 需正式威胁模型 |
@@ -75,6 +77,7 @@
 8. 组件锁定清单中 Mihomo/subconverter/Docker 镜像仍是 candidate/planned；进入 installable 前必须补齐 SHA-256 或 digest。
 9. release compiler POC 当前只支持本地 `local_file` Provider fixture，尚未接入真实订阅和 subconverter。
 10. Last Known Good 当前仅覆盖 Provider 快照层，尚未实现 release 指针和节点回滚层。
+11. 代理选择 POC 当前通过本地 Mihomo API mock 验证，尚未在真实 Mihomo/Salt Minion 上完成端到端验证。
 
 ## 6. 风险/阻塞
 
@@ -99,6 +102,7 @@
 - TP-0011：配置源校验与 release compiler POC；Owner CONFIG-BUILD；状态 ACTIVE。
 - TP-0012：Salt 3008.1 原生 Master/Minion POC；Owner CONTROL-SALT；状态 READY，等待测试机。
 - TP-0013：订阅状态解析与 Last Known Good 缓存 POC；Owner CONFIG-BUILD；状态 ACTIVE。
+- TP-0015：代理配置、节点选择与 Salt 同步闭环；Owner ARCH-ORCH；状态 ACTIVE。
 
 除 TP-0002 外，其余任务尚未创建正式 Task Packet，不得视为已开始。TP-0002 只可在获得完整 Git 输入后进入 ACTIVE。
 
@@ -126,4 +130,4 @@ remote_expected_state   已观察：main 初始不存在，已由 bootstrap push
 - `VERIFIED-TEST`：组件锁校验工具通过 `component-locks.json`，单元测试 6 项通过。
 - `VERIFIED-TEST`：release compiler POC 单元测试 14 项通过，可构建并校验 `manifest.json`、`manifest.sha256` 和 release 文件哈希。
 - `VERIFIED-TEST`：订阅状态/LKG POC 单元测试纳入总计 24 项；CLI 可输出脱敏 subscription status JSON。
-- 当前没有实际代码或自动化测试，因此所有“实现能力”和“已推送”状态仍为 UNKNOWN/未开始。
+- `VERIFIED-TEST`：代理配置/节点选择/同步 POC 单元测试纳入总计 32 项；CLI fixture 可完成 build-release、nodes、select-node、publish-salt、sync --dry-run，并对未知 node_id 返回 `E_NODE_NOT_FOUND`。
