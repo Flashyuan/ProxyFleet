@@ -345,7 +345,11 @@ def prompt_line(typed):
     return f"请输入节点序号: {typed}"
 
 
-def render_initial(fd, typed):
+def compact_prompt_line(typed):
+    return f"{summary_line()} | 请输入节点序号: {typed}"
+
+
+def render_initial(fd, typed, inline_updates):
     chunks = [
         "ProxyFleet 实时测速选择菜单\n",
         summary_line() + "\n",
@@ -353,7 +357,11 @@ def render_initial(fd, typed):
     ]
     for item in state:
         chunks.append(node_line(item) + "\n")
-    chunks.append("\n" + prompt_line(typed))
+    if inline_updates:
+        chunks.append("\n" + prompt_line(typed))
+    else:
+        chunks.append("\n节点数量超过当前终端可见高度，已切换为安全显示模式：不跨屏改写节点行。\n")
+        chunks.append(compact_prompt_line(typed))
     write_tty(fd, "".join(chunks))
 
 
@@ -375,6 +383,17 @@ def update_prompt(fd, typed):
     write_tty(fd, "\r\033[K" + prompt_line(typed))
 
 
+def update_compact_prompt(fd, typed):
+    write_tty(fd, "\r\033[K" + compact_prompt_line(typed))
+
+
+def terminal_height(fd):
+    try:
+        return os.get_terminal_size(fd).lines
+    except OSError:
+        return 24
+
+
 for _ in range(min(concurrency, len(state))):
     threading.Thread(target=worker, daemon=True).start()
 typed = ""
@@ -385,7 +404,9 @@ try:
     old = termios.tcgetattr(fd)
     try:
         tty.setcbreak(fd)
-        render_initial(fd, typed)
+        terminal_rows = terminal_height(fd)
+        inline_updates = len(state) + 6 <= terminal_rows
+        render_initial(fd, typed, inline_updates)
         next_summary = time.monotonic() + 1.0
         while selected is None:
             changed = False
@@ -398,13 +419,17 @@ try:
                     item = state[result["index"] - 1]
                     item.update(result)
                     changed_item = dict(item)
-                update_node(fd, changed_item, typed)
+                if inline_updates:
+                    update_node(fd, changed_item, typed)
                 changed = True
-            if changed:
+            if changed and inline_updates:
                 update_summary(fd, typed)
             now = time.monotonic()
             if now >= next_summary:
-                update_summary(fd, typed)
+                if inline_updates:
+                    update_summary(fd, typed)
+                else:
+                    update_compact_prompt(fd, typed)
                 next_summary = now + 1.0
             readable, _, _ = select.select([fd], [], [], 0.1)
             if not readable:
@@ -415,13 +440,22 @@ try:
                     selected = int(typed)
                     break
                 typed = ""
-                update_prompt(fd, typed)
+                if inline_updates:
+                    update_prompt(fd, typed)
+                else:
+                    update_compact_prompt(fd, typed)
             elif ch in ("\x7f", "\b"):
                 typed = typed[:-1]
-                update_prompt(fd, typed)
+                if inline_updates:
+                    update_prompt(fd, typed)
+                else:
+                    update_compact_prompt(fd, typed)
             elif ch.isdigit():
                 typed += ch
-                update_prompt(fd, typed)
+                if inline_updates:
+                    update_prompt(fd, typed)
+                else:
+                    update_compact_prompt(fd, typed)
             elif ch in ("\x03", "\x04"):
                 raise KeyboardInterrupt
     finally:

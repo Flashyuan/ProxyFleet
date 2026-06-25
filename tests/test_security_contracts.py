@@ -48,7 +48,12 @@ class SecurityContractTests(unittest.TestCase):
         self.assertIn("def update_node", text)
         self.assertIn("def update_summary", text)
         self.assertIn("def update_prompt", text)
+        self.assertIn("def update_compact_prompt", text)
+        self.assertIn("def terminal_height", text)
+        self.assertIn("inline_updates = len(state) + 6 <= terminal_rows", text)
+        self.assertIn("安全显示模式", text)
         self.assertIn("update_relative_line", text)
+        self.assertIn("if inline_updates:\n                    update_node", text)
         self.assertNotIn("\\033[H\\033[J", text)
         self.assertNotIn("\\033[2J", text)
 
