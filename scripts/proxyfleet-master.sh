@@ -319,7 +319,7 @@ def write_tty(fd, text):
     os.write(fd, text.encode("utf-8", errors="replace"))
 
 
-def draw(fd, typed):
+def summary_counts():
     with lock:
         rows = list(state)
     done = sum(1 for item in rows if item["status"] != "pending")
@@ -327,18 +327,52 @@ def draw(fd, typed):
     timeout = sum(1 for item in rows if item["status"] == "timeout")
     failed = sum(1 for item in rows if item["status"] == "failed")
     elapsed = int(time.monotonic() - started)
+    return done, ok, timeout, failed, elapsed
+
+
+def summary_line():
+    done, ok, timeout, failed, elapsed = summary_counts()
+    return f"进度 {done}/{len(state)} ok={ok} timeout={timeout} failed={failed} elapsed={elapsed}s 并发={concurrency}"
+
+
+def node_line(item):
+    delay = f"{item['delay']}ms" if isinstance(item.get("delay"), int) else "-"
+    status = item["status"]
+    return f"{item['index']:4d}. {visible_name(item['name']):58s}  [{status} {delay}]"
+
+
+def prompt_line(typed):
+    return f"请输入节点序号: {typed}"
+
+
+def render_initial(fd, typed):
     chunks = [
-        "\033[H\033[J",
         "ProxyFleet 实时测速选择菜单\n",
-        f"进度 {done}/{len(rows)} ok={ok} timeout={timeout} failed={failed} elapsed={elapsed}s 并发={concurrency}\n",
+        summary_line() + "\n",
         "输入序号并回车即可选择；测速未完成也可以直接选择。\n\n",
     ]
-    for item in rows:
-        delay = f"{item['delay']}ms" if isinstance(item.get("delay"), int) else "-"
-        status = item["status"]
-        chunks.append(f"{item['index']:4d}. {visible_name(item['name']):58s}  [{status} {delay}]\n")
-    chunks.append(f"\n请输入节点序号: {typed}")
+    for item in state:
+        chunks.append(node_line(item) + "\n")
+    chunks.append("\n" + prompt_line(typed))
     write_tty(fd, "".join(chunks))
+
+
+def update_relative_line(fd, prompt_row, target_row, text, typed):
+    # 菜单只打印一次，后续用相对光标移动更新单行，避免整屏闪烁。
+    up = prompt_row - target_row
+    write_tty(fd, f"\033[{up}A\r\033[K{text}\033[{up}B\r\033[K{prompt_line(typed)}")
+
+
+def update_summary(fd, typed):
+    update_relative_line(fd, prompt_row=len(state) + 6, target_row=2, text=summary_line(), typed=typed)
+
+
+def update_node(fd, item, typed):
+    update_relative_line(fd, prompt_row=len(state) + 6, target_row=item["index"] + 4, text=node_line(item), typed=typed)
+
+
+def update_prompt(fd, typed):
+    write_tty(fd, "\r\033[K" + prompt_line(typed))
 
 
 for _ in range(min(concurrency, len(state))):
@@ -351,8 +385,10 @@ try:
     old = termios.tcgetattr(fd)
     try:
         tty.setcbreak(fd)
-        next_draw = 0.0
+        render_initial(fd, typed)
+        next_summary = time.monotonic() + 1.0
         while selected is None:
+            changed = False
             while True:
                 try:
                     result = updates.get_nowait()
@@ -361,10 +397,15 @@ try:
                 with lock:
                     item = state[result["index"] - 1]
                     item.update(result)
+                    changed_item = dict(item)
+                update_node(fd, changed_item, typed)
+                changed = True
+            if changed:
+                update_summary(fd, typed)
             now = time.monotonic()
-            if now >= next_draw:
-                draw(fd, typed)
-                next_draw = now + 0.25
+            if now >= next_summary:
+                update_summary(fd, typed)
+                next_summary = now + 1.0
             readable, _, _ = select.select([fd], [], [], 0.1)
             if not readable:
                 continue
@@ -374,16 +415,19 @@ try:
                     selected = int(typed)
                     break
                 typed = ""
+                update_prompt(fd, typed)
             elif ch in ("\x7f", "\b"):
                 typed = typed[:-1]
+                update_prompt(fd, typed)
             elif ch.isdigit():
                 typed += ch
+                update_prompt(fd, typed)
             elif ch in ("\x03", "\x04"):
                 raise KeyboardInterrupt
     finally:
         stop_event.set()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        write_tty(fd, "\033[H\033[J")
+        write_tty(fd, "\n")
 finally:
     os.close(fd)
 

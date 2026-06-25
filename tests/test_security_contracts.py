@@ -42,6 +42,16 @@ class SecurityContractTests(unittest.TestCase):
         self.assertNotIn('open("/dev/tty", "r+"', text)
         self.assertNotIn(".seek(", text)
 
+    def test_live_health_menu_updates_lines_without_fullscreen_redraw(self):
+        text = (ROOT / "scripts" / "proxyfleet-master.sh").read_text(encoding="utf-8")
+        self.assertIn("def render_initial", text)
+        self.assertIn("def update_node", text)
+        self.assertIn("def update_summary", text)
+        self.assertIn("def update_prompt", text)
+        self.assertIn("update_relative_line", text)
+        self.assertNotIn("\\033[H\\033[J", text)
+        self.assertNotIn("\\033[2J", text)
+
     def test_proxyfleet_sync_sls_has_unique_state_ids(self):
         text = (ROOT / "salt" / "states" / "proxyfleet" / "sync.sls").read_text(encoding="utf-8")
         state_ids = []
