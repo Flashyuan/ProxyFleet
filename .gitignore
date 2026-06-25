@@ -21,6 +21,7 @@ dist/
 *.pid
 
 # Subscription snapshots and local overrides
+config-src/
 providers-cache/
 subscriptions-cache/
 *.yaml

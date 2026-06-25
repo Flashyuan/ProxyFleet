@@ -161,7 +161,7 @@ def fetch_subscription_url(url: str, *, timeout: float = 15.0) -> tuple[bytes, s
     request = urllib.request.Request(url, headers={"User-Agent": "ProxyFleet/0.1"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            status = getattr(response, "status", 200)
+            status = getattr(response, "status", 200) or 200
             if status < 200 or status >= 300:
                 raise SubscriptionError("E_SUB_FETCH: 订阅 HTTP 状态失败")
             header = response.headers.get("Subscription-Userinfo")

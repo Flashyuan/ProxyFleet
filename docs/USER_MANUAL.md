@@ -98,6 +98,29 @@ sudo salt '<minion-id>' test.ping
 
 配置源在 Master 的 `config-src/` 目录。
 
+推荐使用 Master TUI 的一键订阅流程：
+
+```text
+节点配置相关 -> 快速添加订阅 URL 并生成可用配置
+```
+
+你只需要输入：
+
+```text
+订阅名称
+订阅 URL
+```
+
+TUI 会自动生成最小可用的 `base.json`、`providers.json`、`groups.json`、
+`rules.json`，把订阅 URL 保存到本地 `.env.proxyfleet`，并构建 release。
+构建完成后进入：
+
+```text
+节点配置相关 -> 选择节点并同步到 Minion
+```
+
+即可在 TUI 中选择节点并同步给所有 Minion。
+
 常见文件：
 
 ```text

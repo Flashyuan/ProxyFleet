@@ -185,6 +185,36 @@ preview_write() {
   printf '  - %s\n' "$@"
 }
 
+load_local_env() {
+  local env_file="${PROJECT_ROOT}/.env.proxyfleet"
+  if [[ -f "${env_file}" ]]; then
+    while IFS='=' read -r key value; do
+      [[ -n "${key}" ]] || continue
+      export "${key}=${value}"
+    done < <(python3 - "${env_file}" <<'PY'
+import re
+import shlex
+import sys
+from pathlib import Path
+
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    try:
+        parts = shlex.split(line)
+    except ValueError:
+        continue
+    if len(parts) != 2 or parts[0] != "export" or "=" not in parts[1]:
+        continue
+    key, value = parts[1].split("=", 1)
+    if re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+        print(f"{key}={value}")
+PY
+)
+  fi
+}
+
 write_subscription_provider() {
   local provider_id="$1"
   local env_name="$2"
@@ -222,6 +252,155 @@ path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) +
 PY
 }
 
+next_release_revision() {
+  local latest
+  latest="$(latest_release_dir || true)"
+  if [[ -n "${latest}" ]]; then
+    printf '%d\n' "$((10#$(basename "${latest}") + 1))"
+  else
+    printf '1\n'
+  fi
+}
+
+quick_subscription_tui() {
+  local display_name subscription_url revision source_commit env_file
+  read -r -p "请给这个订阅取一个名（例如 airport-main）: " display_name
+  [[ -n "${display_name}" ]] || die "订阅名称不能为空"
+  read -r -p "请输入订阅 URL: " subscription_url
+  [[ -n "${subscription_url}" && "${subscription_url}" == *"://"* ]] || die "订阅 URL 无效"
+
+  env_file="${PROJECT_ROOT}/.env.proxyfleet"
+  revision="$(next_release_revision)"
+  source_commit="$(git -C "${PROJECT_ROOT}" rev-parse --short HEAD 2>/dev/null || echo local)"
+  preview_write "medium" \
+    "生成/更新 ${PROJECT_ROOT}/config-src/base.json" \
+    "生成/更新 ${PROJECT_ROOT}/config-src/providers.json" \
+    "生成/更新 ${PROJECT_ROOT}/config-src/groups.json" \
+    "生成/更新 ${PROJECT_ROOT}/config-src/rules.json" \
+    "保存订阅 URL 到本地 ${env_file}（不会提交到 Git）" \
+    "自动构建 release $(printf '%06d' "${revision}")"
+  confirm_phrase "WRITE" "确认添加订阅并生成可用配置？" || return 0
+
+  python3 - \
+    "${PROJECT_ROOT}/config-src" \
+    "${env_file}" \
+    "${display_name}" \
+    "${subscription_url}" <<'PY'
+import json
+import re
+import shlex
+import sys
+from pathlib import Path
+
+config_dir = Path(sys.argv[1])
+env_file = Path(sys.argv[2])
+display_name = sys.argv[3].strip()
+subscription_url = sys.argv[4].strip()
+
+slug = re.sub(r"[^a-zA-Z0-9]+", "-", display_name.lower()).strip("-") or "subscription"
+provider_id = slug
+env_name = "PROXYFLEET_SUB_" + re.sub(r"[^A-Z0-9]+", "_", slug.upper()).strip("_")
+if not env_name or env_name == "PROXYFLEET_SUB_":
+    env_name = "PROXYFLEET_SUB_SUBSCRIPTION"
+name_prefix = f"[{display_name}] "
+
+config_dir.mkdir(parents=True, exist_ok=True)
+(config_dir / "base.json").write_text(
+    json.dumps(
+        {
+            "schema_version": "1.0",
+            "config": {
+                "mixed-port": 7890,
+                "allow-lan": False,
+                "mode": "rule",
+                "log-level": "info",
+                "external-controller": "127.0.0.1:9090",
+            },
+        },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+
+providers_path = config_dir / "providers.json"
+if providers_path.exists():
+    providers = json.loads(providers_path.read_text(encoding="utf-8"))
+else:
+    providers = {"schema_version": "1.0", "providers": []}
+items = providers.setdefault("providers", [])
+items[:] = [item for item in items if item.get("id") != provider_id]
+items.append(
+    {
+        "enabled": True,
+        "id": provider_id,
+        "kind": "subscription",
+        "name_prefix": name_prefix,
+        "output": f"providers/{provider_id}.yaml",
+        "secret_ref": env_name,
+    }
+)
+providers_path.write_text(json.dumps(providers, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+groups_path = config_dir / "groups.json"
+if groups_path.exists():
+    groups = json.loads(groups_path.read_text(encoding="utf-8"))
+else:
+    groups = {"schema_version": "1.0", "groups": []}
+fleet = None
+for group in groups.setdefault("groups", []):
+    if group.get("name") == "FLEET_PROXY":
+        fleet = group
+        break
+if fleet is None:
+    fleet = {"name": "FLEET_PROXY", "type": "select", "use": []}
+    groups["groups"].append(fleet)
+fleet.setdefault("use", [])
+if provider_id not in fleet["use"]:
+    fleet["use"].append(provider_id)
+groups_path.write_text(json.dumps(groups, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+rules_path = config_dir / "rules.json"
+if not rules_path.exists():
+    rules_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "order": [{"match": "MATCH", "target": "FLEET_PROXY"}],
+                "rule_providers": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+env_file.parent.mkdir(parents=True, exist_ok=True)
+lines = []
+if env_file.exists():
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        if not line.startswith(f"export {env_name}="):
+            lines.append(line)
+lines.append(f"export {env_name}={shlex.quote(subscription_url)}")
+env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+env_file.chmod(0o600)
+print(json.dumps({"provider_id": provider_id, "env_name": env_name}, ensure_ascii=False))
+PY
+
+  load_local_env
+  proxyfleet_python build-release "${PROJECT_ROOT}/config-src" "${PROJECT_ROOT}/releases" \
+    --revision "${revision}" \
+    --source-git-commit "${source_commit}" \
+    --component-locks "${PROJECT_ROOT}/component-locks.json" \
+    --subscription-cache "${PROJECT_ROOT}/runtime/subscriptions"
+  proxyfleet_python verify-release "${PROJECT_ROOT}/releases/$(printf '%06d' "${revision}")"
+  echo "订阅已添加并构建 release。下一步可进入：节点配置相关 -> 选择节点并同步到 Minion"
+}
+
 master_config_subscription_tui() {
   local provider_id env_name name_prefix
   read -r -p "Provider ID [airport-main]: " provider_id
@@ -253,8 +432,10 @@ import_file_tui() {
 
 build_release_tui() {
   local revision source_commit
-  read -r -p "Release revision [1]: " revision
-  revision="${revision:-1}"
+  local default_revision
+  default_revision="$(next_release_revision)"
+  read -r -p "Release revision [${default_revision}]: " revision
+  revision="${revision:-${default_revision}}"
   source_commit="$(git -C "${PROJECT_ROOT}" rev-parse --short HEAD 2>/dev/null || echo local)"
   read -r -p "source git commit [${source_commit}]: " source_commit
   source_commit="${source_commit:-local}"
@@ -263,6 +444,7 @@ build_release_tui() {
     "写入 ${PROJECT_ROOT}/releases/$(printf '%06d' "${revision}")" \
     "使用 ${PROJECT_ROOT}/component-locks.json 校验固定组件版本"
   confirm_phrase "BUILD" "确认构建 release？" || return 0
+  load_local_env
   proxyfleet_python build-release "${PROJECT_ROOT}/config-src" "${PROJECT_ROOT}/releases" \
     --revision "${revision}" \
     --source-git-commit "${source_commit}" \
@@ -407,22 +589,24 @@ master_config_menu() {
     cat <<'MENU'
 ProxyFleet Master / 节点配置相关
 
-1) 配置订阅 Provider
-2) 导入自建节点文件
-3) 导入自定义规则文件
-4) 构建并校验 release
-5) 配置端口白名单
-6) 选择节点并同步到 Minion
+1) 快速添加订阅 URL 并生成可用配置
+2) 配置订阅 Provider
+3) 导入自建节点文件
+4) 导入自定义规则文件
+5) 构建并校验 release
+6) 配置端口白名单
+7) 选择节点并同步到 Minion
 b) 返回
 MENU
     read -r -p "请选择: " choice
     case "${choice}" in
-      1) master_config_subscription_tui; tui_pause ;;
-      2) import_file_tui "自建节点文件" "${PROJECT_ROOT}/config-src/providers/self-hosted.yaml"; tui_pause ;;
-      3) import_file_tui "自定义规则文件" "${PROJECT_ROOT}/config-src/rules/custom-rules.yaml"; tui_pause ;;
-      4) build_release_tui; tui_pause ;;
-      5) port_policy_tui; tui_pause ;;
-      6) select_sync; tui_pause ;;
+      1) quick_subscription_tui; tui_pause ;;
+      2) master_config_subscription_tui; tui_pause ;;
+      3) import_file_tui "自建节点文件" "${PROJECT_ROOT}/config-src/providers/self-hosted.yaml"; tui_pause ;;
+      4) import_file_tui "自定义规则文件" "${PROJECT_ROOT}/config-src/rules/custom-rules.yaml"; tui_pause ;;
+      5) build_release_tui; tui_pause ;;
+      6) port_policy_tui; tui_pause ;;
+      7) select_sync; tui_pause ;;
       b|B|q|Q) return 0 ;;
       *) echo "未知选项"; tui_pause ;;
     esac

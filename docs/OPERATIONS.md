@@ -153,6 +153,22 @@ sudo salt-key -D
 
 在 Master 节点执行。
 
+推荐使用 TUI：
+
+```bash
+sudo scripts/proxyfleet-master.sh
+```
+
+然后进入：
+
+```text
+节点配置相关 -> 快速添加订阅 URL 并生成可用配置
+节点配置相关 -> 选择节点并同步到 Minion
+```
+
+该流程会把订阅 URL 写入本地 `.env.proxyfleet`，自动生成最小可用配置并构建
+release。
+
 构建 release：
 
 ```bash

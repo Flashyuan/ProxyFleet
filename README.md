@@ -1,101 +1,39 @@
-# ProxyFleet 工程文档包
+# ProxyFleet
 
-> 状态：Architecture Baseline v2.2
-> 日期：2026-06-23
-> 目标系统：Ubuntu Server 22.04 LTS（主基线）、Ubuntu Server 24.04 LTS（兼容基线）
+ProxyFleet 用 Salt Master/Minion 统一管理多台服务器上的 Mihomo 代理配置、节点选择和同步。
 
-本目录是 ProxyFleet 的完整工程治理与实施文档基线，并包含当前 POC 代码。
-已实现的主干能力包括组件锁校验、release 构建、订阅 URL 拉取与 Provider
-快照转换、订阅与自建节点合并、自定义规则生成、代理节点目录、节点测速缓存、
-desired state 写入、Mihomo API 节点选择、Mihomo 安装 fail-closed state 和
-Salt 同步计划。
+已实现的主干能力包括：
 
-## 入口
+- Master/Minion 安装脚本；
+- Master TUI 主控台；
+- 订阅 URL 拉取和 Provider 快照转换；
+- 一键订阅 URL 生成可用配置；
+- 多订阅 Provider 合并；
+- release 构建与 Salt 同步；
+- Mihomo 固定版本安装和本机节点选择；
+- Minion 本机端口白名单 override。
 
-1. [PLAN.md](PLAN.md)：主工程计划、阶段、验收与恢复顺序。
-2. [AGENTS.md](AGENTS.md)：11 个固定 Subagent 岗位、唯一会话注册、通信与复用规则。
-3. [PROJECT_STATE.md](PROJECT_STATE.md)：当前事实、进度、阻塞项和下一步。
-4. [DECISIONS.md](DECISIONS.md)：架构决策索引。
-5. [interfaces/CONTRACTS.md](interfaces/CONTRACTS.md)：跨组件、Salt、Release 与 Git 操作契约。
-6. [docs/GIT_OPERATIONS.md](docs/GIT_OPERATIONS.md)：Git 初始化、提交、推送、错误处理和远端验证。
-7. [docs/DEPLOYMENT_DOCKER.md](docs/DEPLOYMENT_DOCKER.md)：Docker 可行性、边界和推荐部署方式。
-8. [SOURCES.md](SOURCES.md)：外部事实与官方证据索引。
+## 文档入口
 
-## 当前 CLI 快速入口
+- [Master 安装与配置](docs/INSTALL_MASTER.md)
+- [Minion 安装与配置](docs/INSTALL_MINION.md)
+- [日常运维命令](docs/OPERATIONS.md)
+- [用户使用手册](docs/USER_MANUAL.md)
 
-```bash
-PYTHONPATH=src python3 -m proxyfleet.cli build-release \
-  tests/fixtures/config-src releases --revision 1 \
-  --source-git-commit "$(git rev-parse HEAD)" \
-  --component-locks component-locks.json
+## Master TUI
 
-PYTHONPATH=src python3 -m proxyfleet.cli nodes releases/000001
-
-PYTHONPATH=src python3 -m proxyfleet.cli health-check \
-  releases/000001 runtime/health.json \
-  --mihomo-api http://127.0.0.1:9090 --all
-
-PYTHONPATH=src python3 -m proxyfleet.cli select-node \
-  releases/000001 runtime --node-id <node-id>
-
-PYTHONPATH=src python3 -m proxyfleet.cli publish-salt \
-  releases/000001 runtime/desired.yaml /srv/proxyfleet/salt/states
-
-PYTHONPATH=src python3 -m proxyfleet.cli sync \
-  releases/000001 runtime/desired.yaml /srv/proxyfleet/salt/states --target '*' --dry-run
-```
-
-最少步骤入口：
+在 Master 项目目录执行：
 
 ```bash
-PYTHONPATH=src python3 -m proxyfleet.cli apply \
-  config-src releases runtime /srv/proxyfleet/salt/states \
-  --revision 1 \
-  --source-git-commit "$(git rev-parse HEAD)" \
-  --select <node-id> \
-  --target '<minion-id-or-target>'
+sudo scripts/proxyfleet-master.sh
 ```
 
-## 固定 Subagent 岗位
-
-除原有架构、产品、Salt、配置、Mihomo、ShellCrash、平台、安全、QA 和知识治理岗位外，v2.2 新增：
+常用流程：
 
 ```text
-GIT-SCM — Git 仓库初始化、分支、提交、标签、远端、推送、冲突和错误处理
+节点配置相关 -> 快速添加订阅 URL 并生成可用配置
+节点配置相关 -> 选择节点并同步到 Minion
 ```
-
-任何已有 `GIT-SCM` 会话必须优先复用，禁止重复创建同岗位会话。
-
-## Git 启动边界
-
-项目实际开始时，第一项工程任务是由 `GIT-SCM`：
-
-1. 接收远程仓库 URL、`user.name`、`user.email`、默认分支和认证方式；
-2. 检查本地目录与远端状态；
-3. 安全执行 `git init` 或接入已有仓库；
-4. 生成首个原子提交；
-5. 推送并核验远端分支 SHA；
-6. 将 branch、commit、remote SHA 和工作树状态写回项目状态文件。
-
-`user.name` 和 `user.email` 只决定提交作者/提交者元数据，不等同于推送认证。实际推送还需要 SSH key、令牌或受支持的凭据助手；认证秘密不得写入仓库、任务包、日志或聊天摘要。
-
-## 恢复顺序
-
-任何新会话、替换会话或上下文压缩后的会话，必须按以下顺序恢复：
-
-```text
-1. PLAN.md
-2. AGENTS.md
-3. PROJECT_STATE.md
-4. DECISIONS.md 和相关 ADR
-5. interfaces/CONTRACTS.md
-6. 自身 checkpoint
-7. 当前 Task Packet
-8. 相关 Result/Handoff
-9. 实际代码、测试和 Git 状态
-```
-
-`GIT-SCM` 还必须读取 `docs/GIT_OPERATIONS.md`，并核对本地 HEAD、upstream、remote HEAD 和工作树。不得以聊天摘要替代上述文件。
 
 ## 当前容器化结论
 

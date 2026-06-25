@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 import tempfile
 import unittest
@@ -90,7 +91,7 @@ class MasterScriptTuiTests(unittest.TestCase):
             result = self._run(
                 root,
                 [],
-                "3\n5\n7890, 9090 7891\n192.168.1.0/24\nWRITE\n\nb\nq\n",
+                "3\n6\n7890, 9090 7891\n192.168.1.0/24\nWRITE\n\nb\nq\n",
                 project_root=project,
             )
 
@@ -103,6 +104,48 @@ class MasterScriptTuiTests(unittest.TestCase):
             self.assertIn('"port": 9090', text)
             self.assertIn('"source": "192.168.1.0/24"', text)
             self.assertIn("Salt Master 自身需要对 Minion 开放 TCP 4505/4506", result.stdout)
+
+    def test_quick_subscription_tui_generates_config_and_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            project.mkdir()
+            (project / "src").symlink_to(ROOT / "src", target_is_directory=True)
+            (project / "component-locks.json").write_text((ROOT / "component-locks.json").read_text(encoding="utf-8"), encoding="utf-8")
+            subscription = root / "subscription.json"
+            subscription.write_text(
+                json.dumps(
+                    {
+                        "proxies": [
+                            {
+                                "name": "A01",
+                                "type": "socks5",
+                                "server": "127.0.0.1",
+                                "port": 1080,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = self._run(
+                root,
+                [],
+                f"3\n1\nairport-main\n{subscription.as_uri()}\nWRITE\n\nb\nq\n",
+                project_root=project,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertTrue((project / ".env.proxyfleet").exists())
+            providers = json.loads((project / "config-src" / "providers.json").read_text(encoding="utf-8"))
+            groups = json.loads((project / "config-src" / "groups.json").read_text(encoding="utf-8"))
+            rules = json.loads((project / "config-src" / "rules.json").read_text(encoding="utf-8"))
+            self.assertEqual("airport-main", providers["providers"][0]["id"])
+            self.assertEqual(["airport-main"], groups["groups"][0]["use"])
+            self.assertEqual("FLEET_PROXY", rules["order"][0]["target"])
+            release_provider = project / "releases" / "000001" / "providers" / "airport-main.yaml"
+            self.assertTrue(release_provider.exists())
+            self.assertIn("[airport-main] A01", release_provider.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

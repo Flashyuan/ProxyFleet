@@ -160,6 +160,33 @@ config-src/groups.json      FLEET_PROXY 等策略组
 config-src/rules.json       规则顺序和 rule provider
 ```
 
+### 7.1 只输入订阅 URL 的推荐方式
+
+在 Master TUI 中进入：
+
+```text
+节点配置相关 -> 快速添加订阅 URL 并生成可用配置
+```
+
+流程：
+
+1. 先给订阅取一个名字，例如 `airport-main`；
+2. 输入订阅 URL；
+3. TUI 自动生成或更新 `base.json`、`providers.json`、`groups.json`、`rules.json`；
+4. 订阅 URL 保存到本地 `.env.proxyfleet`，不会提交到 Git；
+5. TUI 自动拉取订阅、提取 `proxies` 并构建 release；
+6. 构建成功后进入 `节点配置相关 -> 选择节点并同步到 Minion`。
+
+默认生成的规则是：
+
+```text
+MATCH,FLEET_PROXY
+```
+
+也就是所有未被其它规则命中的流量都走当前选择的代理节点。
+
+### 7.2 手动多订阅配置
+
 订阅 URL 不写入 Git，推荐用环境变量：
 
 ```json
