@@ -47,3 +47,25 @@ salt/pki/
 .coverage
 coverage/
 __pycache__/
+
+# Local development governance and planning notes.
+# These files are useful in the local workspace but should not be published.
+AGENTS.md
+DECISIONS.md
+FILE_MANIFEST.json
+PLAN.md
+PROJECT_STATE.md
+SOURCES.md
+adr/
+checkpoints/
+evidence/
+handoffs/
+interfaces/
+results/
+rfcs/
+tasks/
+templates/
+docs/GIT_OPERATIONS.md
+docs/SUPPLY_CHAIN_SECURITY.md
+tests/CONFIG_BUILD_TESTS.md
+tests/TEST_MATRIX.md
