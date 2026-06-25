@@ -156,12 +156,6 @@ scripts/proxyfleet-minion.sh status
 sudo scripts/proxyfleet-minion.sh uninstall
 ```
 
-危险清理：
-
-```bash
-sudo scripts/proxyfleet-minion.sh uninstall --purge-data --yes
-```
-
 命令说明：
 
 ```text
@@ -171,15 +165,16 @@ start                  启动 salt-minion
 stop                   停止 salt-minion
 restart                重启 salt-minion
 status                 查看 salt-minion 状态
-uninstall              卸载 salt-minion，默认保留 Minion PKI 和配置
+uninstall              停止并完整卸载 ProxyFleet Minion、受管 Mihomo 和本项目数据
 uninstall --purge-data [--yes]
-                     危险清理，删除 Minion PKI 和配置
+                     兼容旧参数；行为等同 uninstall
 ```
 
 ### 7.1 Mihomo 生命周期控制
 
-`proxyfleet-minion.sh start/stop/restart/status/uninstall` 默认只控制
-`salt-minion`。它不会隐式启动、停止或卸载本机 `mihomo.service`。
+`proxyfleet-minion.sh start/stop/restart/status` 默认只控制 `salt-minion`。
+`uninstall` 是例外：它会先停止并清理 ProxyFleet 受管 Mihomo，然后卸载
+`salt-minion` 并删除 `/etc/proxyfleet`、Minion PKI 和配置。
 
 显式 Mihomo 控制入口：
 
@@ -187,26 +182,26 @@ uninstall --purge-data [--yes]
 start --with-mihomo         启动 salt-minion 后安全启动 Mihomo
 stop --with-mihomo          安全停止 Mihomo 后停止 salt-minion
 restart --with-mihomo       同时按安全流程重启 salt-minion 和 Mihomo
-uninstall --with-mihomo     卸载 salt-minion，并执行 Mihomo 安全卸载
 mihomo-start                只安全启动本机 Mihomo
 mihomo-stop                 只停止本机 Mihomo，保留配置和 release
 mihomo-restart              只重启本机 Mihomo
 mihomo-status               查看 Mihomo 受管状态
-mihomo-uninstall            停止并禁用 Mihomo，默认保留 /etc/proxyfleet
+mihomo-uninstall            停止并完整卸载 ProxyFleet 受管 Mihomo
 ```
 
-Mihomo 卸载会采用分级清理：
+旧参数仍兼容，但不再改变卸载语义：
 
 ```text
-mihomo-uninstall                 只删除 ProxyFleet 拥有的 systemd unit
-mihomo-uninstall --purge-managed 删除 managed/effective 产物，保留 local override
-mihomo-uninstall --purge-all --yes
-                                 删除受管 release、链接、unit 和受管二进制
---purge-local-override           额外允许删除 /etc/proxyfleet/local
+--purge-managed
+--purge-all
+--purge-local-override
+--with-mihomo
 ```
 
-任何 unit 不属于 ProxyFleet、路径不匹配、配置校验失败或二进制来源无法确认时，
-Mihomo 生命周期命令必须停止执行，不能猜测删除范围。
+任何 unit 不属于 ProxyFleet、路径不匹配或二进制来源无法确认时，卸载只会跳过
+对应的非受管对象，不会猜测删除范围。
+
+卸载不会重置系统路由、DNS、防火墙或其它系统网络配置。
 
 ## 8. 被 Master 管控后的操作边界
 

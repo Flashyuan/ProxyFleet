@@ -4,12 +4,14 @@ set -Eeuo pipefail
 SALT_VERSION="${SALT_VERSION:-3008.1}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
-SALT_KEYRING="/etc/apt/keyrings/salt-archive-keyring.pgp"
-SALT_SOURCES="/etc/apt/sources.list.d/salt.sources"
-SALT_PIN="/etc/apt/preferences.d/proxyfleet-salt-pin"
-MASTER_CONF="/etc/salt/master.d/proxyfleet.conf"
-SALT_STATES_ROOT="/srv/proxyfleet/salt/states"
-SALT_PILLAR_ROOT="/srv/proxyfleet/salt/pillar"
+SALT_KEYRING="${SALT_KEYRING:-/etc/apt/keyrings/salt-archive-keyring.pgp}"
+SALT_SOURCES="${SALT_SOURCES:-/etc/apt/sources.list.d/salt.sources}"
+SALT_PIN="${SALT_PIN:-/etc/apt/preferences.d/proxyfleet-salt-pin}"
+MASTER_CONF="${MASTER_CONF:-/etc/salt/master.d/proxyfleet.conf}"
+MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
+MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
+SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
+SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
 
 die() {
   echo "错误：$*" >&2
@@ -554,7 +556,7 @@ MENU
     case "${choice}" in
       1) preflight; tui_pause ;;
       2) preview_write "medium" "安装 Salt Master ${SALT_VERSION}" "写入 ${MASTER_CONF}" "同步 Salt states"; confirm_phrase "INSTALL" "确认安装/修复 Master？" && install_master; tui_pause ;;
-      3) preview_write "critical" "卸载 salt-master" "默认保留 PKI 和 /srv/proxyfleet/salt"; confirm_phrase "UNINSTALL" "确认卸载 Master？" && uninstall_master; tui_pause ;;
+      3) preview_write "critical" "停止 salt-master" "卸载 salt-master" "删除 Master PKI、配置、Salt states/pillar 和本项目运行数据"; confirm_phrase "UNINSTALL" "确认完整卸载 Master？" && uninstall_master --yes; tui_pause ;;
       b|B|q|Q) return 0 ;;
       *) echo "未知选项"; tui_pause ;;
     esac
@@ -899,29 +901,35 @@ select_sync() {
 
 uninstall_master() {
   need_root
-  local purge_data="0"
   local yes="0"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --purge-data) purge_data="1"; shift ;;
+      --purge-data) shift ;; # 兼容旧参数；当前 uninstall 默认完整清理。
       --yes) yes="1"; shift ;;
       *) die "未知卸载参数：$1" ;;
     esac
   done
-  if [[ "${purge_data}" == "1" && "${yes}" != "1" ]]; then
-    if ! confirm_phrase "PURGE MASTER DATA" "危险操作：将删除 /etc/salt/pki/master、/etc/salt/master.d 和 /srv/proxyfleet/salt"; then
-      die "已取消 purge-data"
+  if [[ "${yes}" != "1" ]]; then
+    if ! confirm_phrase "UNINSTALL PROXYFLEET MASTER" "危险操作：将停止并完整删除 ProxyFleet Master 受管数据和组件"; then
+      die "已取消卸载"
     fi
   fi
   systemctl disable --now salt-master || true
   apt-mark unhold salt-master salt-common || true
   DEBIAN_FRONTEND=noninteractive apt-get purge -y salt-master || true
-  if [[ "${purge_data}" == "1" ]]; then
-    echo "危险操作：删除 /etc/salt/pki/master、/etc/salt/master.d 和 /srv/proxyfleet/salt"
-    rm -rf /etc/salt/pki/master /etc/salt/master.d /srv/proxyfleet/salt
-  else
-    echo "已卸载 salt-master 包；默认保留 Salt PKI 和 /srv/proxyfleet/salt。"
-  fi
+  echo "删除 ProxyFleet Master 受管数据。"
+  rm -rf "${MASTER_PKI_DIR}" \
+    "${MASTER_CONF_DIR}" \
+    "${SALT_STATES_ROOT}" \
+    "${SALT_PILLAR_ROOT}" \
+    "${PROJECT_ROOT}/runtime" \
+    "${PROJECT_ROOT}/cache" \
+    "${PROJECT_ROOT}/releases" \
+    "${PROJECT_ROOT}/config-src" \
+    "${PROJECT_ROOT}/providers-cache" \
+    "${PROJECT_ROOT}/subscriptions-cache"
+  rm -f "${SALT_SOURCES}" "${SALT_PIN}" "${SALT_KEYRING}" "${PROJECT_ROOT}/.env.proxyfleet"
+  echo "Master 卸载完成。未修改系统路由、DNS、防火墙或其它网络配置。"
 }
 
 preflight() {
@@ -947,9 +955,10 @@ usage() {
   sync-assets      同步 ProxyFleet Salt module/state 到 file_roots
   refresh-health   刷新本机 Mihomo API 节点测速缓存
   select-sync      进入实时 TUI 选择节点，并同步到所有 Minion
-  uninstall        卸载 salt-master，默认保留 PKI 和状态目录
+  uninstall [--yes]
+                   停止并完整卸载 ProxyFleet Master 受管数据和组件
   uninstall --purge-data [--yes]
-                   危险：卸载并删除 Master PKI/配置/POC states
+                   兼容旧参数；行为等同 uninstall
 
 select-sync 常用参数：
   --release-dir PATH       默认 releases/000001；不存在时自动使用 releases 下最大编号

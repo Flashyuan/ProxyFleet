@@ -102,9 +102,9 @@ status                 查看 salt-master 状态和 Salt key 列表
 sync-assets            同步项目 Salt module/state 到 /srv/proxyfleet/salt/states
 refresh-health         刷新 Master 本机 Mihomo API 测速缓存
 select-sync            选择代理节点并同步到 Minion
-uninstall              卸载 salt-master，默认保留 PKI 和状态目录
+uninstall              停止并完整卸载 ProxyFleet Master 受管数据和组件
 uninstall --purge-data [--yes]
-                     危险清理，删除 Master PKI、配置和 states
+                     兼容旧参数；行为等同 uninstall
 ```
 
 服务启停：
@@ -120,12 +120,16 @@ scripts/proxyfleet-master.sh status
 
 ```bash
 sudo scripts/proxyfleet-master.sh uninstall
-sudo scripts/proxyfleet-master.sh uninstall --purge-data --yes
 ```
 
-Master 脚本的 `stop` 和 `uninstall` 只影响 Master 本机 `salt-master`。它不会自动
-停止或卸载各 Minion 上的 `mihomo.service`。Minion 本机 Mihomo 生命周期后续会由
-`proxyfleet-minion.sh --with-mihomo` 或 `mihomo-*` 专用命令显式控制。
+Master 脚本的 `uninstall` 会停止并卸载 Master 本机 `salt-master`，删除 Master
+PKI、Master 配置、`/srv/proxyfleet/salt` 下的 states/pillar，以及本项目生成的
+`runtime/`、`releases/`、`config-src/`、`.env.proxyfleet` 等运行数据。
+
+它不会自动进入远端 Minion 卸载 `mihomo.service`。每台 Minion 的完整卸载请在
+对应 Minion 上执行 `sudo scripts/proxyfleet-minion.sh uninstall`。
+
+卸载不会重置系统路由、DNS、防火墙或其它系统网络配置。
 
 ## 6. 接受 Minion Key
 

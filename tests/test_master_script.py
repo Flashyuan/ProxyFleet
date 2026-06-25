@@ -38,6 +38,13 @@ class MasterScriptTuiTests(unittest.TestCase):
                 "PATH": f"{fakebin}:{env['PATH']}",
                 "PROXYFLEET_TEST_ALLOW_NON_ROOT": "1",
                 "PROJECT_ROOT": str(project_root or ROOT),
+                "MASTER_CONF_DIR": str(root / "etc" / "salt" / "master.d"),
+                "MASTER_PKI_DIR": str(root / "etc" / "salt" / "pki" / "master"),
+                "SALT_STATES_ROOT": str(root / "srv" / "proxyfleet" / "salt" / "states"),
+                "SALT_PILLAR_ROOT": str(root / "srv" / "proxyfleet" / "salt" / "pillar"),
+                "SALT_SOURCES": str(root / "salt.sources"),
+                "SALT_PIN": str(root / "salt.pin"),
+                "SALT_KEYRING": str(root / "salt.keyring"),
             }
         )
         if allow_tui:
@@ -74,14 +81,44 @@ class MasterScriptTuiTests(unittest.TestCase):
             self.assertIn("E_TUI_UNAVAILABLE", result.stderr)
             self.assertIn("sudo scripts/proxyfleet-master.sh select-sync", result.stderr)
 
-    def test_purge_data_requires_confirmation(self):
+    def test_uninstall_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            result = self._run(root, ["uninstall", "--purge-data"], "NO\n")
+            result = self._run(root, ["uninstall"], "NO\n")
 
             self.assertNotEqual(0, result.returncode)
-            self.assertIn("已取消 purge-data", result.stderr)
+            self.assertIn("已取消卸载", result.stderr)
             self.assertFalse((root / "commands.log").exists())
+
+    def test_uninstall_removes_master_data_and_project_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            for path in [
+                root / "etc" / "salt" / "master.d",
+                root / "etc" / "salt" / "pki" / "master",
+                root / "srv" / "proxyfleet" / "salt" / "states",
+                root / "srv" / "proxyfleet" / "salt" / "pillar",
+                project / "runtime",
+                project / "releases",
+                project / "config-src",
+            ]:
+                path.mkdir(parents=True, exist_ok=True)
+            (project / ".env.proxyfleet").parent.mkdir(parents=True, exist_ok=True)
+            (project / ".env.proxyfleet").write_text("export X=y\n", encoding="utf-8")
+
+            result = self._run(root, ["uninstall", "--yes"], project_root=project)
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertFalse((root / "etc" / "salt" / "master.d").exists())
+            self.assertFalse((root / "etc" / "salt" / "pki" / "master").exists())
+            self.assertFalse((root / "srv" / "proxyfleet" / "salt" / "states").exists())
+            self.assertFalse((root / "srv" / "proxyfleet" / "salt" / "pillar").exists())
+            self.assertFalse((project / "runtime").exists())
+            self.assertFalse((project / "releases").exists())
+            self.assertFalse((project / "config-src").exists())
+            self.assertFalse((project / ".env.proxyfleet").exists())
+            self.assertIn("未修改系统路由、DNS、防火墙", result.stdout)
 
     def test_port_policy_tui_writes_ports(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -31,6 +31,12 @@ exit 0
             encoding="utf-8",
         )
         (fakebin / "systemctl").chmod(0o755)
+        for name in ["apt-mark", "apt-get"]:
+            (fakebin / name).write_text(
+                f"#!/usr/bin/env bash\necho '{name} $*' >> {log}\nexit 0\n",
+                encoding="utf-8",
+            )
+            (fakebin / name).chmod(0o755)
         return fakebin
 
     def _mihomo_tree(self, root: Path) -> dict[str, Path]:
@@ -97,6 +103,11 @@ exit 0
             {
                 "PATH": f"{fakebin}:{env['PATH']}",
                 "PROXYFLEET_TEST_ALLOW_NON_ROOT": "1",
+                "MINION_CONF_DIR": str(root / "etc" / "salt" / "minion.d"),
+                "MINION_PKI_DIR": str(root / "etc" / "salt" / "pki" / "minion"),
+                "SALT_SOURCES": str(root / "salt.sources"),
+                "SALT_PIN": str(root / "salt.pin"),
+                "SALT_KEYRING": str(root / "salt.keyring"),
             }
         )
         if tree is not None:
@@ -135,6 +146,11 @@ exit 0
                 "PATH": f"{fakebin}:{env['PATH']}",
                 "PROXYFLEET_TEST_ALLOW_NON_ROOT": "1",
                 "PROXYFLEET_ETC_ROOT": str(root / "etc" / "proxyfleet"),
+                "MINION_CONF_DIR": str(root / "etc" / "salt" / "minion.d"),
+                "MINION_PKI_DIR": str(root / "etc" / "salt" / "pki" / "minion"),
+                "SALT_SOURCES": str(root / "salt.sources"),
+                "SALT_PIN": str(root / "salt.pin"),
+                "SALT_KEYRING": str(root / "salt.keyring"),
             }
         )
         if allow_tui:
@@ -200,13 +216,13 @@ exit 0
             self.assertTrue(options.exists())
             self.assertEqual("local-only", json.loads(options.read_text(encoding="utf-8"))["port_policy_mode"])
 
-    def test_purge_data_requires_confirmation(self):
+    def test_uninstall_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            result = self._run_with_input(root, ["uninstall", "--purge-data"], "NO\n")
+            result = self._run_with_input(root, ["uninstall"], "NO\n")
 
             self.assertNotEqual(0, result.returncode)
-            self.assertIn("已取消 purge-data", result.stderr)
+            self.assertIn("已取消卸载", result.stderr)
             self.assertFalse((root / "systemctl.log").exists())
 
     def test_start_with_mihomo_starts_minion_then_mihomo(self):
@@ -232,62 +248,54 @@ exit 0
             self.assertNotEqual(0, result.returncode)
             self.assertEqual(["cat mihomo.service"], self._systemctl_log(root))
 
-    def test_mihomo_uninstall_default_preserves_proxyfleet_data(self):
+    def test_mihomo_uninstall_default_removes_proxyfleet_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             tree = self._mihomo_tree(root)
-            result = self._run(root, ["mihomo-uninstall"], tree)
+            result = self._run(root, ["mihomo-uninstall", "--yes"], tree)
 
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertFalse(tree["unit"].exists())
-            self.assertTrue(tree["binary"].exists())
-            self.assertTrue((tree["etc"] / "local").exists())
-            self.assertTrue((tree["etc"] / "managed").exists())
-            self.assertTrue((tree["etc"] / "effective").exists())
-            self.assertTrue((tree["etc"] / "releases").exists())
-
-    def test_mihomo_uninstall_purge_managed_preserves_local(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            tree = self._mihomo_tree(root)
-            result = self._run(root, ["mihomo-uninstall", "--purge-managed"], tree)
-
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertFalse((tree["etc"] / "managed").exists())
-            self.assertFalse((tree["etc"] / "effective").exists())
-            self.assertTrue((tree["etc"] / "local").exists())
-            self.assertTrue(tree["binary"].exists())
-
-    def test_mihomo_uninstall_purge_all_requires_yes_and_preserves_local_by_default(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            tree = self._mihomo_tree(root)
-            result = self._run(root, ["mihomo-uninstall", "--purge-all"], tree)
-
-            self.assertNotEqual(0, result.returncode)
-            self.assertTrue(tree["binary"].exists())
-
-            result = self._run(root, ["mihomo-uninstall", "--purge-all", "--yes"], tree)
-
-            self.assertEqual(0, result.returncode, result.stderr)
             self.assertFalse(tree["binary"].exists())
-            self.assertFalse((tree["etc"] / "releases").exists())
-            self.assertFalse((tree["etc"] / "current").exists())
-            self.assertTrue((tree["etc"] / "local").exists())
+            self.assertFalse(tree["receipt"].exists())
+            self.assertFalse(tree["etc"].exists())
 
-    def test_purge_local_override_requires_purge_all_yes(self):
+    def test_uninstall_default_removes_mihomo_and_minion_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             tree = self._mihomo_tree(root)
-            result = self._run(root, ["mihomo-uninstall", "--purge-local-override"], tree)
-
-            self.assertNotEqual(0, result.returncode)
-            self.assertTrue((tree["etc"] / "local").exists())
-
-            result = self._run(root, ["mihomo-uninstall", "--purge-all", "--yes", "--purge-local-override"], tree)
+            minion_conf = root / "etc" / "salt" / "minion.d"
+            minion_pki = root / "etc" / "salt" / "pki" / "minion"
+            minion_conf.mkdir(parents=True)
+            minion_pki.mkdir(parents=True)
+            result = self._run(root, ["uninstall", "--yes"], tree)
 
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertFalse((tree["etc"] / "local").exists())
+            self.assertFalse(tree["unit"].exists())
+            self.assertFalse(tree["binary"].exists())
+            self.assertFalse(tree["etc"].exists())
+            self.assertFalse(minion_conf.exists())
+            self.assertFalse(minion_pki.exists())
+
+    def test_mihomo_uninstall_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = self._mihomo_tree(root)
+            result = self._run_with_input(root, ["mihomo-uninstall"], "NO\n", tree=tree)
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertTrue(tree["binary"].exists())
+
+    def test_mihomo_uninstall_skips_non_proxyfleet_unit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = self._mihomo_tree(root)
+            tree["unit"].write_text("[Service]\nExecStart=/usr/bin/mihomo -f /tmp/config.yaml\n", encoding="utf-8")
+            result = self._run(root, ["mihomo-uninstall", "--yes"], tree)
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertTrue(tree["unit"].exists())
+            self.assertIn("跳过 Mihomo 服务删除", result.stdout)
 
 
 if __name__ == "__main__":

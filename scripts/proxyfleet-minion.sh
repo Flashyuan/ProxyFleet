@@ -2,10 +2,12 @@
 set -Eeuo pipefail
 
 SALT_VERSION="${SALT_VERSION:-3008.1}"
-SALT_KEYRING="/etc/apt/keyrings/salt-archive-keyring.pgp"
-SALT_SOURCES="/etc/apt/sources.list.d/salt.sources"
-SALT_PIN="/etc/apt/preferences.d/proxyfleet-salt-pin"
-MINION_CONF="/etc/salt/minion.d/proxyfleet.conf"
+SALT_KEYRING="${SALT_KEYRING:-/etc/apt/keyrings/salt-archive-keyring.pgp}"
+SALT_SOURCES="${SALT_SOURCES:-/etc/apt/sources.list.d/salt.sources}"
+SALT_PIN="${SALT_PIN:-/etc/apt/preferences.d/proxyfleet-salt-pin}"
+MINION_CONF="${MINION_CONF:-/etc/salt/minion.d/proxyfleet.conf}"
+MINION_CONF_DIR="${MINION_CONF_DIR:-/etc/salt/minion.d}"
+MINION_PKI_DIR="${MINION_PKI_DIR:-/etc/salt/pki/minion}"
 PROXYFLEET_ETC_ROOT="${PROXYFLEET_ETC_ROOT:-/etc/proxyfleet}"
 MIHOMO_BINARY="${MIHOMO_BINARY:-/usr/local/bin/mihomo}"
 MIHOMO_UNIT_PATH="${MIHOMO_UNIT_PATH:-/etc/systemd/system/mihomo.service}"
@@ -75,21 +77,19 @@ usage() {
   restart
   restart --with-mihomo
   status
-  uninstall
-  uninstall --with-mihomo [--purge-managed] [--purge-all --yes]
-          [--purge-local-override] [--purge-data]
+  uninstall [--yes]
   uninstall --purge-data [--yes]
   mihomo-start
   mihomo-stop
   mihomo-restart
   mihomo-status
-  mihomo-uninstall [--purge-managed] [--purge-all --yes]
-          [--purge-local-override]
+  mihomo-uninstall [--yes]
 
 说明：
   --master-ip 是 --master 的兼容别名。
-  start/stop/restart/uninstall 默认只控制 salt-minion。
-  Mihomo 只通过 --with-mihomo 或 mihomo-* 专用子命令显式控制。
+  start/stop/restart 默认只控制 salt-minion。
+  uninstall 默认会停止并完整清理 salt-minion、ProxyFleet 受管 Mihomo 和 /etc/proxyfleet。
+  脚本只删除 ProxyFleet 明确受管路径，不重置系统路由、DNS 或防火墙。
   install 不会自动接受 key。安装后必须在 Master 上人工核验 fingerprint：
     sudo salt-key -F
     sudo salt-key -a <minion-id>
@@ -286,8 +286,8 @@ MENU
       5) mihomo_status; tui_pause ;;
       6) minion_services_tui; tui_pause ;;
       7) local_port_policy_tui; tui_pause ;;
-      8) preview_write "critical" "卸载 salt-minion" "默认保留 Minion PKI 和配置"; confirm_phrase "UNINSTALL" "确认卸载 Minion？" && uninstall_command; tui_pause ;;
-      9) preview_write "critical" "卸载 ProxyFleet 受管 Mihomo" "默认保留 ${PROXYFLEET_ETC_ROOT} 和 local override"; confirm_phrase "UNINSTALL MIHOMO" "确认卸载 Mihomo？" && mihomo_uninstall; tui_pause ;;
+      8) preview_write "critical" "停止 salt-minion 和 ProxyFleet 受管 Mihomo" "卸载 salt-minion" "删除 ${PROXYFLEET_ETC_ROOT}、Minion PKI 和配置"; confirm_phrase "UNINSTALL" "确认完整卸载 Minion？" && uninstall_command --yes; tui_pause ;;
+      9) preview_write "critical" "停止并卸载 ProxyFleet 受管 Mihomo" "删除 ${PROXYFLEET_ETC_ROOT}、受管二进制和 systemd unit"; confirm_phrase "UNINSTALL MIHOMO" "确认卸载 Mihomo？" && mihomo_uninstall --yes; tui_pause ;;
       q|Q) return 0 ;;
       *) echo "未知选项"; tui_pause ;;
     esac
@@ -367,30 +367,26 @@ status_minion() {
 
 uninstall_minion() {
   need_root
-  local purge_data="0"
   local yes="0"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --purge-data) purge_data="1"; shift ;;
+      --purge-data) shift ;; # 兼容旧参数；当前 uninstall 默认完整清理。
       --yes) yes="1"; shift ;;
       "") shift ;;
       *) die "未知 salt-minion 卸载参数：$1" ;;
     esac
   done
-  if [[ "${purge_data}" == "1" && "${yes}" != "1" ]]; then
-    if ! confirm_phrase "PURGE MINION DATA" "危险操作：将删除 /etc/salt/pki/minion 和 /etc/salt/minion.d"; then
-      die "已取消 purge-data"
+  if [[ "${yes}" != "1" ]]; then
+    if ! confirm_phrase "UNINSTALL PROXYFLEET MINION" "危险操作：将停止并完整删除 ProxyFleet Minion 受管数据和组件"; then
+      die "已取消卸载"
     fi
   fi
   systemctl disable --now salt-minion || true
   apt-mark unhold salt-minion salt-common || true
   DEBIAN_FRONTEND=noninteractive apt-get purge -y salt-minion || true
-  if [[ "${purge_data}" == "1" ]]; then
-    echo "危险操作：删除 /etc/salt/pki/minion 和 /etc/salt/minion.d"
-    rm -rf /etc/salt/pki/minion /etc/salt/minion.d
-  else
-    echo "已卸载 salt-minion 包；默认保留 Minion PKI 和配置。"
-  fi
+  echo "删除 Minion PKI 和 ProxyFleet Minion 配置。"
+  rm -rf "${MINION_PKI_DIR}" "${MINION_CONF_DIR}"
+  rm -f "${SALT_SOURCES}" "${SALT_PIN}" "${SALT_KEYRING}"
 }
 
 with_mihomo_arg() {
@@ -491,46 +487,62 @@ mihomo_status() {
 
 mihomo_uninstall() {
   need_root
-  local purge_managed="0"
-  local purge_all="0"
   local yes="0"
-  local purge_local_override="0"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --purge-managed) purge_managed="1"; shift ;;
-      --purge-all) purge_all="1"; shift ;;
+      --purge-managed|--purge-all|--purge-local-override) shift ;; # 兼容旧参数；当前默认完整清理。
       --yes) yes="1"; shift ;;
-      --purge-local-override) purge_local_override="1"; shift ;;
       *) die "未知 Mihomo 卸载参数：$1" ;;
     esac
   done
 
-  assert_mihomo_owned
-  if [[ "${purge_all}" == "1" && "${yes}" != "1" ]]; then
-    die "--purge-all 必须同时传入 --yes"
-  fi
-  if [[ "${purge_local_override}" == "1" && ! ( "${purge_all}" == "1" && "${yes}" == "1" ) ]]; then
-    die "--purge-local-override 只能与 --purge-all --yes 同时使用"
-  fi
-
-  "${SYSTEMCTL}" stop "${MIHOMO_SERVICE}" || true
-  "${SYSTEMCTL}" disable "${MIHOMO_SERVICE}" || true
-  rm -f "${MIHOMO_UNIT_PATH}"
-  "${SYSTEMCTL}" daemon-reload || true
-
-  if [[ "${purge_managed}" == "1" || "${purge_all}" == "1" ]]; then
-    rm -rf "${PROXYFLEET_ETC_ROOT}/managed" "${PROXYFLEET_ETC_ROOT}/effective"
-  fi
-  if [[ "${purge_all}" == "1" ]]; then
-    rm -rf "${PROXYFLEET_ETC_ROOT}/releases" \
-      "${PROXYFLEET_ETC_ROOT}/current" \
-      "${PROXYFLEET_ETC_ROOT}/previous"
-    rm -f "${MIHOMO_BINARY}" "${MIHOMO_RECEIPT}"
-    if [[ "${purge_local_override}" == "1" ]]; then
-      rm -rf "${PROXYFLEET_ETC_ROOT}/local"
+  if [[ "${yes}" != "1" ]]; then
+    if ! confirm_phrase "UNINSTALL PROXYFLEET MIHOMO" "危险操作：将删除 ProxyFleet 受管 Mihomo、${PROXYFLEET_ETC_ROOT} 和相关 unit"; then
+      die "已取消 Mihomo 卸载"
     fi
   fi
-  echo "Mihomo 卸载完成。默认保留 ${PROXYFLEET_ETC_ROOT}、release 和 local override。"
+  if ! ( assert_mihomo_unit_owned ); then
+    echo "未发现 ProxyFleet 受管 Mihomo unit，跳过 Mihomo 服务删除。"
+  else
+    "${SYSTEMCTL}" stop "${MIHOMO_SERVICE}" || true
+    "${SYSTEMCTL}" disable "${MIHOMO_SERVICE}" || true
+    rm -f "${MIHOMO_UNIT_PATH}"
+    "${SYSTEMCTL}" daemon-reload || true
+  fi
+
+  if [[ -f "${MIHOMO_RECEIPT}" ]]; then
+    if ( assert_mihomo_binary_owned ); then
+      rm -f "${MIHOMO_BINARY}" "${MIHOMO_RECEIPT}"
+    else
+      echo "Mihomo 二进制 ownership 校验失败，已保守跳过二进制删除。" >&2
+    fi
+  fi
+  rm -rf "${PROXYFLEET_ETC_ROOT}"
+  echo "Mihomo 卸载完成。未修改系统路由、DNS、防火墙或其它网络配置。"
+}
+
+cleanup_project_runtime() {
+  rm -rf "${PROXYFLEET_ETC_ROOT}"
+}
+
+uninstall_command() {
+  local yes="0"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --with-mihomo|--purge-data|--purge-managed|--purge-all|--purge-local-override) shift ;; # 兼容旧参数；当前默认完整清理。
+      --yes) yes="1"; shift ;;
+      *) die "未知卸载参数：$1" ;;
+    esac
+  done
+  if [[ "${yes}" != "1" ]]; then
+    if ! confirm_phrase "UNINSTALL PROXYFLEET MINION" "危险操作：将停止并完整删除 ProxyFleet Minion、受管 Mihomo 和本项目数据"; then
+      die "已取消卸载"
+    fi
+  fi
+  mihomo_uninstall --yes || true
+  cleanup_project_runtime
+  uninstall_minion --yes
+  echo "Minion 卸载完成。未修改系统路由、DNS、防火墙或其它网络配置。"
 }
 
 start_command() {
@@ -552,35 +564,6 @@ restart_command() {
   if with_mihomo_arg "$@"; then
     mihomo_restart
   fi
-}
-
-uninstall_command() {
-  local salt_args=()
-  local mihomo_args=()
-  local with_mihomo="0"
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --with-mihomo) with_mihomo="1"; shift ;;
-      --purge-data)
-        salt_args+=("$1")
-        shift
-        ;;
-      --yes)
-        salt_args+=("$1")
-        mihomo_args+=("$1")
-        shift
-        ;;
-      --purge-managed|--purge-all|--yes|--purge-local-override)
-        mihomo_args+=("$1")
-        shift
-        ;;
-      *) die "未知卸载参数：$1" ;;
-    esac
-  done
-  if [[ "${with_mihomo}" == "1" ]]; then
-    mihomo_uninstall "${mihomo_args[@]}"
-  fi
-  uninstall_minion "${salt_args[@]}"
 }
 
 preflight() {

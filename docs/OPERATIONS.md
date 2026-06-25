@@ -58,8 +58,10 @@ sudo salt '*' saltutil.sync_modules
 
 ```bash
 sudo scripts/proxyfleet-master.sh uninstall
-sudo scripts/proxyfleet-master.sh uninstall --purge-data --yes
 ```
+
+Master 卸载会清理 Master PKI、Master 配置、Salt states/pillar 和本项目生成的
+运行数据；不会重置系统路由、DNS、防火墙。
 
 ## 3. Minion 常用操作
 
@@ -91,13 +93,13 @@ scripts/proxyfleet-minion.sh status
 
 ```bash
 sudo scripts/proxyfleet-minion.sh uninstall
-sudo scripts/proxyfleet-minion.sh uninstall --purge-data --yes
 ```
 
 ### Minion Mihomo 生命周期
 
-Minion 的 `start/stop/restart/uninstall` 默认只管理 `salt-minion`，
-不会隐式联动本机 Mihomo。
+Minion 的 `start/stop/restart` 默认只管理 `salt-minion`。`uninstall` 是完整
+卸载，会先安全停止和卸载 ProxyFleet 受管 Mihomo，再卸载 `salt-minion` 并删除
+`/etc/proxyfleet`、Minion PKI 和配置。
 
 显式联动命令：
 
@@ -105,7 +107,6 @@ Minion 的 `start/stop/restart/uninstall` 默认只管理 `salt-minion`，
 sudo scripts/proxyfleet-minion.sh start --with-mihomo
 sudo scripts/proxyfleet-minion.sh stop --with-mihomo
 sudo scripts/proxyfleet-minion.sh restart --with-mihomo
-sudo scripts/proxyfleet-minion.sh uninstall --with-mihomo
 ```
 
 Mihomo 专用命令：
@@ -120,12 +121,10 @@ sudo scripts/proxyfleet-minion.sh mihomo-uninstall
 
 安全边界：
 
-- 默认 Minion 卸载保留 Mihomo 和 `/etc/proxyfleet`；
 - `mihomo-stop` 只停服务，不删配置；
-- `mihomo-uninstall` 默认只删除 ProxyFleet 拥有的 systemd unit；
-- `--purge-all --yes` 才允许删除受管 release 和受管二进制；
-- `/etc/proxyfleet/local` 必须额外传 `--purge-local-override` 才能删除；
-- unit、路径、二进制来源或配置校验不通过时必须 fail-closed。
+- `mihomo-uninstall` 会删除 ProxyFleet 受管 unit、二进制、receipt 和 `/etc/proxyfleet`；
+- 非 ProxyFleet unit 或 ownership 校验失败时，脚本跳过对应对象，不会误删；
+- 卸载不会重置系统路由、DNS、防火墙或其它系统网络配置。
 
 ## 4. Salt Key 操作
 
