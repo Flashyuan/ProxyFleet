@@ -173,6 +173,16 @@ PYTHONPATH=src python3 -m proxyfleet.cli nodes \
 sudo scripts/proxyfleet-master.sh select-sync
 ```
 
+如果希望进入菜单后像 Yacd 面板一样实时刷新延迟：
+
+```bash
+sudo scripts/proxyfleet-master.sh select-sync --live-health
+```
+
+该模式会立即显示稳定序号列表，后台并发测速并刷新状态；不必等待所有节点测速完成，
+可以直接输入序号选择。旧的 `--refresh-health` 是先完整刷新缓存再显示菜单，节点多
+时会等待更久。
+
 脚本会列出带序号的节点列表，节点名使用 `mihomo_name`。输入序号后会自动：
 
 1. 写入 `runtime/desired.yaml`；
@@ -186,8 +196,9 @@ sudo scripts/proxyfleet-master.sh select-sync
 sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id-or-target>'
 ```
 
-如果存在 `runtime/health.json`，列表会显示测速状态和延迟；否则显示
-`unknown`，不影响选择和同步。
+如果存在有效 `runtime/health.json`，列表会显示测速状态和延迟；否则显示
+`unknown`，不影响选择和同步。实时测速默认使用 Master 本机
+`http://127.0.0.1:9090` 的 Mihomo API，因此它代表 Master 本机网络视角。
 
 ### 6.4 手动选择节点
 

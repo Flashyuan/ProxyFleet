@@ -169,6 +169,24 @@
   - Mihomo API 策略组 GET/PUT/GET 摘要
   - release manifest SHA 校验摘要
 
+### 3.7A 实时测速选择菜单
+
+- **目标**：确认 Yacd 风格 CLI 实时测速不阻塞节点选择，且不改变运行状态。
+- **覆盖点**：
+  - `select-sync --live-health` 先显示稳定序号列表，再后台并发刷新延迟；
+  - 用户可在测速未完成时输入序号；
+  - 一次菜单会话内序号不因延迟结果到达而重排；
+  - 并发和超时有硬上限，非法值 fail-fast；
+  - Mihomo API 仅允许 loopback 地址；
+  - 缓存绑定 release/provider revision，不合并旧 release 缓存；
+  - 缓存写入使用原子替换；
+  - 单节点 timeout/failed 不影响其他节点测速。
+- **最小证据**：
+  - `select-sync --live-health --health-concurrency <n>` 屏幕录像或终端摘要；
+  - health cache JSON 中 `release_revision/provider_revision/source_scope`；
+  - 非 loopback API 被拒绝的错误摘要；
+  - 单元测试覆盖进度输出、缓存绑定和参数边界。
+
 ### 3.8 端口白名单与本地 override
 
 - **目标**：确认 Master 可统一下发公共端口白名单，同时 Minion 本地规则不会被覆盖。

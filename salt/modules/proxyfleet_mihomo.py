@@ -306,6 +306,7 @@ def apply_port_policy(
 
 
 def _api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_API", request_timeout=3):
+    _assert_loopback_api(base_url)
     payload = None if body is None else json.dumps(body).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if api_secret:
@@ -321,6 +322,15 @@ def _api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_A
     except (error.URLError, TimeoutError, socket.timeout) as exc:
         raise _ApplyError(timeout_error_code, "mihomo api unavailable") from exc
     return json.loads(raw.decode("utf-8")) if raw else {}
+
+
+def _assert_loopback_api(base_url):
+    parsed = parse.urlparse(str(base_url))
+    if parsed.scheme not in ("http", "https"):
+        raise _ApplyError("E_LOCAL_API", "mihomo api must use local HTTP(S)")
+    if parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+        return
+    raise _ApplyError("E_LOCAL_API", "mihomo api must be loopback")
 
 
 def _load_port_policy(path, expected_owner):

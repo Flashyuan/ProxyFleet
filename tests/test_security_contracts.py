@@ -28,6 +28,9 @@ class SecurityContractTests(unittest.TestCase):
         self.assertIn("refresh_health()", text)
         self.assertIn("--refresh-health", text)
         self.assertIn("health_cache_has_useful_result", text)
+        self.assertIn("--progress", text)
+        self.assertIn("--concurrency", text)
+        self.assertIn('local health_timeout_ms="2000"', text)
 
     def test_proxyfleet_sync_sls_has_unique_state_ids(self):
         text = (ROOT / "salt" / "states" / "proxyfleet" / "sync.sls").read_text(encoding="utf-8")

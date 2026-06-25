@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .component_locks import ComponentLockError, assert_valid_lock_file
@@ -64,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     health.add_argument("--all", action="store_true", help="测速 release 内全部节点")
     health.add_argument("--url", default="https://www.gstatic.com/generate_204", help="健康检查 URL")
     health.add_argument("--timeout-ms", type=int, default=3000, help="单节点测速超时")
+    health.add_argument("--concurrency", type=int, default=16, help="并发测速数量")
+    health.add_argument("--progress", action="store_true", help="在 stderr 显示动态测速进度")
 
     select = subparsers.add_parser("select-node", help="选择代理节点并写入 desired state")
     select.add_argument("release_dir", help="release 目录")
@@ -198,35 +203,67 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "health-check":
         try:
             nodes = build_node_catalog(Path(args.release_dir))
+            release = Path(args.release_dir)
+            manifest = json.loads((release / "manifest.json").read_text(encoding="utf-8"))
             if not args.all and not args.node_id:
                 raise FleetError("E_NODE_NOT_FOUND", "必须指定 --node-id 或 --all")
             selected = nodes if args.all else [next((node for node in nodes if node.node_id == args.node_id), None)]
             if selected == [None]:
                 raise FleetError("E_NODE_NOT_FOUND", f"未知 node_id: {args.node_id}")
             client = MihomoClient(args.mihomo_api, args.mihomo_secret)
-            cache: dict[str, object] = {"schema_version": "1.0", "nodes": {}}
-            for node in selected:
-                assert node is not None
+            if args.timeout_ms < 300 or args.timeout_ms > 10000:
+                raise FleetError("E_HEALTHCHECK_FAILED", "timeout-ms 必须在 300..10000 之间")
+            if args.concurrency < 1 or args.concurrency > 64:
+                raise FleetError("E_HEALTHCHECK_FAILED", "concurrency 必须在 1..64 之间")
+            cache: dict[str, object] = {
+                "schema_version": "1.0",
+                "release_revision": manifest.get("release_revision"),
+                "provider_revision": manifest.get("provider_revision"),
+                "source_scope": "master-local",
+                "nodes": {},
+            }
+            selected_nodes = [node for node in selected if node is not None]
+            concurrency = max(1, min(int(args.concurrency), len(selected_nodes) or 1))
+            started_at = time.monotonic()
+            counts = {"ok": 0, "timeout": 0, "failed": 0}
+
+            def measure(node):
                 try:
                     health = client.health_check(node.mihomo_name, args.url, args.timeout_ms)
-                    cache["nodes"][node.node_id] = {
-                        "last_delay_ms": health["last_delay_ms"],
-                        "health_status": "ok",
-                        "measured_at": health["measured_at"],
-                        "freshness": "fresh",
+                    return node.node_id, {
+                        "last_delay_ms": health["last_delay_ms"], "health_status": "ok",
+                        "measured_at": health["measured_at"], "freshness": "fresh",
                         "last_error_code": None,
                     }
                 except FleetError as exc:
-                    cache["nodes"][node.node_id] = {
+                    return node.node_id, {
                         "last_delay_ms": None,
                         "health_status": "timeout" if exc.error_code == "E_HEALTHCHECK_TIMEOUT" else "failed",
-                        "measured_at": None,
-                        "freshness": "fresh",
-                        "last_error_code": exc.error_code,
+                        "measured_at": None, "freshness": "fresh", "last_error_code": exc.error_code,
                     }
+
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = [executor.submit(measure, node) for node in selected_nodes]
+                for done, future in enumerate(as_completed(futures), start=1):
+                    node_id, result = future.result()
+                    cache["nodes"][node_id] = result
+                    status = str(result["health_status"])
+                    counts[status if status in counts else "failed"] += 1
+                    if args.progress:
+                        elapsed = int(time.monotonic() - started_at)
+                        sys.stderr.write(
+                            f"\r测速中 {done}/{len(selected_nodes)} "
+                            f"ok={counts['ok']} timeout={counts['timeout']} failed={counts['failed']} "
+                            f"elapsed={elapsed}s"
+                        )
+                        sys.stderr.flush()
+            if args.progress:
+                sys.stderr.write("\n")
             path = Path(args.health_cache)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            temp.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            temp.replace(path)
         except FleetError as exc:
             print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
             return 2

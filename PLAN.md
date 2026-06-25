@@ -404,14 +404,24 @@ fleetctl nodes
 fleetctl nodes --refresh
 fleetctl health-check --node-id <node-id>
 fleetctl health-check --all --target-group production
+scripts/proxyfleet-master.sh select-sync --live-health
 ```
 
 `nodes` 默认读取最近缓存；只有显式 `--refresh` 或 `health-check` 才主动触发
 探测。测速结果必须标注 `fresh|stale|unknown`，不能把未知或超时写成成功。
 
+`select-sync --live-health` 提供类 Yacd 的 CLI 交互体验：进入菜单后立即显示
+可选节点列表，后台并发调用 Mihomo 单节点 delay API，终端同屏刷新 `pending/ok/
+timeout/failed`、延迟和已耗时。用户不需要等待全量测速完成，可随时输入稳定序号
+选择节点。实时刷新不得改变 desired state，只有用户确认序号后才写入 desired 并同步
+Minion。默认保持序号稳定，不因延迟结果到达而重排；若后续加入按延迟排序，必须使用
+显式参数并避免用户输入时序号跳变。
+
 节点测速使用每个 Minion 本机 Mihomo API 的单节点延迟或 Provider 健康检查能力：
 
 - 优先使用单节点延迟探测，例如 `GET /proxies/{proxy_name}/delay`；
+- 实时菜单的本机模式只代表 Master 本机 Mihomo 到节点的延迟；fleet-wide 模式
+  必须让每台 Minion 调用自己的 `127.0.0.1:9090` 后由 Master 汇总；
 - Provider 级刷新可使用 Provider healthcheck；
 - 不默认使用策略组级 delay 作为 `FLEET_PROXY` 的常规测速入口，因为组级测速
   可能批量触发探测，并对自动策略组的固定选择产生副作用；
@@ -787,6 +797,9 @@ fleetctl apply --select <node-id> --target-group production
   freshness、失败原因和数据来源；
 - `fleetctl nodes --refresh` 或 `fleetctl health-check` 能主动刷新缓存；
 - 多个节点返回延迟时可排序，失败节点显示原因但不影响其他节点；
+- `select-sync --live-health` 进入后必须先显示节点列表，再后台并发刷新延迟；
+  用户可在测速未完成时输入序号，序号在一次菜单会话内必须稳定；
+- 实时测速必须显示进度或动态状态，长耗时操作不得表现为无输出卡住；
 - `--dry-run` 不写 release、desired、Salt file_roots 或 Mihomo 状态；
 - 测速不得改变 `FLEET_PROXY` 当前选择，不得关闭连接，不得触发 reload；
 - 日志、Result 和 Salt envelope 不得包含 secret、订阅 URL、节点密码或完整代理 URI。

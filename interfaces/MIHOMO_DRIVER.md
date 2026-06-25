@@ -182,6 +182,16 @@ close_managed_connections(target?) -> ApiWriteResult
 API 适配层可以映射到 Mihomo/Clash-compatible HTTP 端点或 Unix socket，但
 本文不冻结具体端点路径。实现必须以锁定 Mihomo 版本的契约测试证明映射正确。
 
+实时测速菜单使用 `health_check` 的只读子集。实现必须：
+
+- 仅调用 loopback Mihomo API；
+- 仅访问受控 allowlist 测速 URL；
+- 不写 desired state；
+- 不修改 `FLEET_PROXY` 当前选择；
+- 不触发 reload/restart；
+- 单节点失败只影响该节点的 `HealthResult`，不得中断其他节点测速；
+- Master 本机结果标注为 `master-local`，不得混同为所有 Minion 的延迟。
+
 API 调用必须：
 
 - 使用本机 API secret；

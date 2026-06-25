@@ -182,7 +182,8 @@ refresh_health() {
   local release_dir="${PROJECT_ROOT}/releases/000001"
   local health_cache="${PROJECT_ROOT}/runtime/health.json"
   local mihomo_api="http://127.0.0.1:9090"
-  local timeout_ms="5000"
+  local timeout_ms="2000"
+  local concurrency="16"
   local url="https://www.gstatic.com/generate_204"
 
   while [[ $# -gt 0 ]]; do
@@ -191,6 +192,7 @@ refresh_health() {
       --health-cache) health_cache="$2"; shift 2 ;;
       --mihomo-api) mihomo_api="$2"; shift 2 ;;
       --timeout-ms) timeout_ms="$2"; shift 2 ;;
+      --concurrency) concurrency="$2"; shift 2 ;;
       --url) url="$2"; shift 2 ;;
       *) die "未知 refresh-health 参数：$1" ;;
     esac
@@ -208,7 +210,173 @@ refresh_health() {
     --mihomo-api "${mihomo_api}" \
     --all \
     --url "${url}" \
-    --timeout-ms "${timeout_ms}" >/dev/null
+    --timeout-ms "${timeout_ms}" \
+    --concurrency "${concurrency}" \
+    --progress >/dev/null
+}
+
+live_health_menu() {
+  local catalog_file="$1"
+  local mihomo_api="$2"
+  local timeout_ms="$3"
+  local concurrency="$4"
+  python3 - "${catalog_file}" "${mihomo_api}" "${timeout_ms}" "${concurrency}" <<'PY'
+import json
+import queue
+import select
+import sys
+import termios
+import threading
+import time
+import tty
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+catalog_file, mihomo_api, timeout_ms_raw, concurrency_raw = sys.argv[1:5]
+timeout_ms = int(timeout_ms_raw)
+concurrency = max(1, int(concurrency_raw))
+test_url = "https://www.gstatic.com/generate_204"
+
+if timeout_ms < 300 or timeout_ms > 10000:
+    raise SystemExit("timeout-ms 必须在 300..10000 之间")
+if concurrency < 1 or concurrency > 64:
+    raise SystemExit("concurrency 必须在 1..64 之间")
+parsed_api = urllib.parse.urlparse(mihomo_api)
+if parsed_api.scheme not in ("http", "https") or parsed_api.hostname not in ("localhost", "127.0.0.1", "::1"):
+    raise SystemExit("mihomo api 必须是 loopback 地址")
+
+with open(catalog_file, encoding="utf-8") as fh:
+    nodes = json.load(fh).get("nodes", [])
+if not nodes:
+    raise SystemExit("没有可选择节点")
+
+state = []
+for idx, node in enumerate(nodes, start=1):
+    state.append(
+        {
+            "index": idx,
+            "node_id": node.get("node_id") or "",
+            "name": node.get("mihomo_name") or "",
+            "status": node.get("health_status") or "pending",
+            "delay": node.get("last_delay_ms"),
+            "error": node.get("last_error_code"),
+        }
+    )
+
+lock = threading.Lock()
+updates = queue.Queue()
+stop_event = threading.Event()
+started = time.monotonic()
+
+
+def probe(item):
+    name = item["name"]
+    query = urllib.parse.urlencode({"timeout": timeout_ms, "url": test_url})
+    path = "/proxies/" + urllib.parse.quote(name, safe="") + "/delay?" + query
+    req = urllib.request.Request(mihomo_api.rstrip("/") + path, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=max(3, timeout_ms / 1000 + 2)) as resp:
+            data = json.loads(resp.read().decode("utf-8") or "{}")
+        delay = data.get("delay")
+        if isinstance(delay, int):
+            result = {"index": item["index"], "status": "ok", "delay": delay, "error": ""}
+        else:
+            result = {"index": item["index"], "status": "failed", "delay": None, "error": "bad-response"}
+    except TimeoutError:
+        result = {"index": item["index"], "status": "timeout", "delay": None, "error": "timeout"}
+    except Exception as exc:
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, TimeoutError):
+            result = {"index": item["index"], "status": "timeout", "delay": None, "error": "timeout"}
+        else:
+            result = {"index": item["index"], "status": "failed", "delay": None, "error": exc.__class__.__name__}
+    updates.put(result)
+
+
+def worker():
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [executor.submit(probe, item) for item in state]
+        for future in futures:
+            if stop_event.is_set():
+                break
+            try:
+                future.result()
+            except Exception:
+                pass
+
+
+def visible_name(name, width=58):
+    return name if len(name) <= width else name[: width - 1] + "…"
+
+
+def draw(tty_out, typed):
+    with lock:
+        rows = list(state)
+    done = sum(1 for item in rows if item["status"] != "pending")
+    ok = sum(1 for item in rows if item["status"] == "ok")
+    timeout = sum(1 for item in rows if item["status"] == "timeout")
+    failed = sum(1 for item in rows if item["status"] == "failed")
+    elapsed = int(time.monotonic() - started)
+    tty_out.write("\033[H\033[J")
+    tty_out.write("ProxyFleet 实时测速选择菜单\n")
+    tty_out.write(f"进度 {done}/{len(rows)} ok={ok} timeout={timeout} failed={failed} elapsed={elapsed}s 并发={concurrency}\n")
+    tty_out.write("输入序号并回车即可选择；测速未完成也可以直接选择。\n\n")
+    for item in rows:
+        delay = f"{item['delay']}ms" if isinstance(item.get("delay"), int) else "-"
+        status = item["status"]
+        tty_out.write(f"{item['index']:4d}. {visible_name(item['name']):58s}  [{status} {delay}]\n")
+    tty_out.write(f"\n请输入节点序号: {typed}")
+    tty_out.flush()
+
+
+threading.Thread(target=worker, daemon=True).start()
+typed = ""
+selected = None
+
+with open("/dev/tty", "r+", encoding="utf-8", buffering=1) as tty_io:
+    fd = tty_io.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        next_draw = 0.0
+        while selected is None:
+            while True:
+                try:
+                    result = updates.get_nowait()
+                except queue.Empty:
+                    break
+                with lock:
+                    item = state[result["index"] - 1]
+                    item.update(result)
+            now = time.monotonic()
+            if now >= next_draw:
+                draw(tty_io, typed)
+                next_draw = now + 0.25
+            readable, _, _ = select.select([fd], [], [], 0.1)
+            if not readable:
+                continue
+            ch = tty_io.read(1)
+            if ch in ("\n", "\r"):
+                if typed.isdigit() and 1 <= int(typed) <= len(state):
+                    selected = int(typed)
+                    break
+                typed = ""
+            elif ch in ("\x7f", "\b"):
+                typed = typed[:-1]
+            elif ch.isdigit():
+                typed += ch
+            elif ch in ("\x03", "\x04"):
+                raise KeyboardInterrupt
+    finally:
+        stop_event.set()
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        tty_io.write("\033[H\033[J")
+        tty_io.flush()
+
+item = state[selected - 1]
+print(f"{item['index']}\t{item['node_id']}\t{item['name']}\t{item['status']}\t{item['delay'] if isinstance(item.get('delay'), int) else '-'}")
+PY
 }
 
 select_sync() {
@@ -223,9 +391,11 @@ select_sync() {
   local port_policy=""
   local port_policy_mode="merge"
   local refresh_health_first="false"
+  local live_health="false"
   local use_health_cache="true"
   local mihomo_api="http://127.0.0.1:9090"
-  local health_timeout_ms="5000"
+  local health_timeout_ms="2000"
+  local health_concurrency="16"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -236,9 +406,11 @@ select_sync() {
       --target-group) target_group="$2"; shift 2 ;;
       --health-cache) health_cache="$2"; shift 2 ;;
       --refresh-health) refresh_health_first="true"; shift ;;
+      --live-health) live_health="true"; shift ;;
       --no-health-cache) use_health_cache="false"; shift ;;
       --mihomo-api) mihomo_api="$2"; shift 2 ;;
       --health-timeout-ms) health_timeout_ms="$2"; shift 2 ;;
+      --health-concurrency) health_concurrency="$2"; shift 2 ;;
       --port-policy) port_policy="$2"; shift 2 ;;
       --port-policy-mode) port_policy_mode="$2"; shift 2 ;;
       *) die "未知 select-sync 参数：$1" ;;
@@ -260,7 +432,8 @@ select_sync() {
       --release-dir "${release_dir}" \
       --health-cache "${health_cache}" \
       --mihomo-api "${mihomo_api}" \
-      --timeout-ms "${health_timeout_ms}"; then
+      --timeout-ms "${health_timeout_ms}" \
+      --concurrency "${health_concurrency}"; then
       echo "警告：测速刷新失败，将继续显示未测速状态" >&2
       use_health_cache="false"
     fi
@@ -297,16 +470,19 @@ for index, node in enumerate(nodes, start=1):
 PY
 
   echo "可选代理节点："
-  awk -F '\t' '{printf "%4d. %-60s  [%s %s]\n", NR, $3, $4, $5}' "${menu_file}"
-  echo
-
-  local selected_index
-  read -r -p "请输入要同步到所有 Minion 的节点序号: " selected_index
-  [[ "${selected_index}" =~ ^[0-9]+$ ]] || die "序号必须是数字"
-
   local selected_line selected_node_id selected_name
-  selected_line="$(awk -F '\t' -v idx="${selected_index}" 'NR == idx {print $0}' "${menu_file}")"
-  [[ -n "${selected_line}" ]] || die "序号不存在：${selected_index}"
+  if [[ "${live_health}" == "true" ]]; then
+    selected_line="$(live_health_menu "${catalog_file}" "${mihomo_api}" "${health_timeout_ms}" "${health_concurrency}")"
+  else
+    awk -F '\t' '{printf "%4d. %-60s  [%s %s]\n", NR, $3, $4, $5}' "${menu_file}"
+    echo
+
+    local selected_index
+    read -r -p "请输入要同步到所有 Minion 的节点序号: " selected_index
+    [[ "${selected_index}" =~ ^[0-9]+$ ]] || die "序号必须是数字"
+    selected_line="$(awk -F '\t' -v idx="${selected_index}" 'NR == idx {print $0}' "${menu_file}")"
+  fi
+  [[ -n "${selected_line}" ]] || die "未选择有效节点序号"
   selected_node_id="$(printf '%s\n' "${selected_line}" | awk -F '\t' '{print $2}')"
   selected_name="$(printf '%s\n' "${selected_line}" | awk -F '\t' '{print $3}')"
 
@@ -394,7 +570,8 @@ select-sync 常用参数：
   --refresh-health         选择前先用本机 Mihomo API 刷新测速
   --no-health-cache        不读取测速缓存，只显示 unknown
   --mihomo-api URL         默认 http://127.0.0.1:9090
-  --health-timeout-ms N    默认 5000
+  --health-timeout-ms N    默认 2000
+  --health-concurrency N   默认 16
   --port-policy PATH       可选：同步 Master managed 端口白名单
 USAGE
 }

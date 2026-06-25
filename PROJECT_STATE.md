@@ -1,7 +1,7 @@
 # ProxyFleet 当前项目状态
 
 > State 版本：1.3
-> 更新时间：2026-06-24
+> 更新时间：2026-06-25
 > 当前阶段：Phase 2 / Proxy Selection Sync POC
 > 当前 Git commit：TP-0017 发布前以 GIT-SCM 远端核验结果为准
 
@@ -24,7 +24,9 @@
 - `VERIFIED-TEST`：订阅 URL 拉取、订阅 Provider 快照转换、订阅+自建节点+自定义 rule 合成 release 已有本地单元测试。
 - `VERIFIED-TEST`：节点测速缓存、精确测速 URL allowlist、节点测速失败映射和 `nodes --health-cache` 显示已有本地单元测试。
 - `VERIFIED-TEST`：安装脚本不再拉取浮动 Salt `latest` sources，Salt state 重复 ID 已有静态契约测试。
-- `VERIFIED-TEST`：Mihomo v1.19.27 已按 `linux-amd64` 和 `linux-arm64` 固定资产 URL、SHA-256 和 gzip 压缩格式；安装模块可校验 gzip 资产、解压、执行版本探测并安装。
+- `VERIFIED-TEST`：Mihomo v1.19.27 已按同版本多架构资产固定 URL、SHA-256 和 gzip 压缩格式；Minion 会根据 CPU flags 选择可运行的 amd64 v1/v2/v3/compatible 或 arm64 资产。
+- `VERIFIED-TEST`：native-mihomo sync 已修复 release 下发、systemd 工作目录、Mihomo API ready 等真实 Minion 问题，并已推送到远端 commit `99b5a53`。
+- `VERIFIED-TEST`：`select-sync --live-health` 已实现 Yacd 风格实时测速菜单，进入菜单后后台并发刷新延迟；本地单元测试和静态契约测试通过，真实 TTY 交互仍需人工 smoke。
 - `ACCEPTED`：端口白名单采用 Master managed 层和 Minion local override 层；Master 不覆盖 `/etc/proxyfleet/local`。
 - `VERIFIED-TEST`：端口白名单 managed/local/effective 合并、冲突 fail-closed、CLI build 和 Minion local override 保留已有单元测试。
 
@@ -51,6 +53,7 @@
 - [x] 代理配置、节点选择与 Salt 同步 POC
 - [x] 订阅 URL 拉取/转换、订阅+自建节点+自定义规则生成 POC
 - [x] 节点测速显示和缓存 POC
+- [x] Yacd 风格实时测速选择菜单发布
 - [x] Mihomo 安装 fail-closed state POC
 - [x] Mihomo 固定资产 URL/SHA-256/gzip 安装
 - [x] native-mihomo Minion 本地端到端 harness

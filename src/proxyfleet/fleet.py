@@ -123,9 +123,9 @@ def build_node_catalog(release_dir: Path, health_cache_path: Path | None = None)
     """从 release Provider 快照生成稳定节点目录。"""
 
     root = release_dir.resolve()
-    load_release_info(root)
+    release = load_release_info(root)
     manifest = _read_json(root / "manifest.json")
-    health_cache = load_health_cache(health_cache_path) if health_cache_path else {}
+    health_cache = load_health_cache(health_cache_path, release) if health_cache_path else {}
     entries: list[NodeEntry] = []
     seen_ids: set[str] = set()
 
@@ -152,12 +152,15 @@ def build_node_catalog(release_dir: Path, health_cache_path: Path | None = None)
     return entries
 
 
-def load_health_cache(path: Path | None) -> dict[str, dict[str, Any]]:
+def load_health_cache(path: Path | None, release: ReleaseInfo | None = None) -> dict[str, dict[str, Any]]:
     """读取节点健康缓存；缺失文件表示没有缓存。"""
 
     if path is None or not path.exists():
         return {}
     data = _read_json(path)
+    if release is not None:
+        if data.get("release_revision") != release.release_revision or data.get("provider_revision") != release.provider_revision:
+            return {}
     nodes = data.get("nodes", {})
     if isinstance(nodes, dict):
         return {str(key): value for key, value in nodes.items() if isinstance(value, dict)}
@@ -342,6 +345,7 @@ class MihomoClient:
     """Mihomo 最小 API 客户端，PUT 后必须 GET 验证。"""
 
     def __init__(self, base_url: str, secret: str | None = None, timeout: float = 3.0):
+        _assert_loopback_api(base_url)
         self.base_url = base_url.rstrip("/")
         self.secret = secret
         self.timeout = timeout
@@ -569,6 +573,15 @@ def _is_allowed_healthcheck_url(test_url: str) -> bool:
         and not parsed.username
         and not parsed.password
     )
+
+
+def _assert_loopback_api(base_url: str) -> None:
+    parsed = parse.urlparse(base_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise FleetError("E_LOCAL_API", "Mihomo API 仅支持本机 HTTP(S) 地址")
+    if parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+        return
+    raise FleetError("E_LOCAL_API", "Mihomo API 必须是 loopback 地址")
 
 
 def _group_all_names(group: dict[str, Any]) -> set[str]:

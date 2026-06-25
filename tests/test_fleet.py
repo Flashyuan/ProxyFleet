@@ -81,6 +81,8 @@ proxies:
                 json.dumps(
                     {
                         "schema_version": "1.0",
+                        "release_revision": 1,
+                        "provider_revision": 1,
                         "nodes": {
                             node.node_id: {
                                 "last_delay_ms": 123,
@@ -101,6 +103,29 @@ proxies:
             self.assertEqual("ok", merged["health_status"])
             self.assertEqual("fresh", merged["freshness"])
             self.assertTrue(merged["selected"])
+
+    def test_build_node_catalog_ignores_stale_health_cache_revision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            cache = root / "health-cache.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "release_revision": 999,
+                        "provider_revision": 999,
+                        "nodes": {node.node_id: {"last_delay_ms": 123, "health_status": "ok"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            merged = build_node_catalog(release, cache)[0].to_dict()
+
+            self.assertNotIn("last_delay_ms", merged)
+            self.assertEqual("unknown", merged["health_status"])
 
     def test_select_node_writes_desired_and_increments_revision(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -331,6 +356,11 @@ class MihomoClientTests(unittest.TestCase):
             MihomoClient(self.base_url).health_check("[SELF] test-node", "https://www.gstatic.com/generate_204?debug=1")
         self.assertEqual("E_HEALTHCHECK_TARGET_BLOCKED", ctx.exception.error_code)
 
+    def test_mihomo_client_rejects_non_loopback_api(self):
+        with self.assertRaises(FleetError) as ctx:
+            MihomoClient("http://192.168.1.1:9090")
+        self.assertEqual("E_LOCAL_API", ctx.exception.error_code)
+
     def test_cli_health_check_writes_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -353,6 +383,36 @@ class MihomoClientTests(unittest.TestCase):
             data = json.loads(cache.read_text(encoding="utf-8"))
             node_id = build_node_catalog(release)[0].node_id
             self.assertEqual(123, data["nodes"][node_id]["last_delay_ms"])
+            self.assertEqual(1, data["release_revision"])
+            self.assertEqual(1, data["provider_revision"])
+            self.assertEqual("master-local", data["source_scope"])
+
+    def test_cli_health_check_progress_stays_on_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            cache = root / "health.json"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with mock.patch("sys.stdout", new=stdout), mock.patch("sys.stderr", new=stderr):
+                rc = main(
+                    [
+                        "health-check",
+                        str(release),
+                        str(cache),
+                        "--mihomo-api",
+                        self.base_url,
+                        "--all",
+                        "--progress",
+                        "--concurrency",
+                        "4",
+                    ]
+                )
+
+            self.assertEqual(0, rc)
+            self.assertIn("测速中", stderr.getvalue())
+            self.assertIn('"schema_version"', stdout.getvalue())
 
     def test_cli_apply_dry_run_does_not_write_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -948,6 +1008,12 @@ class SaltModuleTests(unittest.TestCase):
 
         self.assertEqual("success", result["status"])
         self.assertEqual(7.0, urlopen.call_args.kwargs["timeout"])
+
+    def test_salt_api_rejects_non_loopback_base_url(self):
+        module = self._module()
+        with self.assertRaises(module._ApplyError) as ctx:
+            module._api("http://192.168.1.1:9090", None, "GET", "/proxies/FLEET_PROXY", None)
+        self.assertEqual("E_LOCAL_API", ctx.exception.error_code)
 
     def test_native_mihomo_local_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
