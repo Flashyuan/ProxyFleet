@@ -158,6 +158,53 @@ mihomo.service
 - `failed`：systemd failed；
 - `unknown`：systemd 查询失败。
 
+## 4.1 Minion 脚本生命周期契约
+
+`proxyfleet-minion.sh` 的 Salt Minion 生命周期和 Mihomo 生命周期必须默认解耦。
+基础命令只控制 `salt-minion`：
+
+```text
+start
+stop
+restart
+status
+uninstall
+```
+
+Mihomo 只能通过显式入口控制：
+
+```text
+start --with-mihomo
+stop --with-mihomo
+restart --with-mihomo
+uninstall --with-mihomo
+mihomo-start
+mihomo-stop
+mihomo-restart
+mihomo-status
+mihomo-uninstall
+```
+
+安全启动前必须验证：
+
+- `mihomo.service` 为 ProxyFleet 生成或接管的 unit；
+- `ExecStart` 指向受管二进制和 `/etc/proxyfleet/current/config.yaml`；
+- 二进制版本和 SHA-256 能对应组件锁或 release manifest；
+- 当前配置文件通过 Mihomo 校验；
+- API secret 和 provider 文件权限为 root-only。
+
+安全停止只允许停止服务，不允许删除任何文件。
+
+安全卸载采用分级删除：
+
+- 默认 `mihomo-uninstall` 只停止、禁用服务并删除 ProxyFleet 拥有的 unit；
+- `--purge-managed` 可删除 managed/effective 策略产物；
+- `--purge-all --yes` 可删除受管 release、current/previous 链接和受管二进制；
+- `/etc/proxyfleet/local` 只有额外传入 `--purge-local-override` 才能删除。
+
+若 unit 所有权、路径、二进制来源或配置校验无法确认，生命周期命令必须
+fail-closed，不得猜测删除范围。
+
 ## 5. Loopback API 契约
 
 Mihomo API 必须仅监听本机 loopback 地址或 Unix socket。禁止监听公网地址，

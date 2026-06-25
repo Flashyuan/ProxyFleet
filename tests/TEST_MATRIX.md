@@ -173,11 +173,17 @@
 
 - **目标**：确认标准库 `curses` TUI 实时测速不阻塞节点选择，且不改变运行状态。
 - **覆盖点**：
-  - `select-sync --live-health` 先显示稳定序号列表，再后台并发刷新延迟；
+  - `select-sync` 不带参数默认进入 TUI；
+  - `--live-health` 作为兼容别名仍可进入同一 TUI；
+  - `--refresh-health` 和 `--no-health-cache` 不再出现在推荐帮助路径；
+  - `select-sync` 先显示稳定序号列表，再后台并发刷新延迟；
   - 用户可在测速未完成时输入序号；
+  - 顶部固定显示当前 `FLEET_PROXY` 选择，无选择时显示 `当前选择：无`；
+  - desired state 与 Mihomo API 实际选择不一致时显示 drift；
   - 一次菜单会话内序号不因延迟结果到达而重排；
   - 长列表不得跨屏改写历史输出；
   - TUI viewport 支持上下滚动、高亮、搜索、重新测速、退出恢复终端；
+  - TUI 具备标题栏、状态栏、搜索栏、节点表格、帮助栏和状态图例；
   - TUI 只刷新可见行、状态栏和输入区域；
   - `q`、Ctrl-C 和异常退出必须恢复 cooked mode；
   - 并发和超时有硬上限，非法值 fail-fast；
@@ -186,8 +192,9 @@
   - 缓存写入使用原子替换；
   - 单节点 timeout/failed 不影响其他节点测速。
 - **最小证据**：
-  - `select-sync --live-health --health-concurrency <n>` 屏幕录像或终端摘要；
+  - `select-sync --health-concurrency <n>` 屏幕录像或终端摘要；
   - `curses` TUI 伪终端测试覆盖滚动、搜索、选择、退出和异常恢复；
+  - 当前选择为有值、无值、desired/API drift 三类视图测试；
   - health cache JSON 中 `release_revision/provider_revision/source_scope`；
   - 非 loopback API 被拒绝的错误摘要；
   - 单元测试覆盖进度输出、缓存绑定和参数边界。
@@ -196,6 +203,9 @@
 
 - **目标**：确认 Master 可统一下发公共端口白名单，同时 Minion 本地规则不会被覆盖。
 - **覆盖点**：
+  - `config-src/port-policy.yaml` 是 Master managed 默认配置源；
+  - `select-sync` 默认检测该文件，存在时按 `merge` 模式同步；
+  - 文件不存在时显示 `端口白名单：未配置`，不得自动生成允许规则；
   - `merge/master-only/local-only/disabled` 四种模式；
   - `/etc/proxyfleet/local/port-policy.yaml` 不被 Salt 同步覆盖或删除；
   - managed/local 合并结果保留规则来源；
@@ -207,6 +217,25 @@
   - dry-run 输出；
   - 冲突失败样例；
   - Salt state 对 `/etc/proxyfleet/local` 的防覆盖测试。
+
+### 3.9 Minion 脚本 Mihomo 生命周期
+
+- **目标**：确认 Minion 脚本能显式、安全地管理本机 Mihomo，同时默认 Salt
+  生命周期命令不误停或误删数据面。
+- **覆盖点**：
+  - `start/stop/restart/uninstall` 默认只操作 `salt-minion`；
+  - `--with-mihomo` 按约定顺序联动 Salt Minion 和 Mihomo；
+  - `mihomo-start` 校验 unit、二进制、配置、权限后启动并验证 active/API；
+  - `mihomo-stop` 只停止服务，保留配置、二进制、release 和 local override；
+  - `mihomo-uninstall` 默认保留 `/etc/proxyfleet`；
+  - `--purge-managed`、`--purge-all --yes`、`--purge-local-override`
+    删除范围符合契约；
+  - unit 非 ProxyFleet 所有、路径不匹配、配置校验失败时 fail-closed。
+- **最小证据**：
+  - `bash -n scripts/proxyfleet-minion.sh`；
+  - mock systemd/shell 测试覆盖默认命令不触碰 Mihomo；
+  - uninstall dry-run 或临时根目录测试的删除清单；
+  - 真实 Ubuntu Minion 上 `mihomo-start/status/stop` 摘要。
 
 ## 4. 最小通过标准
 

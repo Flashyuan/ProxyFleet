@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from proxyfleet.fleet import FleetError
-from proxyfleet.live_select import LiveNode, LiveSelectModel, load_catalog
+from proxyfleet.live_select import LiveNode, LiveSelectModel, _current_selection_summary, load_catalog
 from proxyfleet.cli import main
 
 
@@ -79,6 +79,45 @@ class LiveSelectModelTests(unittest.TestCase):
 
         self.assertEqual(2, code)
 
+    def test_current_selection_shows_none_when_desired_and_api_empty(self):
+        class Client:
+            def get_group(self, group):
+                return {"now": ""}
+
+        self.assertEqual("当前选择：无", _current_selection_summary(None, Client()))
+
+    def test_current_selection_shows_drift(self):
+        class Client:
+            def get_group(self, group):
+                return {"now": "Actual"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            desired = Path(tmp) / "desired.yaml"
+            desired.write_text(json.dumps({"selected_mihomo_name": "Desired"}), encoding="utf-8")
+            summary = _current_selection_summary(desired, Client())
+
+        self.assertEqual("当前选择漂移：desired=Desired actual=Actual", summary)
+
+    def test_current_selection_handles_api_unavailable(self):
+        class Client:
+            def get_group(self, group):
+                raise FleetError("E_LOCAL_API", "down")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            desired = Path(tmp) / "desired.yaml"
+            desired.write_text(json.dumps({"selected_mihomo_name": "Desired"}), encoding="utf-8")
+            summary = _current_selection_summary(desired, Client())
+
+        self.assertEqual("当前选择：未知（API 不可达，desired=Desired）", summary)
+
+    def test_master_script_defaults_select_sync_to_tui(self):
+        script = Path("scripts/proxyfleet-master.sh").read_text(encoding="utf-8")
+
+        self.assertIn("--live-health) shift ;; # 兼容别名", script)
+        self.assertIn('selected_line="$(live_health_menu', script)
+        self.assertNotIn('read -r -p "请输入要同步到所有 Minion 的节点序号', script)
+        self.assertIn("config-src/port-policy.yaml", script)
+
 
 class LiveSelectPtyTests(unittest.TestCase):
     def _catalog(self, tmp: str, count: int = 20) -> Path:
@@ -122,7 +161,7 @@ class LiveSelectPtyTests(unittest.TestCase):
                     if not data:
                         break
                     output.extend(data)
-                    if not sent and b"ProxyFleet Live Select" in output:
+                    if not sent and b"ProxyFleet Select" in output:
                         os.write(fd, keys)
                         sent = True
                 waited, status_candidate = os.waitpid(pid, os.WNOHANG)

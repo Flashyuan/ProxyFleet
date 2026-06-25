@@ -22,6 +22,7 @@
 - `checkpoints/`
 - `tasks/`、`results/`、`handoffs/`
 - `SOURCES.md`
+- `docs/USER_MANUAL.md`
 
 ---
 
@@ -43,6 +44,8 @@
 12. Git、ADR、契约、状态文件和测试证据是事实来源；聊天记忆不是事实来源。
 13. 固定 `GIT-SCM` 岗位负责仓库初始化、commit、tag、remote、push、错误处理和远端核验；其他 Subagent 不自行改写 Git 历史。
 14. 端口白名单采用分层所有权：Master 管理公共规则，Minion 保留本机 override，Master 不覆盖 `/etc/proxyfleet/local`。
+15. Minion 脚本默认只控制 `salt-minion` 生命周期；Mihomo 启停和卸载必须通过显式 `--with-mihomo` 参数或 `mihomo-*` 专用子命令触发，避免误停代理数据面。
+16. `select-sync` 默认进入实时 TUI；`--live-health` 保留为兼容别名，`--refresh-health` 和 `--no-health-cache` 进入废弃路径，不作为推荐用户入口。
 
 对应 ADR 见 `DECISIONS.md`。
 
@@ -150,6 +153,10 @@ V1 不实现：
 ### 4.3 Salt Minion
 
 每个子节点唯一新增的控制服务。它主动连接 Master，在宿主机执行受控 State 和本地 Mihomo API 操作。
+
+Minion 安装脚本的基础 `start/stop/restart/uninstall` 语义默认只管理
+`salt-minion`。如需让脚本联动 Mihomo，必须使用显式参数或专用子命令，
+并在执行前完成所有权校验、路径校验和回滚边界检查。
 
 ### 4.4 Mihomo
 
@@ -353,6 +360,49 @@ release_channel=stable
 
 Minion 恢复连接后执行 reconcile：对比期望 release、实际哈希和期望节点；只应用最新状态，不重放所有历史操作。
 
+### 8.4 Minion 本机 Mihomo 生命周期控制
+
+目标：让 `proxyfleet-minion.sh` 能安全控制本机 Mihomo，但不让普通
+Salt Minion 操作误伤代理数据面。
+
+命令语义：
+
+- `start/stop/restart/status/uninstall`：默认只控制 `salt-minion`；
+- `start --with-mihomo`：先启动 `salt-minion`，再执行 Mihomo 安全启动；
+- `stop --with-mihomo`：先停止 Mihomo，再停止 `salt-minion`；
+- `restart --with-mihomo`：按 `salt-minion` 和 Mihomo 各自安全流程重启；
+- `uninstall --with-mihomo`：卸载 Salt Minion，同时执行 Mihomo 安全卸载；
+- `mihomo-start/mihomo-stop/mihomo-restart/mihomo-status/mihomo-uninstall`：
+  只控制本机 Mihomo。
+
+安全启动必须满足：
+
+- `/usr/local/bin/mihomo` 存在且版本匹配组件锁或当前 release manifest；
+- `mihomo.service` 由 ProxyFleet 管理，`ExecStart` 指向受管 `config.yaml`；
+- `/etc/proxyfleet/current/config.yaml` 可读且校验通过；
+- API secret、runtime 目录和日志目录权限符合契约；
+- `systemctl start mihomo` 后必须验证 systemd active，必要时验证 loopback API；
+- 失败时返回明确错误，不覆盖 Last Known Good。
+
+安全停止必须满足：
+
+- 只停止 `mihomo.service`，不删除二进制、配置、release、override 或日志；
+- systemd stop 失败必须返回 `E_SERVICE_SYSTEMD`，保留错误摘要。
+
+安全卸载分级：
+
+- 默认 `mihomo-uninstall`：停止并禁用服务，删除 ProxyFleet 拥有的 unit；
+  保留 `/etc/proxyfleet`、release、local override 和日志；
+- `--purge-managed`：额外删除 `/etc/proxyfleet/managed` 和
+  `/etc/proxyfleet/effective`，仍保留 local override；
+- `--purge-all --yes`：删除 ProxyFleet 受管 release、current/previous 链接、
+  managed/effective、受管 systemd unit 和受管二进制；
+- `--purge-local-override`：必须与 `--purge-all --yes` 同时使用，才允许删除
+  `/etc/proxyfleet/local`。
+
+任何路径不匹配、unit 非 ProxyFleet 拥有、二进制非组件锁来源、配置校验失败、
+local override 存在但未显式允许删除时，卸载必须 fail-closed。
+
 ---
 
 ## 9. 统一节点切换
@@ -404,26 +454,33 @@ fleetctl nodes
 fleetctl nodes --refresh
 fleetctl health-check --node-id <node-id>
 fleetctl health-check --all --target-group production
-scripts/proxyfleet-master.sh select-sync --live-health
+scripts/proxyfleet-master.sh select-sync
 ```
 
 `nodes` 默认读取最近缓存；只有显式 `--refresh` 或 `health-check` 才主动触发
 探测。测速结果必须标注 `fresh|stale|unknown`，不能把未知或超时写成成功。
 
-`select-sync --live-health` 使用 Python 标准库 `curses` TUI。历史 Bash/ANSI 版本只
-作为过渡实现；正式入口由 `scripts/proxyfleet-master.sh select-sync --live-health`
-保持不变，并调用 `proxyfleet live-select`。
+`select-sync` 默认使用 Python 标准库 `curses` TUI。`--live-health` 仅作为兼容别名
+保留；`--refresh-health` 和 `--no-health-cache` 不再作为推荐入口，后续应移出帮助
+或标记为 deprecated。历史 Bash/ANSI 版本只作为过渡实现，不得作为默认体验。
 
 TUI 目标体验：
 
 - 进入 alternate screen，不污染原终端历史；
 - 只渲染当前 viewport，节点数量超过屏幕高度时支持上下滚动；
-- 顶部固定显示总进度、`ok/timeout/failed`、并发、耗时和数据来源；
+- 顶部固定显示产品标题、当前 release、当前 `FLEET_PROXY` 选择、总进度、
+  `ok/timeout/failed`、并发、耗时和数据来源；
+- 当前选择必须清晰显示：若 desired 或 Mihomo API 无当前选择，显示
+  `当前选择：无`；若 desired 与实际 Mihomo API 不一致，显示 drift 提示；
 - 列表内实时刷新每个可见节点的 `pending/ok/timeout/failed` 与延迟；
 - 支持 `↑/↓` 或 `j/k` 移动、`Enter` 选择、`/` 搜索、`r` 重新测速、`q` 退出；
 - 一次会话内默认序号稳定，不因测速结果到达而自动重排；
 - 如加入延迟排序，必须由显式按键触发，且排序后仍显示原始序号和当前高亮项；
 - 用户不需要等待全量测速完成，可随时选择当前高亮或输入稳定序号；
+- 视觉上使用固定区域：标题栏、状态栏、过滤/搜索栏、节点表格、帮助栏；
+  长文本必须截断并保留节点序号、`mihomo_name` 和延迟状态；
+- 状态呈现至少区分：当前选中、当前高亮、pending、ok、timeout、failed、
+  stale、unknown，不得只显示一组裸文本；
 - 退出后恢复原终端状态，不留下错位光标、残留 raw mode 或半屏内容。
 
 实时刷新不得改变 desired state，只有用户确认序号或高亮项后才写入 desired 并同步
@@ -494,6 +551,9 @@ HTTP response body    → 节点快照
 ### 11.1 文件所有权
 
 ```text
+config-src/
+└── port-policy.yaml           # Master 本机配置源，默认读取，Git 忽略
+
 /etc/proxyfleet/
 ├── managed/
 │   └── port-policy.yaml       # Master 同步，可覆盖
@@ -502,6 +562,10 @@ HTTP response body    → 节点快照
 └── effective/
     └── port-policy.yaml       # Minion 合并生成，可覆盖
 ```
+
+Master 公共规则默认从 `config-src/port-policy.yaml` 读取。该文件属于生产本机
+配置源，默认被 `.gitignore` 排除；如果需要提交示例，只能使用
+`config-src/port-policy.example.yaml`。
 
 Master 只能写 `managed/`。Salt state 不得对 `/etc/proxyfleet/local` 使用
 `file.managed`、`file.recurse clean=True`、`file.absent` 或其它会覆盖/删除本机
@@ -550,6 +614,14 @@ fleetctl port-policy build --target-group production --dry-run
 fleetctl port-policy apply --target-group production
 fleetctl port-policy status --target-group production
 ```
+
+脚本入口规划：
+
+- `scripts/proxyfleet-master.sh select-sync` 默认检查 `config-src/port-policy.yaml`；
+- 文件存在时，默认以 `merge` 模式随 release/desired 一起发布到 managed 层；
+- 文件不存在时，TUI 状态栏显示 `端口白名单：未配置`，不隐式创建规则；
+- 用户仍可用 `--port-policy PATH` 指定其它 managed 规则文件；
+- Minion 本机规则只写 `/etc/proxyfleet/local/port-policy.yaml`，Master 不覆盖。
 
 状态报告至少包含：
 
@@ -809,10 +881,13 @@ fleetctl apply --select <node-id> --target-group production
   freshness、失败原因和数据来源；
 - `fleetctl nodes --refresh` 或 `fleetctl health-check` 能主动刷新缓存；
 - 多个节点返回延迟时可排序，失败节点显示原因但不影响其他节点；
-- `select-sync --live-health` 进入后必须先显示节点列表，再后台并发刷新延迟；
+- `select-sync` 进入后必须先显示节点列表，再后台并发刷新延迟；
   用户可在测速未完成时输入序号，序号在一次菜单会话内必须稳定；
+- `--live-health` 只能作为兼容别名进入同一 TUI；
+- TUI 必须在固定顶部显示当前选中节点；无选择时显示 `当前选择：无`；
 - `curses` TUI 必须支持 viewport 滚动、搜索、键盘选择、退出恢复终端和
   可见行原位刷新；长列表不得依赖跨屏 ANSI 光标回写历史输出；
+- TUI 必须显示清晰的标题栏、状态栏、搜索栏、节点表格、帮助栏和状态图例；
 - 实时测速必须显示进度或动态状态，长耗时操作不得表现为无输出卡住；
 - `--dry-run` 不写 release、desired、Salt file_roots 或 Mihomo 状态；
 - 测速不得改变 `FLEET_PROXY` 当前选择，不得关闭连接，不得触发 reload；
@@ -839,6 +914,19 @@ fleetctl apply --select <node-id> --target-group production
   Mihomo 安装、systemd 启动、release 应用、`FLEET_PROXY` 选择、测速和回滚；
 - 缺 SHA、SHA 不匹配、gzip 解压失败、版本不匹配、systemd 启动失败必须
   fail-closed，不能覆盖 Last Known Good。
+
+### 16.5A Minion 脚本 Mihomo 生命周期验收
+
+- 默认 `proxyfleet-minion.sh start/stop/restart/uninstall` 不得启动、停止或删除
+  Mihomo；
+- `--with-mihomo` 和 `mihomo-*` 子命令必须先验证 systemd unit、二进制、
+  配置路径和 ProxyFleet 所有权；
+- `mihomo-start` 必须完成 active/API 就绪验证；
+- `mihomo-stop` 必须保留配置、二进制、release、Last Known Good 和 local override；
+- `mihomo-uninstall` 默认保留 `/etc/proxyfleet`，危险清理必须要求
+  `--purge-all --yes`；
+- `/etc/proxyfleet/local` 只有显式 `--purge-local-override` 才能删除；
+- 所有失败路径必须 fail-closed，并返回可恢复建议。
 
 ### 16.6 端口白名单与本地 override 验收
 
@@ -876,13 +964,15 @@ fleetctl apply --select <node-id> --target-group production
 2. 完成真实 `native-mihomo` Minion 端到端；
 3. 增加端口白名单分层配置；
 4. 增加 Minion 本地 override 保护机制；
-5. 完成 TUN/proxy-only profiles、节点健康检查/测速和回滚。
+5. 完成 TUN/proxy-only profiles、节点健康检查/测速和回滚；
+6. 增加 Minion 脚本显式 Mihomo 安全启动、停止、状态和完整卸载。
 
 ### Phase 4：统一节点切换
 
 实现稳定 node_id、PREPARE/COMMIT、strict/best-effort、验证、漂移、补偿回滚、
-节点测速显示和 convergence report。`--live-health` 正式实现采用标准库 `curses`
-TUI，提供 `top/htop/btop` 风格实时交互、长列表 viewport、搜索、选择和终端恢复。
+节点测速显示和 convergence report。`select-sync` 默认进入标准库 `curses` TUI，
+提供 `top/htop/btop` 风格实时交互、当前选择展示、长列表 viewport、搜索、选择、
+动态延迟刷新、端口白名单状态提示和终端恢复。
 
 ### Phase 5：ShellCrash 迁移工具
 

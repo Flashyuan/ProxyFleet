@@ -188,14 +188,19 @@ release 的节点选择。
 
 ### 6B. Live Select TUI Contract
 
-`select-sync --live-health` 的正式目标是 `curses` TUI，而不是 Bash/ANSI 长列表
-回写。TUI 必须满足：
+`select-sync` 的默认正式目标是 `curses` TUI，而不是 Bash/ANSI 长列表回写。
+`--live-health` 仅保留为兼容别名；`--refresh-health` 和 `--no-health-cache`
+不得作为推荐入口。TUI 必须满足：
 
 - 使用 alternate screen 或等价机制，退出后恢复原终端状态；
 - 支持节点 viewport，长列表不得依赖跨屏光标上移改写历史输出；
 - 支持键盘移动、高亮选择、确认选择、搜索、重新测速和退出；
+- 顶部固定显示当前 release、当前 `FLEET_PROXY` 选择和数据来源；
+- 当前选择不可确定时显示 `当前选择：无`，不得留空或显示误导性默认节点；
+- desired state 与 Mihomo API 实际选择不一致时显示 drift 状态；
 - 默认保持稳定序号，不因测速结果到达而自动重排；
-- 实时刷新只更新当前可见行、状态栏和输入区域；
+- 实时刷新只更新当前可见行、标题/状态栏、搜索栏和输入区域；
+- UI 必须包含标题栏、状态栏、搜索栏、节点表格、帮助栏和状态图例；
 - 选择确认前不得写 desired state、不得修改 `FLEET_PROXY`、不得触发 Salt 同步；
 - `q`、Ctrl-C、异常退出均必须恢复 cooked mode，避免终端残留 raw mode；
 - 不新增第三方 TUI 依赖；如需引入依赖，必须先进入组件锁定和安全审计流程。
@@ -250,10 +255,15 @@ Mihomo。
 端口白名单配置分为三层：
 
 ```text
+source:    config-src/port-policy.yaml
 managed:   /etc/proxyfleet/managed/port-policy.yaml
 local:     /etc/proxyfleet/local/port-policy.yaml
 effective: /etc/proxyfleet/effective/port-policy.yaml
 ```
+
+`config-src/port-policy.yaml` 是 Master 公共规则的默认本机配置源，默认不进入 Git。
+`select-sync` 默认检查该文件：存在则以 `merge` 模式发布到 managed 层；不存在则
+显示未配置，不自动生成允许规则。
 
 `managed` 由 Master 同步；`local` 由 Minion 本机维护；`effective` 由 Minion
 合并生成。Master 不得覆盖或删除 `local`。

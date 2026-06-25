@@ -26,9 +26,10 @@
 - `VERIFIED-TEST`：安装脚本不再拉取浮动 Salt `latest` sources，Salt state 重复 ID 已有静态契约测试。
 - `VERIFIED-TEST`：Mihomo v1.19.27 已按同版本多架构资产固定 URL、SHA-256 和 gzip 压缩格式；Minion 会根据 CPU flags 选择可运行的 amd64 v1/v2/v3/compatible 或 arm64 资产。
 - `VERIFIED-TEST`：native-mihomo sync 已修复 release 下发、systemd 工作目录、Mihomo API ready 等真实 Minion 问题，并已推送到远端 commit `99b5a53`。
-- `VERIFIED-TEST`：`select-sync --live-health` 已重构为标准库 `curses` TUI，入口保持不变；支持 viewport、搜索、键盘选择、重新测速、退出恢复终端和后台并发延迟刷新。107 项单元/静态/伪终端测试通过，QA-RELEASE 复审为 PASS_WITH_RISK，真实用户终端仍建议 smoke。
+- `VERIFIED-TEST`：`select-sync` 默认进入标准库 `curses` TUI，`--live-health` 保留为兼容别名；TUI 显示当前选择/无选择/API 不可达/drift、端口白名单状态，并后台并发刷新节点延迟。全量 118 项测试通过。
 - `ACCEPTED`：端口白名单采用 Master managed 层和 Minion local override 层；Master 不覆盖 `/etc/proxyfleet/local`。
 - `VERIFIED-TEST`：端口白名单 managed/local/effective 合并、冲突 fail-closed、CLI build 和 Minion local override 保留已有单元测试。
+- `VERIFIED-TEST`：Minion 脚本已支持显式 Mihomo 生命周期控制；默认 `start/stop/restart/uninstall` 只控制 `salt-minion`，`--with-mihomo` 和 `mihomo-*` 才控制 Mihomo，卸载分级保护 local override。
 
 ## 2. 当前产物
 
@@ -60,6 +61,7 @@
 - [x] native-mihomo Minion 本地端到端 harness
 - [x] 端口白名单分层配置
 - [x] Minion 本地 override 保护机制
+- [x] Minion 脚本 Mihomo 安全生命周期控制
 - [ ] 测试环境
 - [x] 可运行 POC
 
@@ -130,8 +132,10 @@
 - TP-0020：native-mihomo Minion 端到端；Owner CONTROL-SALT/DATA-MIHOMO；状态 PARTIAL，本地 harness 通过，systemd 错误边界和选择失败回滚已有单元测试，等待真实测试机验证。
 - TP-0021：端口白名单分层配置与本地 override 保护；Owner OPS-PLATFORM/CONTROL-SALT；状态 IMPLEMENTED，落地后端待决策。
 - TP-0022：`curses` TUI 实时测速选择菜单；Owner DATA-MIHOMO/PRODUCT-SPEC；状态 IMPLEMENTED，本地测试、伪终端验证和 QA 复审通过，等待 Git 发布记录。
+- TP-0023：Minion 脚本 Mihomo 安全生命周期控制；Owner CONTROL-SALT/DATA-MIHOMO；状态 IMPLEMENTED，本地 mock systemd 测试通过，真实 Minion smoke 待生产窗口执行。
+- TP-0024：`select-sync` 默认 TUI、当前选择展示与端口白名单 UX；Owner PRODUCT-SPEC/DATA-MIHOMO/CONTROL-SALT；状态 IMPLEMENTED，本地单元、伪终端和全量测试通过。
 
-TP-0018 已创建规划 Task/Result；TP-0019/TP-0020/TP-0021 已创建独立 Task Packet，并通过合并 Result Packet 记录实现证据。历史 TP-0003 至 TP-0009 仍为早期路线占位，不得视为已开始。
+TP-0018 已创建规划 Task/Result；TP-0019/TP-0020/TP-0021 已创建独立 Task Packet，并通过合并 Result Packet 记录实现证据。TP-0023 和 TP-0024 已完成实现并补充测试证据。历史 TP-0003 至 TP-0009 仍为早期路线占位，不得视为已开始。
 
 ## 8. Git 启动所需输入
 

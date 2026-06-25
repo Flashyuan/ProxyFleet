@@ -80,6 +80,10 @@ def build_parser() -> argparse.ArgumentParser:
     live_select.add_argument("--concurrency", type=int, default=16, help="并发测速数量")
     live_select.add_argument("--url", default=DEFAULT_TEST_URL, help="健康检查 URL")
     live_select.add_argument("--selection-output", default=None, help="可选：把选中节点 TSV 写入文件")
+    live_select.add_argument("--desired-path", default=None, help="可选：读取 desired state 用于显示当前选择")
+    live_select.add_argument("--release-label", default="-", help="TUI 标题栏 release 标签")
+    live_select.add_argument("--target-label", default="-", help="TUI 标题栏 Salt target 标签")
+    live_select.add_argument("--port-policy-status", default="端口白名单：未配置", help="TUI 状态栏端口白名单状态")
 
     select = subparsers.add_parser("select-node", help="选择代理节点并写入 desired state")
     select.add_argument("release_dir", help="release 目录")
@@ -290,6 +294,10 @@ def main(argv: list[str] | None = None) -> int:
                 timeout_ms=args.timeout_ms,
                 concurrency=args.concurrency,
                 test_url=args.url,
+                desired_path=Path(args.desired_path) if args.desired_path else None,
+                release_label=args.release_label,
+                target_label=args.target_label,
+                port_policy_status=args.port_policy_status,
             )
         except FleetError as exc:
             print(f"{exc.error_code}: {exc.message}", file=sys.stderr)

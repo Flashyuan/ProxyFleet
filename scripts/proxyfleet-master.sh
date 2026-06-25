@@ -220,12 +220,20 @@ live_health_menu() {
   local mihomo_api="$2"
   local timeout_ms="$3"
   local concurrency="$4"
+  local desired_path="$5"
+  local release_label="$6"
+  local target_label="$7"
+  local port_policy_status="$8"
   local selection_file
   selection_file="$(mktemp)"
   if proxyfleet_python live-select "${catalog_file}" \
     --mihomo-api "${mihomo_api}" \
     --timeout-ms "${timeout_ms}" \
     --concurrency "${concurrency}" \
+    --desired-path "${desired_path}" \
+    --release-label "${release_label}" \
+    --target-label "${target_label}" \
+    --port-policy-status "${port_policy_status}" \
     --selection-output "${selection_file}" \
     </dev/tty >/dev/tty; then
     cat "${selection_file}"
@@ -246,9 +254,9 @@ select_sync() {
   local target_group="production"
   local health_cache="${PROJECT_ROOT}/runtime/health.json"
   local port_policy=""
+  local port_policy_explicit="false"
   local port_policy_mode="merge"
   local refresh_health_first="false"
-  local live_health="false"
   local use_health_cache="true"
   local mihomo_api="http://127.0.0.1:9090"
   local health_timeout_ms="2000"
@@ -263,12 +271,12 @@ select_sync() {
       --target-group) target_group="$2"; shift 2 ;;
       --health-cache) health_cache="$2"; shift 2 ;;
       --refresh-health) refresh_health_first="true"; shift ;;
-      --live-health) live_health="true"; shift ;;
+      --live-health) shift ;; # 兼容别名：select-sync 默认已进入 TUI。
       --no-health-cache) use_health_cache="false"; shift ;;
       --mihomo-api) mihomo_api="$2"; shift 2 ;;
       --health-timeout-ms) health_timeout_ms="$2"; shift 2 ;;
       --health-concurrency) health_concurrency="$2"; shift 2 ;;
-      --port-policy) port_policy="$2"; shift 2 ;;
+      --port-policy) port_policy="$2"; port_policy_explicit="true"; shift 2 ;;
       --port-policy-mode) port_policy_mode="$2"; shift 2 ;;
       *) die "未知 select-sync 参数：$1" ;;
     esac
@@ -283,6 +291,16 @@ select_sync() {
 
   [[ -f "${PROJECT_ROOT}/component-locks.json" ]] || die "缺少 ${PROJECT_ROOT}/component-locks.json"
   [[ -d "${release_dir}" ]] || die "release 目录不存在：${release_dir}"
+
+  local default_port_policy="${PROJECT_ROOT}/config-src/port-policy.yaml"
+  local port_policy_status="端口白名单：未配置"
+  if [[ "${port_policy_explicit}" == "false" && -f "${default_port_policy}" ]]; then
+    port_policy="${default_port_policy}"
+  fi
+  if [[ -n "${port_policy}" ]]; then
+    [[ -f "${port_policy}" ]] || die "端口白名单文件不存在：${port_policy}"
+    port_policy_status="端口白名单：$(basename "${port_policy}") mode=${port_policy_mode}"
+  fi
 
   if [[ "${refresh_health_first}" == "true" ]]; then
     if ! refresh_health \
@@ -304,42 +322,17 @@ select_sync() {
     proxyfleet_python nodes "${release_dir}" > "${catalog_file}"
   fi
 
-  local menu_file
-  menu_file="$(mktemp)"
-  python3 - "${catalog_file}" > "${menu_file}" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as fh:
-    payload = json.load(fh)
-
-nodes = payload.get("nodes", [])
-if not nodes:
-    raise SystemExit("没有可选择节点")
-
-for index, node in enumerate(nodes, start=1):
-    name = node.get("mihomo_name") or ""
-    node_id = node.get("node_id") or ""
-    status = node.get("health_status") or "unknown"
-    delay = node.get("last_delay_ms")
-    delay_text = f"{delay}ms" if isinstance(delay, int) else "-"
-    print(f"{index}\t{node_id}\t{name}\t{status}\t{delay_text}")
-PY
-
-  echo "可选代理节点："
   local selected_line selected_node_id selected_name
-  if [[ "${live_health}" == "true" ]]; then
-    if ! selected_line="$(live_health_menu "${catalog_file}" "${mihomo_api}" "${health_timeout_ms}" "${health_concurrency}")"; then
-      die "未选择有效节点序号"
-    fi
-  else
-    awk -F '\t' '{printf "%4d. %-60s  [%s %s]\n", NR, $3, $4, $5}' "${menu_file}"
-    echo
-
-    local selected_index
-    read -r -p "请输入要同步到所有 Minion 的节点序号: " selected_index
-    [[ "${selected_index}" =~ ^[0-9]+$ ]] || die "序号必须是数字"
-    selected_line="$(awk -F '\t' -v idx="${selected_index}" 'NR == idx {print $0}' "${menu_file}")"
+  if ! selected_line="$(live_health_menu \
+    "${catalog_file}" \
+    "${mihomo_api}" \
+    "${health_timeout_ms}" \
+    "${health_concurrency}" \
+    "${runtime_dir}/desired.yaml" \
+    "$(basename "${release_dir}")" \
+    "${target}" \
+    "${port_policy_status}")"; then
+    die "未选择有效节点序号"
   fi
   [[ -n "${selected_line}" ]] || die "未选择有效节点序号"
   selected_node_id="$(printf '%s\n' "${selected_line}" | awk -F '\t' '{print $2}')"
@@ -416,7 +409,7 @@ usage() {
   status           查看 salt-master 和 salt-key 状态
   sync-assets      同步 ProxyFleet Salt module/state 到 file_roots
   refresh-health   刷新本机 Mihomo API 节点测速缓存
-  select-sync      按序号选择节点，并同步到所有 Minion
+  select-sync      进入实时 TUI 选择节点，并同步到所有 Minion
   uninstall        卸载 salt-master，默认保留 PKI 和状态目录
   uninstall --purge-data
                    危险：卸载并删除 Master PKI/配置/POC states
@@ -426,12 +419,13 @@ select-sync 常用参数：
   --runtime-dir PATH       默认 runtime
   --target '*'             默认同步全部 Minion
   --health-cache PATH      默认 runtime/health.json，存在时展示测速状态
-  --refresh-health         选择前先用本机 Mihomo API 刷新测速
-  --no-health-cache        不读取测速缓存，只显示 unknown
+  --live-health            兼容别名：行为与默认入口一致
   --mihomo-api URL         默认 http://127.0.0.1:9090
   --health-timeout-ms N    默认 2000
   --health-concurrency N   默认 16
-  --port-policy PATH       可选：同步 Master managed 端口白名单
+  --port-policy PATH       可选：同步 Master managed 端口白名单；默认检测 config-src/port-policy.yaml
+  --refresh-health         deprecated：进入 TUI 前先刷新测速缓存
+  --no-health-cache        deprecated：不读取测速缓存，只显示 unknown
 USAGE
 }
 

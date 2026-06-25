@@ -28,6 +28,8 @@ class LiveNode:
     health_status: str = "pending"
     last_delay_ms: int | None = None
     last_error_code: str | None = None
+    provider_id: str = ""
+    selected: bool = False
 
     @classmethod
     def from_catalog_item(cls, index: int, item: dict[str, Any]) -> "LiveNode":
@@ -38,6 +40,8 @@ class LiveNode:
             health_status=str(item.get("health_status") or "pending"),
             last_delay_ms=item.get("last_delay_ms") if isinstance(item.get("last_delay_ms"), int) else None,
             last_error_code=item.get("last_error_code") if isinstance(item.get("last_error_code"), str) else None,
+            provider_id=str(item.get("provider_id") or ""),
+            selected=bool(item.get("selected") is True),
         )
 
     def status_text(self) -> str:
@@ -132,6 +136,10 @@ def run_live_select(
     timeout_ms: int = 2000,
     concurrency: int = 16,
     test_url: str = DEFAULT_TEST_URL,
+    desired_path: Path | None = None,
+    release_label: str = "-",
+    target_label: str = "-",
+    port_policy_status: str = "端口白名单：未配置",
 ) -> LiveNode | None:
     """运行 curses TUI，返回用户确认选择的节点；退出返回 None。"""
 
@@ -142,17 +150,44 @@ def run_live_select(
     nodes = load_catalog(catalog_path)
     client = MihomoClient(mihomo_api, mihomo_secret)
     model = LiveSelectModel(nodes)
-    runner = _LiveSelectRunner(model, client, timeout_ms, concurrency, test_url)
+    current_selection = _current_selection_summary(desired_path, client)
+    runner = _LiveSelectRunner(
+        model,
+        client,
+        timeout_ms,
+        concurrency,
+        test_url,
+        current_selection=current_selection,
+        release_label=release_label,
+        target_label=target_label,
+        port_policy_status=port_policy_status,
+    )
     return runner.run()
 
 
 class _LiveSelectRunner:
-    def __init__(self, model: LiveSelectModel, client: MihomoClient, timeout_ms: int, concurrency: int, test_url: str):
+    def __init__(
+        self,
+        model: LiveSelectModel,
+        client: MihomoClient,
+        timeout_ms: int,
+        concurrency: int,
+        test_url: str,
+        *,
+        current_selection: str,
+        release_label: str,
+        target_label: str,
+        port_policy_status: str,
+    ):
         self.model = model
         self.client = client
         self.timeout_ms = timeout_ms
         self.concurrency = min(concurrency, len(model.nodes))
         self.test_url = test_url
+        self.current_selection = current_selection
+        self.release_label = release_label
+        self.target_label = target_label
+        self.port_policy_status = port_policy_status
         self.updates: queue.Queue[tuple[str, str, int | None, str | None]] = queue.Queue()
         self.tasks: queue.Queue[LiveNode] = queue.Queue()
         self.stop_event = threading.Event()
@@ -232,38 +267,48 @@ class _LiveSelectRunner:
     def _draw(self, screen) -> None:
         screen.erase()
         height, width = screen.getmaxyx()
-        viewport_height = max(1, height - 5)
+        viewport_height = max(1, height - 7)
         total = len(self.model.nodes)
         done = len(self.completed)
         elapsed = int(time.monotonic() - self.started)
         sort_label = "delay" if self.model.sort_by_delay else "index"
-        header = (
-            f"ProxyFleet Live Select  {done}/{total} "
+        title = f"ProxyFleet Select | release={self.release_label} | target={self.target_label} | {self.current_selection}"
+        status = (
+            f"进度 {done}/{total} "
             f"ok={self.counts['ok']} timeout={self.counts['timeout']} failed={self.counts['failed']} "
-            f"elapsed={elapsed}s 并发={self.concurrency} source=master-local sort={sort_label}"
+            f"耗时={elapsed}s 并发={self.concurrency} source=master-local sort={sort_label} | {self.port_policy_status}"
         )
         help_text = "↑/↓ j/k 移动  Enter 选择  / 搜索  r 重测  s 延迟排序  n 原序  q 退出"
-        self._addstr(screen, 0, 0, header, width, curses.A_BOLD)
-        self._addstr(screen, 1, 0, help_text, width)
+        self._addstr(screen, 0, 0, title, width, curses.A_BOLD)
+        self._addstr(screen, 1, 0, status, width)
         if self.search_mode:
             self._addstr(screen, 2, 0, f"search: {self.model.search}", width, curses.A_REVERSE)
         else:
             self._addstr(screen, 2, 0, f"filter: {self.model.search or '-'}", width)
+        self._addstr(screen, 3, 0, "序号  状态        延迟      当前  Provider        Mihomo 节点", width, curses.A_BOLD)
         page = self.model.page(viewport_height)
         visible = self.model.visible_nodes()
         start = self.model.offset + 1 if visible else 0
         end = min(self.model.offset + len(page), len(visible))
-        self._addstr(screen, 3, 0, f"visible {start}-{end}/{len(visible)}", width)
+        self._addstr(screen, height - 2, 0, f"visible {start}-{end}/{len(visible)}  图例：*当前选择 pending/ok/timeout/failed/stale/unknown", width)
+        self._addstr(screen, height - 1, 0, help_text, width, curses.A_DIM if hasattr(curses, "A_DIM") else curses.A_NORMAL)
         for row, node in enumerate(page, start=4):
+            if row >= height - 2:
+                break
             cursor_index = self.model.offset + row - 4
             attr = curses.A_REVERSE if cursor_index == self.model.cursor else curses.A_NORMAL
             marker = ">" if cursor_index == self.model.cursor else " "
-            line = f"{marker} {node.index:4d} {node.mihomo_name:<64.64} [{node.status_text():>12}]"
+            current_marker = "*" if node.selected else " "
+            status = node.health_status[:10]
+            delay = f"{node.last_delay_ms}ms" if isinstance(node.last_delay_ms, int) else "-"
+            provider = node.provider_id[:14]
+            name_width = max(16, width - 48)
+            line = f"{marker} {node.index:4d}  {status:<10} {delay:>8}   {current_marker}   {provider:<14.14} {node.mihomo_name:<{name_width}.{name_width}}"
             self._addstr(screen, row, 0, line, width, attr)
         screen.refresh()
 
     def _handle_key(self, key: int, screen) -> LiveNode | object | None:
-        viewport_height = max(1, screen.getmaxyx()[0] - 5)
+        viewport_height = max(1, screen.getmaxyx()[0] - 7)
         if self.search_mode:
             if key in (27, curses.KEY_EXIT):
                 self.search_mode = False
@@ -308,3 +353,30 @@ class _LiveSelectRunner:
             screen.addstr(y, x, text[: max(0, width - 1)], attr)
         except curses.error:
             pass
+
+
+def _current_selection_summary(desired_path: Path | None, client: MihomoClient) -> str:
+    desired_name: str | None = None
+    if desired_path and desired_path.exists():
+        try:
+            desired = json.loads(desired_path.read_text(encoding="utf-8"))
+            value = desired.get("selected_mihomo_name")
+            if isinstance(value, str) and value:
+                desired_name = value
+        except (OSError, json.JSONDecodeError):
+            desired_name = None
+
+    try:
+        group = client.get_group("FLEET_PROXY")
+        actual = group.get("now")
+        actual_name = actual if isinstance(actual, str) and actual else None
+    except FleetError:
+        if desired_name:
+            return f"当前选择：未知（API 不可达，desired={desired_name}）"
+        return "当前选择：未知（API 不可达）"
+
+    if not desired_name and not actual_name:
+        return "当前选择：无"
+    if desired_name and actual_name and desired_name != actual_name:
+        return f"当前选择漂移：desired={desired_name} actual={actual_name}"
+    return f"当前选择：{desired_name or actual_name}"
