@@ -171,11 +171,15 @@
 
 ### 3.7A 实时测速选择菜单
 
-- **目标**：确认 Yacd 风格 CLI 实时测速不阻塞节点选择，且不改变运行状态。
+- **目标**：确认标准库 `curses` TUI 实时测速不阻塞节点选择，且不改变运行状态。
 - **覆盖点**：
   - `select-sync --live-health` 先显示稳定序号列表，再后台并发刷新延迟；
   - 用户可在测速未完成时输入序号；
   - 一次菜单会话内序号不因延迟结果到达而重排；
+  - 长列表不得跨屏改写历史输出；
+  - TUI viewport 支持上下滚动、高亮、搜索、重新测速、退出恢复终端；
+  - TUI 只刷新可见行、状态栏和输入区域；
+  - `q`、Ctrl-C 和异常退出必须恢复 cooked mode；
   - 并发和超时有硬上限，非法值 fail-fast；
   - Mihomo API 仅允许 loopback 地址；
   - 缓存绑定 release/provider revision，不合并旧 release 缓存；
@@ -183,6 +187,7 @@
   - 单节点 timeout/failed 不影响其他节点测速。
 - **最小证据**：
   - `select-sync --live-health --health-concurrency <n>` 屏幕录像或终端摘要；
+  - `curses` TUI 伪终端测试覆盖滚动、搜索、选择、退出和异常恢复；
   - health cache JSON 中 `release_revision/provider_revision/source_scope`；
   - 非 loopback API 被拒绝的错误摘要；
   - 单元测试覆盖进度输出、缓存绑定和参数边界。

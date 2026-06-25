@@ -26,7 +26,7 @@
 - `VERIFIED-TEST`：安装脚本不再拉取浮动 Salt `latest` sources，Salt state 重复 ID 已有静态契约测试。
 - `VERIFIED-TEST`：Mihomo v1.19.27 已按同版本多架构资产固定 URL、SHA-256 和 gzip 压缩格式；Minion 会根据 CPU flags 选择可运行的 amd64 v1/v2/v3/compatible 或 arm64 资产。
 - `VERIFIED-TEST`：native-mihomo sync 已修复 release 下发、systemd 工作目录、Mihomo API ready 等真实 Minion 问题，并已推送到远端 commit `99b5a53`。
-- `VERIFIED-TEST`：`select-sync --live-health` 已实现 Yacd 风格实时测速菜单，进入菜单后后台并发刷新延迟；本地单元测试和静态契约测试通过，真实 TTY 交互仍需人工 smoke。
+- `VERIFIED-TEST`：`select-sync --live-health` 已重构为标准库 `curses` TUI，入口保持不变；支持 viewport、搜索、键盘选择、重新测速、退出恢复终端和后台并发延迟刷新。107 项单元/静态/伪终端测试通过，QA-RELEASE 复审为 PASS_WITH_RISK，真实用户终端仍建议 smoke。
 - `ACCEPTED`：端口白名单采用 Master managed 层和 Minion local override 层；Master 不覆盖 `/etc/proxyfleet/local`。
 - `VERIFIED-TEST`：端口白名单 managed/local/effective 合并、冲突 fail-closed、CLI build 和 Minion local override 保留已有单元测试。
 
@@ -53,7 +53,8 @@
 - [x] 代理配置、节点选择与 Salt 同步 POC
 - [x] 订阅 URL 拉取/转换、订阅+自建节点+自定义规则生成 POC
 - [x] 节点测速显示和缓存 POC
-- [x] Yacd 风格实时测速选择菜单发布
+- [x] 过渡式实时测速选择菜单发布
+- [x] `curses` TUI 实时测速选择菜单
 - [x] Mihomo 安装 fail-closed state POC
 - [x] Mihomo 固定资产 URL/SHA-256/gzip 安装
 - [x] native-mihomo Minion 本地端到端 harness
@@ -128,6 +129,7 @@
 - TP-0019：Mihomo 固定资产、SHA-256 和 gzip 安装；Owner DATA-MIHOMO；状态 IMPLEMENTED，本地测试通过。
 - TP-0020：native-mihomo Minion 端到端；Owner CONTROL-SALT/DATA-MIHOMO；状态 PARTIAL，本地 harness 通过，systemd 错误边界和选择失败回滚已有单元测试，等待真实测试机验证。
 - TP-0021：端口白名单分层配置与本地 override 保护；Owner OPS-PLATFORM/CONTROL-SALT；状态 IMPLEMENTED，落地后端待决策。
+- TP-0022：`curses` TUI 实时测速选择菜单；Owner DATA-MIHOMO/PRODUCT-SPEC；状态 IMPLEMENTED，本地测试、伪终端验证和 QA 复审通过，等待 Git 发布记录。
 
 TP-0018 已创建规划 Task/Result；TP-0019/TP-0020/TP-0021 已创建独立 Task Packet，并通过合并 Result Packet 记录实现证据。历史 TP-0003 至 TP-0009 仍为早期路线占位，不得视为已开始。
 

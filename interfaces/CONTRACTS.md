@@ -186,6 +186,20 @@ release 的节点选择。
 - 实时测速不得写 desired state、不得改变 `FLEET_PROXY`，只有用户确认选择后才写入
   desired 并触发同步。
 
+### 6B. Live Select TUI Contract
+
+`select-sync --live-health` 的正式目标是 `curses` TUI，而不是 Bash/ANSI 长列表
+回写。TUI 必须满足：
+
+- 使用 alternate screen 或等价机制，退出后恢复原终端状态；
+- 支持节点 viewport，长列表不得依赖跨屏光标上移改写历史输出；
+- 支持键盘移动、高亮选择、确认选择、搜索、重新测速和退出；
+- 默认保持稳定序号，不因测速结果到达而自动重排；
+- 实时刷新只更新当前可见行、状态栏和输入区域；
+- 选择确认前不得写 desired state、不得修改 `FLEET_PROXY`、不得触发 Salt 同步；
+- `q`、Ctrl-C、异常退出均必须恢复 cooked mode，避免终端残留 raw mode；
+- 不新增第三方 TUI 依赖；如需引入依赖，必须先进入组件锁定和安全审计流程。
+
 ## 7. Minion 身份与驱动
 
 必需属性：

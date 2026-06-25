@@ -132,9 +132,16 @@ sudo scripts/proxyfleet-master.sh select-sync
 sudo scripts/proxyfleet-master.sh select-sync --live-health
 ```
 
-该模式会先显示节点列表，再后台并发刷新延迟；用户可以不等测速全部完成，
-随时输入当前稳定序号完成选择。若只想批量刷新缓存再进入菜单，可使用
-`--refresh-health`；若不想读取旧测速缓存，可使用 `--no-health-cache`。
+`--live-health` 会进入标准库 `curses` TUI，做到类似 `top/htop/btop` 的可滚动、
+可搜索、可选择、可实时刷新界面。入口保持：
+
+```bash
+sudo scripts/proxyfleet-master.sh select-sync --live-health
+```
+
+预期交互为：`↑/↓` 或 `j/k` 移动，`Enter` 选择，`/` 搜索，`r` 重新测速，
+`q` 退出。若只想批量刷新缓存再进入菜单，可使用 `--refresh-health`；
+若不想读取旧测速缓存，可使用 `--no-health-cache`。
 如需限制目标：
 
 ```bash
@@ -228,3 +235,6 @@ https://www.gstatic.com/generate_204
 `http://127.0.0.1:9090` 的 Mihomo API。该延迟只代表 Master 本机到代理节点
 的观测结果。若要比较每台 Minion 自身网络质量，需要后续 fleet-wide 汇总模式，
 由各 Minion 在本机调用自己的 Mihomo API 后回传结果。
+
+长列表实时交互不再依赖跨屏 ANSI 光标回写历史输出。`curses` TUI 使用 viewport，
+只刷新可见行并在退出时恢复终端状态。

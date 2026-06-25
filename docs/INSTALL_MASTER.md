@@ -179,9 +179,15 @@ sudo scripts/proxyfleet-master.sh select-sync
 sudo scripts/proxyfleet-master.sh select-sync --live-health
 ```
 
-该模式会立即显示稳定序号列表，后台并发测速并刷新状态；不必等待所有节点测速完成，
-可以直接输入序号选择。旧的 `--refresh-health` 是先完整刷新缓存再显示菜单，节点多
-时会等待更久。
+该模式会进入标准库 `curses` TUI，目标体验类似 `top/htop/btop`：可滚动、可搜索、
+可高亮选择、可实时刷新可见节点。入口是：
+
+```bash
+sudo scripts/proxyfleet-master.sh select-sync --live-health
+```
+
+预期按键：`↑/↓` 或 `j/k` 移动，`Enter` 选择，`/` 搜索，`r` 重新测速，
+`q` 退出。旧的 `--refresh-health` 是先完整刷新缓存再显示菜单，节点多时会等待更久。
 
 脚本会列出带序号的节点列表，节点名使用 `mihomo_name`。输入序号后会自动：
 

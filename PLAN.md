@@ -410,12 +410,24 @@ scripts/proxyfleet-master.sh select-sync --live-health
 `nodes` 默认读取最近缓存；只有显式 `--refresh` 或 `health-check` 才主动触发
 探测。测速结果必须标注 `fresh|stale|unknown`，不能把未知或超时写成成功。
 
-`select-sync --live-health` 提供类 Yacd 的 CLI 交互体验：进入菜单后立即显示
-可选节点列表，后台并发调用 Mihomo 单节点 delay API，终端同屏刷新 `pending/ok/
-timeout/failed`、延迟和已耗时。用户不需要等待全量测速完成，可随时输入稳定序号
-选择节点。实时刷新不得改变 desired state，只有用户确认序号后才写入 desired 并同步
-Minion。默认保持序号稳定，不因延迟结果到达而重排；若后续加入按延迟排序，必须使用
-显式参数并避免用户输入时序号跳变。
+`select-sync --live-health` 使用 Python 标准库 `curses` TUI。历史 Bash/ANSI 版本只
+作为过渡实现；正式入口由 `scripts/proxyfleet-master.sh select-sync --live-health`
+保持不变，并调用 `proxyfleet live-select`。
+
+TUI 目标体验：
+
+- 进入 alternate screen，不污染原终端历史；
+- 只渲染当前 viewport，节点数量超过屏幕高度时支持上下滚动；
+- 顶部固定显示总进度、`ok/timeout/failed`、并发、耗时和数据来源；
+- 列表内实时刷新每个可见节点的 `pending/ok/timeout/failed` 与延迟；
+- 支持 `↑/↓` 或 `j/k` 移动、`Enter` 选择、`/` 搜索、`r` 重新测速、`q` 退出；
+- 一次会话内默认序号稳定，不因测速结果到达而自动重排；
+- 如加入延迟排序，必须由显式按键触发，且排序后仍显示原始序号和当前高亮项；
+- 用户不需要等待全量测速完成，可随时选择当前高亮或输入稳定序号；
+- 退出后恢复原终端状态，不留下错位光标、残留 raw mode 或半屏内容。
+
+实时刷新不得改变 desired state，只有用户确认序号或高亮项后才写入 desired 并同步
+Minion。TUI 不得引入新第三方依赖，除非先完成依赖锁定、安全审计和用户确认。
 
 节点测速使用每个 Minion 本机 Mihomo API 的单节点延迟或 Provider 健康检查能力：
 
@@ -799,6 +811,8 @@ fleetctl apply --select <node-id> --target-group production
 - 多个节点返回延迟时可排序，失败节点显示原因但不影响其他节点；
 - `select-sync --live-health` 进入后必须先显示节点列表，再后台并发刷新延迟；
   用户可在测速未完成时输入序号，序号在一次菜单会话内必须稳定；
+- `curses` TUI 必须支持 viewport 滚动、搜索、键盘选择、退出恢复终端和
+  可见行原位刷新；长列表不得依赖跨屏 ANSI 光标回写历史输出；
 - 实时测速必须显示进度或动态状态，长耗时操作不得表现为无输出卡住；
 - `--dry-run` 不写 release、desired、Salt file_roots 或 Mihomo 状态；
 - 测速不得改变 `FLEET_PROXY` 当前选择，不得关闭连接，不得触发 reload；
@@ -867,7 +881,8 @@ fleetctl apply --select <node-id> --target-group production
 ### Phase 4：统一节点切换
 
 实现稳定 node_id、PREPARE/COMMIT、strict/best-effort、验证、漂移、补偿回滚、
-节点测速显示和 convergence report。
+节点测速显示和 convergence report。`--live-health` 正式实现采用标准库 `curses`
+TUI，提供 `top/htop/btop` 风格实时交互、长列表 viewport、搜索、选择和终端恢复。
 
 ### Phase 5：ShellCrash 迁移工具
 

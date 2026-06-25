@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import curses
 import json
 import os
 import sys
@@ -25,6 +26,7 @@ from .fleet import (
     write_desired_state,
     write_node_catalog,
 )
+from .live_select import DEFAULT_TEST_URL, run_live_select
 from .port_policy import PortPolicyError, build_effective_policy, status as port_policy_status
 from .subscription import SubscriptionError, build_subscription_status
 
@@ -69,6 +71,15 @@ def build_parser() -> argparse.ArgumentParser:
     health.add_argument("--timeout-ms", type=int, default=3000, help="单节点测速超时")
     health.add_argument("--concurrency", type=int, default=16, help="并发测速数量")
     health.add_argument("--progress", action="store_true", help="在 stderr 显示动态测速进度")
+
+    live_select = subparsers.add_parser("live-select", help="进入 curses 实时测速选择 TUI")
+    live_select.add_argument("catalog_file", help="nodes 命令输出的 catalog JSON 文件")
+    live_select.add_argument("--mihomo-api", required=True, help="本机 Mihomo API，例如 http://127.0.0.1:9090")
+    live_select.add_argument("--mihomo-secret", default=None, help="Mihomo API secret")
+    live_select.add_argument("--timeout-ms", type=int, default=2000, help="单节点测速超时")
+    live_select.add_argument("--concurrency", type=int, default=16, help="并发测速数量")
+    live_select.add_argument("--url", default=DEFAULT_TEST_URL, help="健康检查 URL")
+    live_select.add_argument("--selection-output", default=None, help="可选：把选中节点 TSV 写入文件")
 
     select = subparsers.add_parser("select-node", help="选择代理节点并写入 desired state")
     select.add_argument("release_dir", help="release 目录")
@@ -268,6 +279,33 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
             return 2
         print(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "live-select":
+        try:
+            selected = run_live_select(
+                Path(args.catalog_file),
+                mihomo_api=args.mihomo_api,
+                mihomo_secret=args.mihomo_secret,
+                timeout_ms=args.timeout_ms,
+                concurrency=args.concurrency,
+                test_url=args.url,
+            )
+        except FleetError as exc:
+            print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
+            return 2
+        except curses.error as exc:  # type: ignore[name-defined]
+            print(f"E_TUI_UNAVAILABLE: curses 初始化失败: {exc}", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            return 130
+        if selected is None:
+            return 130
+        selected_tsv = selected.to_tsv()
+        if args.selection_output:
+            Path(args.selection_output).write_text(selected_tsv + "\n", encoding="utf-8")
+        else:
+            print(selected_tsv)
         return 0
 
     if args.command == "select-node":

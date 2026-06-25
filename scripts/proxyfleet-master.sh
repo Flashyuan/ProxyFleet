@@ -220,270 +220,22 @@ live_health_menu() {
   local mihomo_api="$2"
   local timeout_ms="$3"
   local concurrency="$4"
-  python3 - "${catalog_file}" "${mihomo_api}" "${timeout_ms}" "${concurrency}" <<'PY'
-import json
-import os
-import queue
-import select
-import sys
-import termios
-import threading
-import time
-import tty
-import urllib.parse
-import urllib.request
-
-catalog_file, mihomo_api, timeout_ms_raw, concurrency_raw = sys.argv[1:5]
-timeout_ms = int(timeout_ms_raw)
-concurrency = max(1, int(concurrency_raw))
-test_url = "https://www.gstatic.com/generate_204"
-
-if timeout_ms < 300 or timeout_ms > 10000:
-    raise SystemExit("timeout-ms 必须在 300..10000 之间")
-if concurrency < 1 or concurrency > 64:
-    raise SystemExit("concurrency 必须在 1..64 之间")
-parsed_api = urllib.parse.urlparse(mihomo_api)
-if parsed_api.scheme not in ("http", "https") or parsed_api.hostname not in ("localhost", "127.0.0.1", "::1"):
-    raise SystemExit("mihomo api 必须是 loopback 地址")
-
-with open(catalog_file, encoding="utf-8") as fh:
-    nodes = json.load(fh).get("nodes", [])
-if not nodes:
-    raise SystemExit("没有可选择节点")
-
-state = []
-for idx, node in enumerate(nodes, start=1):
-    state.append(
-        {
-            "index": idx,
-            "node_id": node.get("node_id") or "",
-            "name": node.get("mihomo_name") or "",
-            "status": node.get("health_status") or "pending",
-            "delay": node.get("last_delay_ms"),
-            "error": node.get("last_error_code"),
-        }
-    )
-
-lock = threading.Lock()
-updates = queue.Queue()
-tasks = queue.Queue()
-stop_event = threading.Event()
-started = time.monotonic()
-
-
-def probe(item):
-    name = item["name"]
-    query = urllib.parse.urlencode({"timeout": timeout_ms, "url": test_url})
-    path = "/proxies/" + urllib.parse.quote(name, safe="") + "/delay?" + query
-    req = urllib.request.Request(mihomo_api.rstrip("/") + path, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=max(3, timeout_ms / 1000 + 2)) as resp:
-            data = json.loads(resp.read().decode("utf-8") or "{}")
-        delay = data.get("delay")
-        if isinstance(delay, int):
-            result = {"index": item["index"], "status": "ok", "delay": delay, "error": ""}
-        else:
-            result = {"index": item["index"], "status": "failed", "delay": None, "error": "bad-response"}
-    except TimeoutError:
-        result = {"index": item["index"], "status": "timeout", "delay": None, "error": "timeout"}
-    except Exception as exc:
-        reason = getattr(exc, "reason", None)
-        if isinstance(reason, TimeoutError):
-            result = {"index": item["index"], "status": "timeout", "delay": None, "error": "timeout"}
-        else:
-            result = {"index": item["index"], "status": "failed", "delay": None, "error": exc.__class__.__name__}
-    updates.put(result)
-
-
-for item in state:
-    tasks.put(item)
-
-
-def worker():
-    while not stop_event.is_set():
-        try:
-            item = tasks.get_nowait()
-        except queue.Empty:
-            return
-        try:
-            probe(item)
-        finally:
-            tasks.task_done()
-
-
-def visible_name(name, width=58):
-    return name if len(name) <= width else name[: width - 1] + "…"
-
-
-def write_tty(fd, text):
-    os.write(fd, text.encode("utf-8", errors="replace"))
-
-
-def summary_counts():
-    with lock:
-        rows = list(state)
-    done = sum(1 for item in rows if item["status"] != "pending")
-    ok = sum(1 for item in rows if item["status"] == "ok")
-    timeout = sum(1 for item in rows if item["status"] == "timeout")
-    failed = sum(1 for item in rows if item["status"] == "failed")
-    elapsed = int(time.monotonic() - started)
-    return done, ok, timeout, failed, elapsed
-
-
-def summary_line():
-    done, ok, timeout, failed, elapsed = summary_counts()
-    return f"进度 {done}/{len(state)} ok={ok} timeout={timeout} failed={failed} elapsed={elapsed}s 并发={concurrency}"
-
-
-def node_line(item):
-    delay = f"{item['delay']}ms" if isinstance(item.get("delay"), int) else "-"
-    status = item["status"]
-    return f"{item['index']:4d}. {visible_name(item['name']):58s}  [{status} {delay}]"
-
-
-def catalog_line(item):
-    return f"{item['index']:4d}. {visible_name(item['name'], 74)}"
-
-
-def prompt_line(typed):
-    return f"请输入节点序号: {typed}"
-
-
-def compact_prompt_line(typed):
-    return f"{summary_line()} | 请输入节点序号: {typed}"
-
-
-def render_initial(fd, typed, inline_updates):
-    chunks = [
-        "ProxyFleet 实时测速选择菜单\n",
-        summary_line() + "\n",
-        "输入序号并回车即可选择；测速未完成也可以直接选择。\n\n",
-    ]
-    for item in state:
-        if inline_updates:
-            chunks.append(node_line(item) + "\n")
-        else:
-            chunks.append(catalog_line(item) + "\n")
-    if inline_updates:
-        chunks.append("\n" + prompt_line(typed))
-    else:
-        chunks.append("\n节点数量超过当前终端可见高度，已切换为安全显示模式：不跨屏改写节点行。\n")
-        chunks.append("测速结果将逐条追加显示，节点目录不会停留在误导性的 unknown 状态。\n")
-        chunks.append(compact_prompt_line(typed))
-    write_tty(fd, "".join(chunks))
-
-
-def update_relative_line(fd, prompt_row, target_row, text, typed):
-    # 菜单只打印一次，后续用相对光标移动更新单行，避免整屏闪烁。
-    up = prompt_row - target_row
-    write_tty(fd, f"\033[{up}A\r\033[K{text}\033[{up}B\r\033[K{prompt_line(typed)}")
-
-
-def update_summary(fd, typed):
-    update_relative_line(fd, prompt_row=len(state) + 6, target_row=2, text=summary_line(), typed=typed)
-
-
-def update_node(fd, item, typed):
-    update_relative_line(fd, prompt_row=len(state) + 6, target_row=item["index"] + 4, text=node_line(item), typed=typed)
-
-
-def update_prompt(fd, typed):
-    write_tty(fd, "\r\033[K" + prompt_line(typed))
-
-
-def update_compact_prompt(fd, typed):
-    write_tty(fd, "\r\033[K" + compact_prompt_line(typed))
-
-
-def append_compact_result(fd, item, typed):
-    write_tty(fd, "\r\033[K" + node_line(item) + "\n" + compact_prompt_line(typed))
-
-
-def terminal_height(fd):
-    try:
-        return os.get_terminal_size(fd).lines
-    except OSError:
-        return 24
-
-
-for _ in range(min(concurrency, len(state))):
-    threading.Thread(target=worker, daemon=True).start()
-typed = ""
-selected = None
-
-fd = os.open("/dev/tty", os.O_RDWR)
-try:
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setcbreak(fd)
-        terminal_rows = terminal_height(fd)
-        inline_updates = len(state) + 6 <= terminal_rows
-        render_initial(fd, typed, inline_updates)
-        next_summary = time.monotonic() + 1.0
-        while selected is None:
-            changed = False
-            while True:
-                try:
-                    result = updates.get_nowait()
-                except queue.Empty:
-                    break
-                with lock:
-                    item = state[result["index"] - 1]
-                    item.update(result)
-                    changed_item = dict(item)
-                if inline_updates:
-                    update_node(fd, changed_item, typed)
-                else:
-                    append_compact_result(fd, changed_item, typed)
-                changed = True
-            if changed and inline_updates:
-                update_summary(fd, typed)
-            now = time.monotonic()
-            if now >= next_summary:
-                if inline_updates:
-                    update_summary(fd, typed)
-                else:
-                    update_compact_prompt(fd, typed)
-                next_summary = now + 1.0
-            readable, _, _ = select.select([fd], [], [], 0.1)
-            if not readable:
-                continue
-            ch = os.read(fd, 1).decode("utf-8", errors="ignore")
-            if ch in ("\n", "\r"):
-                if typed.isdigit() and 1 <= int(typed) <= len(state):
-                    selected = int(typed)
-                    break
-                typed = ""
-                if inline_updates:
-                    update_prompt(fd, typed)
-                else:
-                    update_compact_prompt(fd, typed)
-            elif ch in ("\x7f", "\b"):
-                typed = typed[:-1]
-                if inline_updates:
-                    update_prompt(fd, typed)
-                else:
-                    update_compact_prompt(fd, typed)
-            elif ch.isdigit():
-                typed += ch
-                if inline_updates:
-                    update_prompt(fd, typed)
-                else:
-                    update_compact_prompt(fd, typed)
-            elif ch in ("\x03", "\x04"):
-                raise KeyboardInterrupt
-    finally:
-        stop_event.set()
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        write_tty(fd, "\n")
-finally:
-    os.close(fd)
-
-item = state[selected - 1]
-print(f"{item['index']}\t{item['node_id']}\t{item['name']}\t{item['status']}\t{item['delay'] if isinstance(item.get('delay'), int) else '-'}")
-PY
+  local selection_file
+  selection_file="$(mktemp)"
+  if proxyfleet_python live-select "${catalog_file}" \
+    --mihomo-api "${mihomo_api}" \
+    --timeout-ms "${timeout_ms}" \
+    --concurrency "${concurrency}" \
+    --selection-output "${selection_file}" \
+    </dev/tty >/dev/tty; then
+    cat "${selection_file}"
+    rm -f "${selection_file}"
+  else
+    local rc=$?
+    rm -f "${selection_file}"
+    return "${rc}"
+  fi
 }
-
 select_sync() {
   need_root
 
@@ -577,7 +329,9 @@ PY
   echo "可选代理节点："
   local selected_line selected_node_id selected_name
   if [[ "${live_health}" == "true" ]]; then
-    selected_line="$(live_health_menu "${catalog_file}" "${mihomo_api}" "${health_timeout_ms}" "${health_concurrency}")"
+    if ! selected_line="$(live_health_menu "${catalog_file}" "${mihomo_api}" "${health_timeout_ms}" "${health_concurrency}")"; then
+      die "未选择有效节点序号"
+    fi
   else
     awk -F '\t' '{printf "%4d. %-60s  [%s %s]\n", NR, $3, $4, $5}' "${menu_file}"
     echo
