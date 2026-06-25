@@ -341,6 +341,10 @@ def node_line(item):
     return f"{item['index']:4d}. {visible_name(item['name']):58s}  [{status} {delay}]"
 
 
+def catalog_line(item):
+    return f"{item['index']:4d}. {visible_name(item['name'], 74)}"
+
+
 def prompt_line(typed):
     return f"请输入节点序号: {typed}"
 
@@ -356,11 +360,15 @@ def render_initial(fd, typed, inline_updates):
         "输入序号并回车即可选择；测速未完成也可以直接选择。\n\n",
     ]
     for item in state:
-        chunks.append(node_line(item) + "\n")
+        if inline_updates:
+            chunks.append(node_line(item) + "\n")
+        else:
+            chunks.append(catalog_line(item) + "\n")
     if inline_updates:
         chunks.append("\n" + prompt_line(typed))
     else:
         chunks.append("\n节点数量超过当前终端可见高度，已切换为安全显示模式：不跨屏改写节点行。\n")
+        chunks.append("测速结果将逐条追加显示，节点目录不会停留在误导性的 unknown 状态。\n")
         chunks.append(compact_prompt_line(typed))
     write_tty(fd, "".join(chunks))
 
@@ -385,6 +393,10 @@ def update_prompt(fd, typed):
 
 def update_compact_prompt(fd, typed):
     write_tty(fd, "\r\033[K" + compact_prompt_line(typed))
+
+
+def append_compact_result(fd, item, typed):
+    write_tty(fd, "\r\033[K" + node_line(item) + "\n" + compact_prompt_line(typed))
 
 
 def terminal_height(fd):
@@ -421,6 +433,8 @@ try:
                     changed_item = dict(item)
                 if inline_updates:
                     update_node(fd, changed_item, typed)
+                else:
+                    append_compact_result(fd, changed_item, typed)
                 changed = True
             if changed and inline_updates:
                 update_summary(fd, typed)
