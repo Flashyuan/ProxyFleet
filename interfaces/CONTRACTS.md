@@ -205,6 +205,27 @@ release 的节点选择。
 - `q`、Ctrl-C、异常退出均必须恢复 cooked mode，避免终端残留 raw mode；
 - 不新增第三方 TUI 依赖；如需引入依赖，必须先进入组件锁定和安全审计流程。
 
+### 6C. Default Control TUI Contract
+
+`scripts/proxyfleet-master.sh` 和 `scripts/proxyfleet-minion.sh` 无参数运行时必须进入
+TUI 主控台，而不是打印 usage 后退出。
+
+主控台约束：
+
+- 默认入口服务普通用户；显式子命令服务自动化、CI、文档复现和故障恢复；
+- 每个写操作执行前必须展示将修改的文件、服务、目标和危险等级；
+- 写配置必须调用已有 schema/manifest/组件锁校验，不能绕过底层命令门禁；
+- 危险操作必须二次确认，例如卸载、`--purge-all`、删除 local override；
+- 不得在屏幕、日志或 Result 中泄露订阅 URL、节点密码、API secret 或完整代理 URI；
+- TUI 初始化失败时必须给出可执行的非交互子命令建议；
+- 优先使用 Python 标准库 `curses`，不新增第三方 TUI 依赖。
+
+Master TUI 至少覆盖：安装/预检、Salt key、订阅 URL、自建节点、自定义规则、
+release 构建/校验、节点选择同步、端口白名单、服务状态和卸载。
+
+Minion TUI 至少覆盖：Master 地址、Minion ID、Salt Minion 安装、4505/4506
+连通性、Mihomo 生命周期、本机端口白名单、本机端口策略模式和卸载。
+
 ## 7. Minion 身份与驱动
 
 必需属性：
@@ -267,6 +288,20 @@ effective: /etc/proxyfleet/effective/port-policy.yaml
 
 `managed` 由 Master 同步；`local` 由 Minion 本机维护；`effective` 由 Minion
 合并生成。Master 不得覆盖或删除 `local`。
+
+Minion 可通过本机持久选项选择端口策略模式，例如：
+
+```text
+/etc/proxyfleet/local/options.json
+```
+
+模式优先级：
+
+```text
+Minion local option > Master 下发 mode > 默认 merge
+```
+
+这允许 Minion 自行选择 `local-only` 或 `disabled`，避免被 Master 默认同步策略覆盖。
 
 最小 schema：
 

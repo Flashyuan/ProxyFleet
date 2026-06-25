@@ -4,6 +4,16 @@
 
 ## 1. 最短路径总览
 
+脚本本身默认进入 TUI 主控台：
+
+```bash
+sudo scripts/proxyfleet-master.sh
+sudo scripts/proxyfleet-minion.sh
+```
+
+TUI 会像 ShellCrash 一样通过菜单收集输入、写入配置文件并调用底层命令。当前文档中
+保留的子命令仍用于自动化、排障和文档复现。
+
 ```text
 Master 节点：下载完整项目 → 安装 Master
 Minion 节点：下载 minion 脚本 → 安装 Minion
@@ -299,7 +309,8 @@ Master 不覆盖这个 local 文件。
 
 ```text
 uninstall                  卸载 salt-minion，保留 PKI 和配置
-uninstall --purge-data     危险清理，删除 Minion PKI 和配置
+uninstall --purge-data [--yes]
+                         危险清理，删除 Minion PKI 和配置
 ```
 
 Mihomo 生命周期控制：
@@ -333,14 +344,14 @@ Master 节点：
 
 ```bash
 sudo scripts/proxyfleet-master.sh uninstall
-sudo scripts/proxyfleet-master.sh uninstall --purge-data
+sudo scripts/proxyfleet-master.sh uninstall --purge-data --yes
 ```
 
 Minion 节点：
 
 ```bash
 sudo scripts/proxyfleet-minion.sh uninstall
-sudo scripts/proxyfleet-minion.sh uninstall --purge-data
+sudo scripts/proxyfleet-minion.sh uninstall --purge-data --yes
 ```
 
 `--purge-data` 会删除 PKI 和配置，只适合测试环境或确认重建身份时使用。

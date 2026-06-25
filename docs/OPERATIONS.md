@@ -23,6 +23,15 @@ Minion：运行 salt-minion、接收 release、运行 Mihomo
 cd ~/project/ProxyFleet
 ```
 
+直接运行脚本进入 Master TUI 主控台。
+
+```bash
+sudo scripts/proxyfleet-master.sh
+```
+
+TUI 覆盖安装、key 管理、订阅/节点/规则导入、release 构建、节点选择同步、
+端口白名单和卸载。下面的子命令保留给自动化和故障恢复。
+
 服务启停：
 
 ```bash
@@ -43,7 +52,7 @@ sudo salt '*' saltutil.sync_modules
 
 ```bash
 sudo scripts/proxyfleet-master.sh uninstall
-sudo scripts/proxyfleet-master.sh uninstall --purge-data
+sudo scripts/proxyfleet-master.sh uninstall --purge-data --yes
 ```
 
 ## 3. Minion 常用操作
@@ -53,6 +62,15 @@ sudo scripts/proxyfleet-master.sh uninstall --purge-data
 ```bash
 cd ~/project/proxyfleet-minion
 ```
+
+直接运行脚本进入 Minion TUI 主控台。
+
+```bash
+sudo scripts/proxyfleet-minion.sh
+```
+
+TUI 覆盖 Master 地址、Minion ID、Salt Minion 安装、Mihomo 生命周期、
+本机端口白名单和端口策略模式。下面的子命令保留给自动化和故障恢复。
 
 服务启停：
 
@@ -67,7 +85,7 @@ scripts/proxyfleet-minion.sh status
 
 ```bash
 sudo scripts/proxyfleet-minion.sh uninstall
-sudo scripts/proxyfleet-minion.sh uninstall --purge-data
+sudo scripts/proxyfleet-minion.sh uninstall --purge-data --yes
 ```
 
 ### Minion Mihomo 生命周期

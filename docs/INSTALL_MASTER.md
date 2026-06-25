@@ -56,6 +56,15 @@ scripts/proxyfleet-master.sh preflight
 sudo scripts/proxyfleet-master.sh install
 ```
 
+下面的无参数命令会直接进入 Master TUI 主控台，由菜单完成预检、
+安装、配置、订阅/规则导入和同步：
+
+```bash
+sudo scripts/proxyfleet-master.sh
+```
+
+子命令仍保留给自动化、排障和文档复现。
+
 安装会写入：
 
 - `/etc/apt/keyrings/salt-archive-keyring.pgp`
@@ -93,7 +102,8 @@ sync-assets            同步项目 Salt module/state 到 /srv/proxyfleet/salt/s
 refresh-health         刷新 Master 本机 Mihomo API 测速缓存
 select-sync            选择代理节点并同步到 Minion
 uninstall              卸载 salt-master，默认保留 PKI 和状态目录
-uninstall --purge-data 危险清理，删除 Master PKI、配置和 states
+uninstall --purge-data [--yes]
+                     危险清理，删除 Master PKI、配置和 states
 ```
 
 服务启停：
@@ -109,7 +119,7 @@ scripts/proxyfleet-master.sh status
 
 ```bash
 sudo scripts/proxyfleet-master.sh uninstall
-sudo scripts/proxyfleet-master.sh uninstall --purge-data
+sudo scripts/proxyfleet-master.sh uninstall --purge-data --yes
 ```
 
 Master 脚本的 `stop` 和 `uninstall` 只影响 Master 本机 `salt-master`。它不会自动

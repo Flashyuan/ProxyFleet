@@ -13,6 +13,7 @@ MIHOMO_SERVICE="${MIHOMO_SERVICE:-mihomo.service}"
 MIHOMO_CONFIG_PATH="${MIHOMO_CONFIG_PATH:-${PROXYFLEET_ETC_ROOT}/current/config.yaml}"
 COMPONENT_LOCKS="${COMPONENT_LOCKS:-${PROXYFLEET_ETC_ROOT}/component-locks.json}"
 MIHOMO_RECEIPT="${MIHOMO_RECEIPT:-${MIHOMO_BINARY}.proxyfleet-install.json}"
+LOCAL_OPTIONS_PATH="${LOCAL_OPTIONS_PATH:-${PROXYFLEET_ETC_ROOT}/local/options.json}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 
 die() {
@@ -77,7 +78,7 @@ usage() {
   uninstall
   uninstall --with-mihomo [--purge-managed] [--purge-all --yes]
           [--purge-local-override] [--purge-data]
-  uninstall --purge-data
+  uninstall --purge-data [--yes]
   mihomo-start
   mihomo-stop
   mihomo-restart
@@ -93,6 +94,204 @@ usage() {
     sudo salt-key -F
     sudo salt-key -a <minion-id>
 USAGE
+}
+
+tui_available() {
+  [[ -t 0 && -t 1 ]] || [[ "${PROXYFLEET_TEST_ALLOW_NON_TTY:-}" == "1" ]]
+}
+
+tui_clear() {
+  if [[ -t 1 && -n "${TERM:-}" && "${TERM:-}" != "dumb" ]]; then
+    clear
+  fi
+}
+
+tui_pause() {
+  if tui_available; then
+    read -r -p "按 Enter 返回菜单..." _
+  fi
+}
+
+tui_unavailable() {
+  cat >&2 <<'EOF'
+E_TUI_UNAVAILABLE: 当前不是交互式终端，无法进入 Minion TUI。
+
+等价非交互命令示例：
+  sudo scripts/proxyfleet-minion.sh preflight
+  sudo scripts/proxyfleet-minion.sh install --master <master-ip> --id <minion-id>
+  sudo scripts/proxyfleet-minion.sh status
+  sudo scripts/proxyfleet-minion.sh mihomo-status
+  sudo scripts/proxyfleet-minion.sh stop --with-mihomo
+EOF
+}
+
+confirm_phrase() {
+  local phrase="$1"
+  local message="$2"
+  local answer
+  echo "${message}"
+  read -r -p "请输入 ${phrase} 确认：" answer
+  [[ "${answer}" == "${phrase}" ]]
+}
+
+preview_write() {
+  local level="$1"
+  shift
+  echo "将执行的操作（危险等级：${level}）："
+  printf '  - %s\n' "$@"
+}
+
+write_local_options() {
+  local mode="$1"
+  case "${mode}" in
+    merge|master-only|local-only|disabled) ;;
+    *) die "端口策略模式无效：${mode}" ;;
+  esac
+  install -d -m 0755 "$(dirname "${LOCAL_OPTIONS_PATH}")"
+  python3 - "${LOCAL_OPTIONS_PATH}" "${mode}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+mode = sys.argv[2]
+payload = {"schema_version": "1.0", "port_policy_mode": mode}
+path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+show_local_options() {
+  if [[ -f "${LOCAL_OPTIONS_PATH}" ]]; then
+    cat "${LOCAL_OPTIONS_PATH}"
+  else
+    echo "未配置本机端口策略模式；默认跟随 Master 下发 mode，缺省为 merge。"
+  fi
+}
+
+minion_install_tui() {
+  local master minion_id environment driver release_channel
+  read -r -p "Master IP/Host: " master
+  read -r -p "Minion ID [$(hostname)-machine]: " minion_id
+  minion_id="${minion_id:-$(hostname)-machine}"
+  read -r -p "environment [production]: " environment
+  environment="${environment:-production}"
+  read -r -p "driver [native-mihomo]: " driver
+  driver="${driver:-native-mihomo}"
+  read -r -p "release channel [stable]: " release_channel
+  release_channel="${release_channel:-stable}"
+  [[ -n "${master}" ]] || die "Master 地址不能为空"
+  preview_write "medium" \
+    "安装/修复 Salt Minion ${SALT_VERSION}" \
+    "写入 ${MINION_CONF}" \
+    "Master=${master}" \
+    "Minion ID=${minion_id}" \
+    "driver=${driver}"
+  confirm_phrase "INSTALL" "确认安装/修复 Minion？" || return 0
+  install_minion \
+    --master "${master}" \
+    --id "${minion_id}" \
+    --environment "${environment}" \
+    --driver "${driver}" \
+    --release-channel "${release_channel}"
+}
+
+connectivity_tui() {
+  local master
+  read -r -p "Master IP/Host: " master
+  [[ -n "${master}" ]] || die "Master 地址不能为空"
+  for port in 4505 4506; do
+    if timeout 3 bash -c "</dev/tcp/${master}/${port}" 2>/dev/null; then
+      echo "${port}-ok"
+    else
+      echo "${port}-failed"
+    fi
+  done
+}
+
+local_port_policy_tui() {
+  local choice source_path
+  echo "当前本机选项："
+  show_local_options
+  echo
+  echo "1) 设置模式 merge"
+  echo "2) 设置模式 master-only"
+  echo "3) 设置模式 local-only"
+  echo "4) 设置模式 disabled"
+  echo "5) 导入本机端口白名单 YAML"
+  read -r -p "请选择: " choice
+  case "${choice}" in
+    1) preview_write "medium" "写入 ${LOCAL_OPTIONS_PATH}" "port_policy_mode=merge"; confirm_phrase "WRITE" "确认写入？" && write_local_options "merge" ;;
+    2) preview_write "medium" "写入 ${LOCAL_OPTIONS_PATH}" "port_policy_mode=master-only"; confirm_phrase "WRITE" "确认写入？" && write_local_options "master-only" ;;
+    3) preview_write "medium" "写入 ${LOCAL_OPTIONS_PATH}" "port_policy_mode=local-only"; confirm_phrase "WRITE" "确认写入？" && write_local_options "local-only" ;;
+    4) preview_write "medium" "写入 ${LOCAL_OPTIONS_PATH}" "port_policy_mode=disabled"; confirm_phrase "WRITE" "确认写入？" && write_local_options "disabled" ;;
+    5)
+      read -r -p "源 YAML 路径: " source_path
+      [[ -n "${source_path}" && -f "${source_path}" ]] || die "源文件不存在：${source_path}"
+      preview_write "medium" "复制 ${source_path}" "覆盖 ${PROXYFLEET_ETC_ROOT}/local/port-policy.yaml"
+      confirm_phrase "WRITE" "确认导入本机端口白名单？" || return 0
+      install -D -m 0644 "${source_path}" "${PROXYFLEET_ETC_ROOT}/local/port-policy.yaml"
+      ;;
+    *) echo "已取消" ;;
+  esac
+}
+
+minion_services_tui() {
+  local choice
+  echo "1) start salt-minion"
+  echo "2) stop salt-minion"
+  echo "3) restart salt-minion"
+  echo "4) start salt-minion + Mihomo"
+  echo "5) stop Mihomo + salt-minion"
+  echo "6) restart salt-minion + Mihomo"
+  read -r -p "请选择服务操作: " choice
+  case "${choice}" in
+    1) start_command ;;
+    2) preview_write "high" "停止 salt-minion" "Master 将无法同步本机"; confirm_phrase "STOP" "确认停止？" && stop_command ;;
+    3) restart_command ;;
+    4) start_command --with-mihomo ;;
+    5) preview_write "high" "停止 Mihomo 和 salt-minion" "本机代理将中断"; confirm_phrase "STOP" "确认停止？" && stop_command --with-mihomo ;;
+    6) restart_command --with-mihomo ;;
+    *) echo "已取消" ;;
+  esac
+}
+
+minion_tui() {
+  if ! tui_available; then
+    tui_unavailable
+    return 2
+  fi
+  local choice
+  while true; do
+    tui_clear
+    cat <<'MENU'
+ProxyFleet Minion 主控台
+
+1) 只读预检
+2) 安装/修复 Salt Minion
+3) 测试 Master 4505/4506 连通性
+4) 查看 Salt Minion 状态
+5) 查看 Mihomo 状态
+6) 启动/停止/重启服务
+7) 配置本机端口白名单和同步模式
+8) 卸载 Minion
+9) 卸载 Mihomo
+q) 退出
+MENU
+    read -r -p "请选择: " choice
+    case "${choice}" in
+      1) preflight; tui_pause ;;
+      2) minion_install_tui; tui_pause ;;
+      3) connectivity_tui; tui_pause ;;
+      4) status_minion; tui_pause ;;
+      5) mihomo_status; tui_pause ;;
+      6) minion_services_tui; tui_pause ;;
+      7) local_port_policy_tui; tui_pause ;;
+      8) preview_write "critical" "卸载 salt-minion" "默认保留 Minion PKI 和配置"; confirm_phrase "UNINSTALL" "确认卸载 Minion？" && uninstall_command; tui_pause ;;
+      9) preview_write "critical" "卸载 ProxyFleet 受管 Mihomo" "默认保留 ${PROXYFLEET_ETC_ROOT} 和 local override"; confirm_phrase "UNINSTALL MIHOMO" "确认卸载 Mihomo？" && mihomo_uninstall; tui_pause ;;
+      q|Q) return 0 ;;
+      *) echo "未知选项"; tui_pause ;;
+    esac
+  done
 }
 
 parse_install_args() {
@@ -168,10 +367,25 @@ status_minion() {
 
 uninstall_minion() {
   need_root
+  local purge_data="0"
+  local yes="0"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --purge-data) purge_data="1"; shift ;;
+      --yes) yes="1"; shift ;;
+      "") shift ;;
+      *) die "未知 salt-minion 卸载参数：$1" ;;
+    esac
+  done
+  if [[ "${purge_data}" == "1" && "${yes}" != "1" ]]; then
+    if ! confirm_phrase "PURGE MINION DATA" "危险操作：将删除 /etc/salt/pki/minion 和 /etc/salt/minion.d"; then
+      die "已取消 purge-data"
+    fi
+  fi
   systemctl disable --now salt-minion || true
   apt-mark unhold salt-minion salt-common || true
   DEBIAN_FRONTEND=noninteractive apt-get purge -y salt-minion || true
-  if [[ "${1:-}" == "--purge-data" ]]; then
+  if [[ "${purge_data}" == "1" ]]; then
     echo "危险操作：删除 /etc/salt/pki/minion 和 /etc/salt/minion.d"
     rm -rf /etc/salt/pki/minion /etc/salt/minion.d
   else
@@ -341,13 +555,21 @@ restart_command() {
 }
 
 uninstall_command() {
-  local salt_purge_data=""
+  local salt_args=()
   local mihomo_args=()
   local with_mihomo="0"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --with-mihomo) with_mihomo="1"; shift ;;
-      --purge-data) salt_purge_data="--purge-data"; shift ;;
+      --purge-data)
+        salt_args+=("$1")
+        shift
+        ;;
+      --yes)
+        salt_args+=("$1")
+        mihomo_args+=("$1")
+        shift
+        ;;
       --purge-managed|--purge-all|--yes|--purge-local-override)
         mihomo_args+=("$1")
         shift
@@ -358,7 +580,7 @@ uninstall_command() {
   if [[ "${with_mihomo}" == "1" ]]; then
     mihomo_uninstall "${mihomo_args[@]}"
   fi
-  uninstall_minion "${salt_purge_data}"
+  uninstall_minion "${salt_args[@]}"
 }
 
 preflight() {
@@ -371,6 +593,7 @@ preflight() {
 
 command="${1:-}"
 case "${command}" in
+  "") minion_tui ;;
   preflight) preflight ;;
   bootstrap) shift; install_minion "$@" ;;
   install) shift; install_minion "$@" ;;

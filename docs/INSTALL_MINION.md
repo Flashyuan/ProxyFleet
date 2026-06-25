@@ -75,6 +75,15 @@ sudo scripts/proxyfleet-minion.sh install \
   --release-channel stable
 ```
 
+下面的无参数命令会直接进入 Minion TUI 主控台，由菜单完成 Master
+地址、Minion ID、Salt Minion 安装、Mihomo 生命周期和本机端口策略配置：
+
+```bash
+sudo scripts/proxyfleet-minion.sh
+```
+
+子命令仍保留给自动化、排障和文档复现。
+
 兼容参数：
 
 ```bash
@@ -150,7 +159,7 @@ sudo scripts/proxyfleet-minion.sh uninstall
 危险清理：
 
 ```bash
-sudo scripts/proxyfleet-minion.sh uninstall --purge-data
+sudo scripts/proxyfleet-minion.sh uninstall --purge-data --yes
 ```
 
 命令说明：
@@ -163,7 +172,8 @@ stop                   停止 salt-minion
 restart                重启 salt-minion
 status                 查看 salt-minion 状态
 uninstall              卸载 salt-minion，默认保留 Minion PKI 和配置
-uninstall --purge-data 危险清理，删除 Minion PKI 和配置
+uninstall --purge-data [--yes]
+                     危险清理，删除 Minion PKI 和配置
 ```
 
 ### 7.1 Mihomo 生命周期控制

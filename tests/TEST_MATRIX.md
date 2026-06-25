@@ -207,6 +207,7 @@
   - `select-sync` 默认检测该文件，存在时按 `merge` 模式同步；
   - 文件不存在时显示 `端口白名单：未配置`，不得自动生成允许规则；
   - `merge/master-only/local-only/disabled` 四种模式；
+  - Minion 本机持久选项可覆盖 Master 下发模式；
   - `/etc/proxyfleet/local/port-policy.yaml` 不被 Salt 同步覆盖或删除；
   - managed/local 合并结果保留规则来源；
   - 冲突、local 语法错误、effective 应用失败均 fail-closed；
@@ -236,6 +237,26 @@
   - mock systemd/shell 测试覆盖默认命令不触碰 Mihomo；
   - uninstall dry-run 或临时根目录测试的删除清单；
   - 真实 Ubuntu Minion 上 `mihomo-start/status/stop` 摘要。
+
+### 3.10 默认 TUI 主控台
+
+- **目标**：确认 Master/Minion 脚本无参数运行时进入 TUI 主控台，用户可通过菜单完成常用配置。
+- **覆盖点**：
+  - `proxyfleet-master.sh` 无参数进入 Master TUI，而不是打印 usage；
+  - `proxyfleet-minion.sh` 无参数进入 Minion TUI，而不是打印 usage；
+  - Master TUI 可配置订阅 URL、自建节点、自定义规则、端口白名单和节点选择同步；
+  - Minion TUI 可配置 Master 地址、Minion ID、Mihomo 生命周期和本机端口策略模式；
+  - 每个写操作执行前展示将修改的文件、服务、目标和危险等级；
+  - 危险操作二次确认；
+  - TUI 写出的配置通过 schema/manifest/组件锁校验；
+  - 无 TTY 或 curses 不可用时给出等价非交互命令建议；
+  - TUI 不泄露订阅 URL、节点密码、API secret 或完整代理 URI。
+- **最小证据**：
+  - 伪终端测试覆盖 Master/Minion 无参数入口；
+  - 菜单选择写入临时配置目录的文件快照；
+  - 危险操作取消和确认两条路径；
+  - 无 TTY 失败摘要；
+  - 配置校验命令输出。
 
 ## 4. 最小通过标准
 

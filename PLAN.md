@@ -46,6 +46,7 @@
 14. 端口白名单采用分层所有权：Master 管理公共规则，Minion 保留本机 override，Master 不覆盖 `/etc/proxyfleet/local`。
 15. Minion 脚本默认只控制 `salt-minion` 生命周期；Mihomo 启停和卸载必须通过显式 `--with-mihomo` 参数或 `mihomo-*` 专用子命令触发，避免误停代理数据面。
 16. `select-sync` 默认进入实时 TUI；`--live-health` 保留为兼容别名，`--refresh-health` 和 `--no-health-cache` 进入废弃路径，不作为推荐用户入口。
+17. Master/Minion 脚本无参数运行时默认进入 TUI 主控台；底层子命令保留给自动化、文档可复现步骤和故障恢复，不再作为普通用户主入口。
 
 对应 ADR 见 `DECISIONS.md`。
 
@@ -145,6 +146,10 @@ V1 不实现：
 ### 4.1 `fleetctl`
 
 管理员唯一入口，非守护进程。职责：初始化、订阅刷新、配置构建、发布、切换、回滚、状态和审计。它不得成为唯一状态存储，也不承载业务流量。
+
+脚本入口必须 ShellCrash 化：普通用户执行 `scripts/proxyfleet-master.sh` 或
+`scripts/proxyfleet-minion.sh` 时默认进入 TUI 主控台；需要自动化、CI、排障或
+文档复现时才使用 `install/select-sync/mihomo-start` 等显式子命令。
 
 ### 4.2 Salt Master
 
@@ -779,6 +784,17 @@ build → offline validate → canary → health verify → batch rollout → co
 动作实现，不得绕过人工核验、组件锁、release hash、Mihomo API GET 再验证和
 回滚门禁。底层命令必须保留，方便排障和审计；常用路径提供组合命令。
 
+默认交互入口：
+
+```text
+sudo scripts/proxyfleet-master.sh
+sudo scripts/proxyfleet-minion.sh
+```
+
+上述无参数命令必须进入 TUI 主控台，而不是打印 help 后退出。TUI 负责询问必要
+输入、写入对应配置文件、执行已有子命令，并在执行前展示将要修改的文件、服务、
+目标 Minion 和危险等级。CLI 子命令仍保留，用于自动化、文档复现和故障恢复。
+
 Master 推荐入口：
 
 ```text
@@ -799,6 +815,18 @@ fleetctl master status
 
 `setup` 不得自动接受任何 Minion key。
 
+Master TUI 主控台必须覆盖：
+
+- 安装/预检 Salt Master；
+- 查看和接受 Salt Minion key；
+- 配置订阅 URL、自建节点和自定义规则；
+- 构建/校验 release；
+- 进入节点测速选择 TUI 并同步；
+- 配置 `config-src/port-policy.yaml`；
+- 选择端口白名单同步模式；
+- 查看服务状态和关键日志位置；
+- 卸载和危险清理，危险操作必须二次确认。
+
 Minion 推荐单命令 bootstrap：
 
 ```text
@@ -814,6 +842,32 @@ sudo fleetctl minion bootstrap \
 Salt Minion，配置 APT pin 和 apt hold，写入 Minion ID、Master 地址和 Grains，
 启动 `salt-minion.service`，并输出本机 Minion key fingerprint 和下一步 Master
 端审核命令。它不得自动接受 key，不得自动安装 Mihomo，不得自动切换代理节点。
+
+Minion TUI 主控台必须覆盖：
+
+- 配置 Master 地址、Minion ID、environment、driver、release channel；
+- 安装/重装 Salt Minion；
+- 测试 Master TCP 4505/4506 连通性；
+- 显示 Salt Minion 状态；
+- 显示 Mihomo 状态；
+- 执行 `mihomo-start/stop/restart/status/uninstall`；
+- 编辑或导入 `/etc/proxyfleet/local/port-policy.yaml`；
+- 设置本机端口策略模式：`merge/master-only/local-only/disabled`；
+- 危险卸载必须二次确认。
+
+Minion 本机端口策略模式应作为本机持久选项保存，例如：
+
+```text
+/etc/proxyfleet/local/options.json
+```
+
+优先级为：
+
+```text
+Minion local option > Master 下发 mode > 默认 merge
+```
+
+这保证 Minion 可自行选择只使用本机规则或禁用端口策略，不被 Master 默认同步覆盖。
 
 用户日常不应手动执行 `build-release → publish-salt → sync`。推荐组合命令：
 
@@ -895,6 +949,12 @@ fleetctl apply --select <node-id> --target-group production
 
 ### 16.4 最少步骤体验验收
 
+- 无参数运行 `proxyfleet-master.sh` 必须进入 Master TUI；
+- 无参数运行 `proxyfleet-minion.sh` 必须进入 Minion TUI；
+- TUI 每个写操作必须显示将修改的文件、服务、目标和危险等级；
+- TUI 写入订阅、自建节点、自定义规则、端口白名单和 Minion local option 后，
+  生成文件必须通过既有 schema 校验；
+- TUI 不得把 secrets、订阅 URL、节点密码或 API secret 输出到日志；
 - 单节点原生 Ubuntu 22.04 从空 runtime 完成 `master setup`、`minion bootstrap`、
   key 人工核验、`apply`、`nodes --refresh`、`select`、Mihomo reload 和
   `FLEET_PROXY` GET 再验证；
@@ -974,16 +1034,22 @@ fleetctl apply --select <node-id> --target-group production
 提供 `top/htop/btop` 风格实时交互、当前选择展示、长列表 viewport、搜索、选择、
 动态延迟刷新、端口白名单状态提示和终端恢复。
 
-### Phase 5：ShellCrash 迁移工具
+### Phase 5：默认 TUI 主控台
+
+实现 Master/Minion 无参数默认 TUI 主控台。主控台用于配置、导入、校验、同步、
+服务控制和卸载；显式子命令保留给自动化。该阶段优先使用 Python 标准库
+`curses`，不得引入第三方 TUI 依赖，除非先完成组件锁定和安全审计。
+
+### Phase 6：ShellCrash 迁移工具
 
 只保留只读探测、配置导出、卸载前备份和迁移核验；不作为生产主路径，不要求
 ShellCrash 接管式发布进入 V1 成功条件。
 
-### Phase 6：Docker 管理端
+### Phase 7：Docker 管理端
 
 构建项目 Salt 3008.x 镜像、Compose、持久卷、备份恢复、升级和灾难恢复。
 
-### Phase 7：硬化和发布
+### Phase 8：硬化和发布
 
 安全审查、故障注入、文档、可重复安装、支持矩阵和 release gate。
 

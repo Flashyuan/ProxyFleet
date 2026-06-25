@@ -687,6 +687,68 @@ class SaltModuleTests(unittest.TestCase):
             data = json.loads(effective.read_text(encoding="utf-8"))
             self.assertEqual(["master", "local"], [rule["owner"] for rule in data["allow"]])
 
+    def test_apply_port_policy_local_options_override_master_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            managed = root / "managed" / "port-policy.yaml"
+            local = root / "local" / "port-policy.yaml"
+            options = root / "local" / "options.json"
+            effective = root / "effective" / "port-policy.yaml"
+            managed.parent.mkdir()
+            local.parent.mkdir()
+            managed.write_text(
+                json.dumps({"owner": "master", "allow": [{"protocol": "tcp", "port": 22, "source": "192.168.1.0/24"}], "deny": []}),
+                encoding="utf-8",
+            )
+            local.write_text(
+                json.dumps({"owner": "local", "allow": [{"protocol": "tcp", "port": 8080, "source": "any"}], "deny": []}),
+                encoding="utf-8",
+            )
+            options.write_text(json.dumps({"schema_version": "1.0", "port_policy_mode": "local-only"}), encoding="utf-8")
+            module = self._module()
+
+            result = module.apply_port_policy(
+                managed_path=str(managed),
+                local_path=str(local),
+                options_path=str(options),
+                effective_path=str(effective),
+                mode="master-only",
+                operation_id="op-test",
+            )
+
+            self.assertEqual("success", result["status"])
+            self.assertEqual("local-only", result["evidence"]["mode"])
+            self.assertEqual("master-only", result["evidence"]["master_mode"])
+            data = json.loads(effective.read_text(encoding="utf-8"))
+            self.assertEqual([8080], [rule["port"] for rule in data["allow"]])
+
+    def test_apply_port_policy_rejects_bad_local_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            managed = root / "managed" / "port-policy.yaml"
+            local = root / "local" / "port-policy.yaml"
+            options = root / "local" / "options.json"
+            effective = root / "effective" / "port-policy.yaml"
+            managed.parent.mkdir()
+            local.parent.mkdir()
+            managed.write_text(json.dumps({"owner": "master", "allow": [], "deny": []}), encoding="utf-8")
+            local.write_text(json.dumps({"owner": "local", "allow": [], "deny": []}), encoding="utf-8")
+            options.write_text(json.dumps({"schema_version": "1.0", "port_policy_mode": "bad"}), encoding="utf-8")
+            module = self._module()
+
+            result = module.apply_port_policy(
+                managed_path=str(managed),
+                local_path=str(local),
+                options_path=str(options),
+                effective_path=str(effective),
+                mode="merge",
+                operation_id="op-test",
+            )
+
+            self.assertEqual("failed", result["status"])
+            self.assertEqual("E_PORT_POLICY_SCHEMA", result["error_code"])
+            self.assertFalse(effective.exists())
+
     def test_apply_port_policy_rejects_bad_schema_and_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

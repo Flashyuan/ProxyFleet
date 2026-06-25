@@ -269,6 +269,7 @@ def health_check(base_url, api_secret=None, mihomo_name=None, test_url="https://
 def apply_port_policy(
     managed_path="/etc/proxyfleet/managed/port-policy.yaml",
     local_path="/etc/proxyfleet/local/port-policy.yaml",
+    options_path=None,
     effective_path="/etc/proxyfleet/effective/port-policy.yaml",
     mode="merge",
     operation_id="op-unknown",
@@ -278,8 +279,11 @@ def apply_port_policy(
 
     try:
         managed = _load_port_policy(Path(managed_path), "master")
-        local = _load_port_policy(Path(local_path), "local")
-        effective = _merge_port_policy(managed, local, str(mode))
+        local_file = Path(local_path)
+        local = _load_port_policy(local_file, "local")
+        options_file = Path(options_path) if options_path else local_file.parent / "options.json"
+        effective_mode = _local_port_policy_mode(options_file, str(mode))
+        effective = _merge_port_policy(managed, local, effective_mode)
         target = Path(effective_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(effective, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -295,9 +299,11 @@ def apply_port_policy(
             None,
             "port policy applied",
             {
-                "mode": mode,
+                "mode": effective_mode,
+                "master_mode": mode,
                 "managed_sha256": _optional_sha256(Path(managed_path)),
                 "local_sha256": _optional_sha256(Path(local_path)),
+                "options_sha256": _optional_sha256(options_file),
                 "effective_sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
             },
         )
@@ -352,6 +358,27 @@ def _load_port_policy(path, expected_owner):
         if not isinstance(data[key], list):
             raise _ApplyError("E_PORT_POLICY_SCHEMA", "port policy allow/deny must be list")
     return data
+
+
+def _local_port_policy_mode(path, fallback_mode):
+    if fallback_mode not in {"merge", "master-only", "local-only", "disabled"}:
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "port policy mode invalid")
+    if not path.exists():
+        return fallback_mode
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "local options is not valid JSON") from exc
+    if not isinstance(data, dict):
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "local options root must be object")
+    if data.get("schema_version", "1.0") != "1.0":
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "local options schema_version must be 1.0")
+    mode = data.get("port_policy_mode")
+    if mode is None or mode == "":
+        return fallback_mode
+    if mode not in {"merge", "master-only", "local-only", "disabled"}:
+        raise _ApplyError("E_PORT_POLICY_SCHEMA", "local port_policy_mode invalid")
+    return mode
 
 
 def _merge_port_policy(managed, local, mode):

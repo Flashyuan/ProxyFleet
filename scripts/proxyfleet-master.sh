@@ -17,7 +17,7 @@ die() {
 }
 
 need_root() {
-  if [[ "${EUID}" -ne 0 ]]; then
+  if [[ "${EUID}" -ne 0 && "${PROXYFLEET_TEST_ALLOW_NON_ROOT:-}" != "1" ]]; then
     die "此命令需要 root 权限，请使用 sudo 执行"
   fi
 }
@@ -138,6 +138,219 @@ status_master() {
   echo
   echo "Salt key 列表："
   salt-key -L || true
+}
+
+tui_available() {
+  [[ -t 0 && -t 1 ]] || [[ "${PROXYFLEET_TEST_ALLOW_NON_TTY:-}" == "1" ]]
+}
+
+tui_clear() {
+  if [[ -t 1 && -n "${TERM:-}" && "${TERM:-}" != "dumb" ]]; then
+    clear
+  fi
+}
+
+tui_pause() {
+  if tui_available; then
+    read -r -p "按 Enter 返回菜单..." _
+  fi
+}
+
+tui_unavailable() {
+  cat >&2 <<'EOF'
+E_TUI_UNAVAILABLE: 当前不是交互式终端，无法进入 Master TUI。
+
+等价非交互命令示例：
+  sudo scripts/proxyfleet-master.sh preflight
+  sudo scripts/proxyfleet-master.sh install
+  sudo scripts/proxyfleet-master.sh status
+  sudo scripts/proxyfleet-master.sh select-sync
+  sudo scripts/proxyfleet-master.sh uninstall
+EOF
+}
+
+confirm_phrase() {
+  local phrase="$1"
+  local message="$2"
+  local answer
+  echo "${message}"
+  read -r -p "请输入 ${phrase} 确认：" answer
+  [[ "${answer}" == "${phrase}" ]]
+}
+
+preview_write() {
+  local level="$1"
+  shift
+  echo "将执行的操作（危险等级：${level}）："
+  printf '  - %s\n' "$@"
+}
+
+write_subscription_provider() {
+  local provider_id="$1"
+  local env_name="$2"
+  local name_prefix="$3"
+  python3 - "${PROJECT_ROOT}/config-src/providers.json" "${provider_id}" "${env_name}" "${name_prefix}" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+provider_id, env_name, name_prefix = sys.argv[2:5]
+if not re.fullmatch(r"[A-Za-z0-9_.-]+", provider_id):
+    raise SystemExit("Provider ID 只能包含字母、数字、下划线、点和短横线")
+if not re.fullmatch(r"[A-Z][A-Z0-9_]*", env_name):
+    raise SystemExit("环境变量名必须是大写字母、数字和下划线，且以字母开头")
+path.parent.mkdir(parents=True, exist_ok=True)
+if path.exists():
+    data = json.loads(path.read_text(encoding="utf-8"))
+else:
+    data = {"schema_version": "1.0", "providers": []}
+providers = data.setdefault("providers", [])
+providers[:] = [item for item in providers if item.get("id") != provider_id]
+providers.append(
+    {
+        "enabled": True,
+        "id": provider_id,
+        "kind": "subscription",
+        "name_prefix": name_prefix,
+        "output": f"providers/{provider_id}.yaml",
+        "secret_ref": env_name,
+    }
+)
+path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+master_config_subscription_tui() {
+  local provider_id env_name name_prefix
+  read -r -p "Provider ID [airport-main]: " provider_id
+  provider_id="${provider_id:-airport-main}"
+  read -r -p "订阅 URL 环境变量名 [AIRPORT_MAIN_URL]: " env_name
+  env_name="${env_name:-AIRPORT_MAIN_URL}"
+  read -r -p "节点名前缀（可空，例如 [机场] ）: " name_prefix
+  preview_write "medium" \
+    "写入 ${PROJECT_ROOT}/config-src/providers.json" \
+    "只保存环境变量名 ${env_name}，不保存订阅 URL 明文" \
+    "构建 release 前需执行：export ${env_name}='<你的订阅URL>'"
+  confirm_phrase "WRITE" "确认写入订阅 Provider 配置？" || return 0
+  write_subscription_provider "${provider_id}" "${env_name}" "${name_prefix}"
+  echo "订阅 Provider 已写入。"
+  echo "构建前请在当前 shell 设置：export ${env_name}='<你的订阅URL>'"
+}
+
+import_file_tui() {
+  local source_path target_path label
+  label="$1"
+  target_path="$2"
+  read -r -p "请输入${label}源文件路径: " source_path
+  [[ -n "${source_path}" && -f "${source_path}" ]] || die "源文件不存在：${source_path}"
+  preview_write "medium" "复制 ${source_path}" "覆盖 ${target_path}"
+  confirm_phrase "WRITE" "确认导入${label}？" || return 0
+  install -D -m 0644 "${source_path}" "${target_path}"
+  echo "${label}已导入：${target_path}"
+}
+
+build_release_tui() {
+  local revision source_commit
+  read -r -p "Release revision [1]: " revision
+  revision="${revision:-1}"
+  source_commit="$(git -C "${PROJECT_ROOT}" rev-parse --short HEAD 2>/dev/null || echo local)"
+  read -r -p "source git commit [${source_commit}]: " source_commit
+  source_commit="${source_commit:-local}"
+  preview_write "medium" \
+    "读取 ${PROJECT_ROOT}/config-src" \
+    "写入 ${PROJECT_ROOT}/releases/$(printf '%06d' "${revision}")" \
+    "使用 ${PROJECT_ROOT}/component-locks.json 校验固定组件版本"
+  confirm_phrase "BUILD" "确认构建 release？" || return 0
+  proxyfleet_python build-release "${PROJECT_ROOT}/config-src" "${PROJECT_ROOT}/releases" \
+    --revision "${revision}" \
+    --source-git-commit "${source_commit}" \
+    --component-locks "${PROJECT_ROOT}/component-locks.json" \
+    --subscription-cache "${PROJECT_ROOT}/runtime/subscriptions"
+  proxyfleet_python verify-release "${PROJECT_ROOT}/releases/$(printf '%06d' "${revision}")"
+}
+
+port_policy_tui() {
+  install -d -m 0755 "${PROJECT_ROOT}/config-src"
+  local path="${PROJECT_ROOT}/config-src/port-policy.yaml"
+  preview_write "medium" \
+    "打开/创建 Master managed 端口白名单：${path}" \
+    "该文件存在时 select-sync 默认按 merge 模式同步给 Minion" \
+    "Master 不会覆盖 Minion 的 /etc/proxyfleet/local"
+  echo "请用编辑器维护该文件。当前将打开：${EDITOR:-nano}"
+  confirm_phrase "EDIT" "确认编辑端口白名单？" || return 0
+  "${EDITOR:-nano}" "${path}"
+}
+
+accept_key_tui() {
+  salt-key -F || true
+  salt-key -L || true
+  local minion_id
+  read -r -p "请输入要接受的 Minion ID（留空返回）: " minion_id
+  [[ -n "${minion_id}" ]] || return 0
+  preview_write "high" "接受 Minion key：${minion_id}" "变更 Salt Master PKI 信任状态"
+  confirm_phrase "ACCEPT" "确认接受该 Minion key？" || return 0
+  salt-key -a "${minion_id}"
+}
+
+master_services_tui() {
+  local choice
+  echo "1) start salt-master"
+  echo "2) stop salt-master"
+  echo "3) restart salt-master"
+  read -r -p "请选择服务操作: " choice
+  case "${choice}" in
+    1) start_master ;;
+    2) preview_write "high" "停止 salt-master" "Minion 将暂时无法接收同步"; confirm_phrase "STOP" "确认停止？" && stop_master ;;
+    3) restart_master ;;
+    *) echo "已取消" ;;
+  esac
+}
+
+master_tui() {
+  if ! tui_available; then
+    tui_unavailable
+    return 2
+  fi
+  local choice
+  while true; do
+    tui_clear
+    cat <<'MENU'
+ProxyFleet Master 主控台
+
+1) 只读预检
+2) 安装/修复 Salt Master
+3) 查看 Master 状态和 Salt key
+4) 核验并接受 Minion key
+5) 配置订阅 Provider
+6) 导入自建节点文件
+7) 导入自定义规则文件
+8) 构建并校验 release
+9) 选择节点并同步到 Minion
+10) 配置端口白名单
+11) 启动/停止/重启 Master 服务
+12) 卸载 Master
+q) 退出
+MENU
+    read -r -p "请选择: " choice
+    case "${choice}" in
+      1) preflight; tui_pause ;;
+      2) preview_write "medium" "安装 Salt Master ${SALT_VERSION}" "写入 ${MASTER_CONF}" "同步 Salt states"; confirm_phrase "INSTALL" "确认安装/修复 Master？" && install_master; tui_pause ;;
+      3) status_master; tui_pause ;;
+      4) accept_key_tui; tui_pause ;;
+      5) master_config_subscription_tui; tui_pause ;;
+      6) import_file_tui "自建节点文件" "${PROJECT_ROOT}/config-src/providers/self-hosted.yaml"; tui_pause ;;
+      7) import_file_tui "自定义规则文件" "${PROJECT_ROOT}/config-src/rules/custom-rules.yaml"; tui_pause ;;
+      8) build_release_tui; tui_pause ;;
+      9) select_sync; tui_pause ;;
+      10) port_policy_tui; tui_pause ;;
+      11) master_services_tui; tui_pause ;;
+      12) preview_write "critical" "卸载 salt-master" "默认保留 PKI 和 /srv/proxyfleet/salt"; confirm_phrase "UNINSTALL" "确认卸载 Master？" && uninstall_master; tui_pause ;;
+      q|Q) return 0 ;;
+      *) echo "未知选项"; tui_pause ;;
+    esac
+  done
 }
 
 latest_release_dir() {
@@ -376,10 +589,24 @@ select_sync() {
 
 uninstall_master() {
   need_root
+  local purge_data="0"
+  local yes="0"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --purge-data) purge_data="1"; shift ;;
+      --yes) yes="1"; shift ;;
+      *) die "未知卸载参数：$1" ;;
+    esac
+  done
+  if [[ "${purge_data}" == "1" && "${yes}" != "1" ]]; then
+    if ! confirm_phrase "PURGE MASTER DATA" "危险操作：将删除 /etc/salt/pki/master、/etc/salt/master.d 和 /srv/proxyfleet/salt"; then
+      die "已取消 purge-data"
+    fi
+  fi
   systemctl disable --now salt-master || true
   apt-mark unhold salt-master salt-common || true
   DEBIAN_FRONTEND=noninteractive apt-get purge -y salt-master || true
-  if [[ "${1:-}" == "--purge-data" ]]; then
+  if [[ "${purge_data}" == "1" ]]; then
     echo "危险操作：删除 /etc/salt/pki/master、/etc/salt/master.d 和 /srv/proxyfleet/salt"
     rm -rf /etc/salt/pki/master /etc/salt/master.d /srv/proxyfleet/salt
   else
@@ -411,7 +638,7 @@ usage() {
   refresh-health   刷新本机 Mihomo API 节点测速缓存
   select-sync      进入实时 TUI 选择节点，并同步到所有 Minion
   uninstall        卸载 salt-master，默认保留 PKI 和状态目录
-  uninstall --purge-data
+  uninstall --purge-data [--yes]
                    危险：卸载并删除 Master PKI/配置/POC states
 
 select-sync 常用参数：
@@ -431,6 +658,7 @@ USAGE
 
 command="${1:-}"
 case "${command}" in
+  "") master_tui ;;
   preflight) preflight ;;
   install) install_master ;;
   start) start_master ;;
@@ -440,6 +668,6 @@ case "${command}" in
   sync-assets) sync_assets ;;
   refresh-health) shift; refresh_health "$@" ;;
   select-sync) shift; select_sync "$@" ;;
-  uninstall) shift; uninstall_master "${1:-}" ;;
+  uninstall) shift; uninstall_master "$@" ;;
   *) usage; exit 2 ;;
 esac

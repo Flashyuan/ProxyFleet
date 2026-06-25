@@ -120,6 +120,46 @@ exit 0
             check=False,
         )
 
+    def _run_with_input(
+        self,
+        root: Path,
+        args: list[str],
+        user_input: str,
+        tree: dict[str, Path] | None = None,
+        allow_tui: bool = True,
+    ) -> subprocess.CompletedProcess:
+        fakebin = self._fakebin(root)
+        env = os.environ.copy()
+        env.update(
+            {
+                "PATH": f"{fakebin}:{env['PATH']}",
+                "PROXYFLEET_TEST_ALLOW_NON_ROOT": "1",
+                "PROXYFLEET_ETC_ROOT": str(root / "etc" / "proxyfleet"),
+            }
+        )
+        if allow_tui:
+            env["PROXYFLEET_TEST_ALLOW_NON_TTY"] = "1"
+        if tree is not None:
+            env.update(
+                {
+                    "MIHOMO_BINARY": str(tree["binary"]),
+                    "MIHOMO_UNIT_PATH": str(tree["unit"]),
+                    "MIHOMO_RECEIPT": str(tree["receipt"]),
+                    "MIHOMO_CONFIG_PATH": str(tree["config"]),
+                    "COMPONENT_LOCKS": str(tree["locks"]),
+                }
+            )
+        return subprocess.run(
+            ["bash", str(SCRIPT), *args],
+            cwd=ROOT,
+            env=env,
+            input=user_input,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+
     def _systemctl_log(self, root: Path) -> list[str]:
         log = root / "systemctl.log"
         return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
@@ -131,6 +171,43 @@ exit 0
 
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(["start salt-minion"], self._systemctl_log(root))
+
+    def test_no_args_enters_minion_tui(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = self._run_with_input(root, [], "q\n")
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("ProxyFleet Minion 主控台", result.stdout)
+            self.assertNotIn("用法：scripts/proxyfleet-minion.sh <command>", result.stdout)
+
+    def test_no_tty_minion_fallback_shows_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = self._run_with_input(root, [], "", allow_tui=False)
+
+            self.assertEqual(2, result.returncode)
+            self.assertIn("E_TUI_UNAVAILABLE", result.stderr)
+            self.assertIn("install --master <master-ip> --id <minion-id>", result.stderr)
+
+    def test_tui_writes_local_port_policy_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = self._run_with_input(root, [], "7\n3\nWRITE\n\nq\n")
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            options = root / "etc" / "proxyfleet" / "local" / "options.json"
+            self.assertTrue(options.exists())
+            self.assertEqual("local-only", json.loads(options.read_text(encoding="utf-8"))["port_policy_mode"])
+
+    def test_purge_data_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = self._run_with_input(root, ["uninstall", "--purge-data"], "NO\n")
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("已取消 purge-data", result.stderr)
+            self.assertFalse((root / "systemctl.log").exists())
 
     def test_start_with_mihomo_starts_minion_then_mihomo(self):
         with tempfile.TemporaryDirectory() as tmp:

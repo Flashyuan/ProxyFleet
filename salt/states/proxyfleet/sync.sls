@@ -55,6 +55,7 @@ proxyfleet-effective-port-policy:
     - name: proxyfleet_mihomo.apply_port_policy
     - managed_path: /etc/proxyfleet/managed/port-policy.yaml
     - local_path: /etc/proxyfleet/local/port-policy.yaml
+    - options_path: /etc/proxyfleet/local/options.json
     - effective_path: /etc/proxyfleet/effective/port-policy.yaml
     - mode: {{ pillar.get('proxyfleet_port_policy_mode', 'merge') }}
     - operation_id: {{ pillar.get('proxyfleet_operation_id', 'op-unknown') }}
