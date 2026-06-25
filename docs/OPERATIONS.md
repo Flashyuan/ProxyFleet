@@ -29,8 +29,14 @@ cd ~/project/ProxyFleet
 sudo scripts/proxyfleet-master.sh
 ```
 
-TUI 覆盖安装、key 管理、订阅/节点/规则导入、release 构建、节点选择同步、
-端口白名单和卸载。下面的子命令保留给自动化和故障恢复。
+TUI 主菜单分为四类：
+
+- 安装相关：预检、安装/修复、卸载 Master；
+- Master 节点相关：查看状态和 Salt key、接受 Minion key；
+- 节点配置相关：订阅、自建节点、规则、release、端口白名单、节点同步；
+- 服务相关：启动、停止、重启和查看 Master 服务。
+
+下面的子命令保留给自动化和故障恢复。
 
 服务启停：
 
@@ -275,23 +281,38 @@ Master managed 端口白名单默认文件：
 config-src/port-policy.yaml
 ```
 
+TUI 里选择“节点配置相关 → 配置端口白名单”，输入一个或多个端口号即可自动
+写入该文件。多个端口可用空格或逗号分隔，例如：
+
+```text
+7890, 7891 9090
+```
+
+当前端口策略文件使用 JSON 语法，保存为 `.yaml` 扩展名时仍是合法 YAML 子集。
 示例：
 
-```yaml
-schema_version: "1.0"
-owner: master
-mode: merge
-allow:
-  - protocol: tcp
-    port: 22
-    source: 192.168.1.0/24
-    comment: ssh management
-deny: []
+```json
+{
+  "allow": [
+    {
+      "port": 7890,
+      "protocol": "tcp",
+      "source": "192.168.1.0/24"
+    }
+  ],
+  "deny": [],
+  "owner": "master",
+  "schema_version": "1.0"
+}
 ```
 
 `*.yaml` 默认被 `.gitignore` 排除，不会误提交到仓库。执行 `select-sync` 时，
 如果该文件存在，默认按 `merge` 模式一起同步；如果不存在，则显示
 `端口白名单：未配置`。
+
+Salt Master 自身需要让 Minion 访问 TCP `4505` 和 `4506`。如果你配置的是
+Master 机器的入站防火墙，这两个端口必须放行给 Minion；如果配置的是
+ProxyFleet 下发到 Minion 的端口白名单，通常不需要把 `4505/4506` 加进去。
 
 手动发布 managed 端口白名单：
 

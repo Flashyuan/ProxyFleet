@@ -274,13 +274,61 @@ build_release_tui() {
 port_policy_tui() {
   install -d -m 0755 "${PROJECT_ROOT}/config-src"
   local path="${PROJECT_ROOT}/config-src/port-policy.yaml"
+  local ports source
+  read -r -p "请输入要加入白名单的端口号（多个用空格或逗号分隔）: " ports
+  [[ -n "${ports}" ]] || die "端口号不能为空"
+  read -r -p "允许来源 CIDR/IP [any]: " source
+  source="${source:-any}"
   preview_write "medium" \
-    "打开/创建 Master managed 端口白名单：${path}" \
+    "写入 Master managed 端口白名单：${path}" \
+    "允许 TCP 端口：${ports}" \
+    "允许来源：${source}" \
     "该文件存在时 select-sync 默认按 merge 模式同步给 Minion" \
     "Master 不会覆盖 Minion 的 /etc/proxyfleet/local"
-  echo "请用编辑器维护该文件。当前将打开：${EDITOR:-nano}"
-  confirm_phrase "EDIT" "确认编辑端口白名单？" || return 0
-  "${EDITOR:-nano}" "${path}"
+  cat <<'NOTE'
+提示：Salt Master 自身需要对 Minion 开放 TCP 4505/4506。
+如果这里配置的是“下发到 Minion 的端口白名单”，通常不需要把 4505/4506 加进去；
+如果你是在配置 Master 机器自己的入站防火墙，则必须允许 Minion 访问 4505/4506。
+NOTE
+  confirm_phrase "WRITE" "确认写入端口白名单？" || return 0
+  python3 - "${path}" "${ports}" "${source}" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+raw_ports = sys.argv[2]
+source = sys.argv[3]
+tokens = [item for item in re.split(r"[\s,]+", raw_ports.strip()) if item]
+if not tokens:
+    raise SystemExit("端口号不能为空")
+ports = []
+for token in tokens:
+    if not token.isdigit():
+        raise SystemExit(f"端口号无效: {token}")
+    port = int(token)
+    if port < 1 or port > 65535:
+        raise SystemExit(f"端口号超出范围: {token}")
+    ports.append(port)
+path.parent.mkdir(parents=True, exist_ok=True)
+if path.exists():
+    data = json.loads(path.read_text(encoding="utf-8"))
+else:
+    data = {"schema_version": "1.0", "owner": "master", "allow": [], "deny": []}
+if data.get("schema_version", "1.0") != "1.0" or data.get("owner") != "master":
+    raise SystemExit("已有端口白名单 schema 或 owner 不匹配")
+allow = data.setdefault("allow", [])
+data.setdefault("deny", [])
+seen = {(str(rule.get("protocol")), int(rule.get("port")), str(rule.get("source"))) for rule in allow if isinstance(rule, dict) and str(rule.get("port", "")).isdigit()}
+for port in ports:
+    key = ("tcp", port, source)
+    if key not in seen:
+        allow.append({"protocol": "tcp", "port": port, "source": source})
+        seen.add(key)
+path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+print(f"已写入 {len(ports)} 个端口到 {path}")
+PY
 }
 
 accept_key_tui() {
@@ -308,6 +356,100 @@ master_services_tui() {
   esac
 }
 
+master_install_menu() {
+  local choice
+  while true; do
+    tui_clear
+    cat <<'MENU'
+ProxyFleet Master / 安装相关
+
+1) 只读预检
+2) 安装/修复 Salt Master
+3) 卸载 Master
+b) 返回
+MENU
+    read -r -p "请选择: " choice
+    case "${choice}" in
+      1) preflight; tui_pause ;;
+      2) preview_write "medium" "安装 Salt Master ${SALT_VERSION}" "写入 ${MASTER_CONF}" "同步 Salt states"; confirm_phrase "INSTALL" "确认安装/修复 Master？" && install_master; tui_pause ;;
+      3) preview_write "critical" "卸载 salt-master" "默认保留 PKI 和 /srv/proxyfleet/salt"; confirm_phrase "UNINSTALL" "确认卸载 Master？" && uninstall_master; tui_pause ;;
+      b|B|q|Q) return 0 ;;
+      *) echo "未知选项"; tui_pause ;;
+    esac
+  done
+}
+
+master_node_menu() {
+  local choice
+  while true; do
+    tui_clear
+    cat <<'MENU'
+ProxyFleet Master / Master 节点相关
+
+1) 查看 Master 状态和 Salt key
+2) 核验并接受 Minion key
+b) 返回
+MENU
+    read -r -p "请选择: " choice
+    case "${choice}" in
+      1) status_master; tui_pause ;;
+      2) accept_key_tui; tui_pause ;;
+      b|B|q|Q) return 0 ;;
+      *) echo "未知选项"; tui_pause ;;
+    esac
+  done
+}
+
+master_config_menu() {
+  local choice
+  while true; do
+    tui_clear
+    cat <<'MENU'
+ProxyFleet Master / 节点配置相关
+
+1) 配置订阅 Provider
+2) 导入自建节点文件
+3) 导入自定义规则文件
+4) 构建并校验 release
+5) 配置端口白名单
+6) 选择节点并同步到 Minion
+b) 返回
+MENU
+    read -r -p "请选择: " choice
+    case "${choice}" in
+      1) master_config_subscription_tui; tui_pause ;;
+      2) import_file_tui "自建节点文件" "${PROJECT_ROOT}/config-src/providers/self-hosted.yaml"; tui_pause ;;
+      3) import_file_tui "自定义规则文件" "${PROJECT_ROOT}/config-src/rules/custom-rules.yaml"; tui_pause ;;
+      4) build_release_tui; tui_pause ;;
+      5) port_policy_tui; tui_pause ;;
+      6) select_sync; tui_pause ;;
+      b|B|q|Q) return 0 ;;
+      *) echo "未知选项"; tui_pause ;;
+    esac
+  done
+}
+
+master_service_menu() {
+  local choice
+  while true; do
+    tui_clear
+    cat <<'MENU'
+ProxyFleet Master / 服务相关
+
+1) 启动/停止/重启 Master 服务
+2) 查看 Master 状态
+b) 返回
+MENU
+    read -r -p "请选择: " choice
+    case "${choice}" in
+      1) master_services_tui; tui_pause ;;
+      2) status_master; tui_pause ;;
+      b|B|q|Q) return 0 ;;
+      *) echo "未知选项"; tui_pause ;;
+    esac
+  done
+}
+
 master_tui() {
   if ! tui_available; then
     tui_unavailable
@@ -319,34 +461,18 @@ master_tui() {
     cat <<'MENU'
 ProxyFleet Master 主控台
 
-1) 只读预检
-2) 安装/修复 Salt Master
-3) 查看 Master 状态和 Salt key
-4) 核验并接受 Minion key
-5) 配置订阅 Provider
-6) 导入自建节点文件
-7) 导入自定义规则文件
-8) 构建并校验 release
-9) 选择节点并同步到 Minion
-10) 配置端口白名单
-11) 启动/停止/重启 Master 服务
-12) 卸载 Master
+1) 安装相关
+2) Master 节点相关
+3) 节点配置相关
+4) 服务相关
 q) 退出
 MENU
     read -r -p "请选择: " choice
     case "${choice}" in
-      1) preflight; tui_pause ;;
-      2) preview_write "medium" "安装 Salt Master ${SALT_VERSION}" "写入 ${MASTER_CONF}" "同步 Salt states"; confirm_phrase "INSTALL" "确认安装/修复 Master？" && install_master; tui_pause ;;
-      3) status_master; tui_pause ;;
-      4) accept_key_tui; tui_pause ;;
-      5) master_config_subscription_tui; tui_pause ;;
-      6) import_file_tui "自建节点文件" "${PROJECT_ROOT}/config-src/providers/self-hosted.yaml"; tui_pause ;;
-      7) import_file_tui "自定义规则文件" "${PROJECT_ROOT}/config-src/rules/custom-rules.yaml"; tui_pause ;;
-      8) build_release_tui; tui_pause ;;
-      9) select_sync; tui_pause ;;
-      10) port_policy_tui; tui_pause ;;
-      11) master_services_tui; tui_pause ;;
-      12) preview_write "critical" "卸载 salt-master" "默认保留 PKI 和 /srv/proxyfleet/salt"; confirm_phrase "UNINSTALL" "确认卸载 Master？" && uninstall_master; tui_pause ;;
+      1) master_install_menu ;;
+      2) master_node_menu ;;
+      3) master_config_menu ;;
+      4) master_service_menu ;;
       q|Q) return 0 ;;
       *) echo "未知选项"; tui_pause ;;
     esac

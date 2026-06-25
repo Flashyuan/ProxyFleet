@@ -56,8 +56,9 @@ scripts/proxyfleet-master.sh preflight
 sudo scripts/proxyfleet-master.sh install
 ```
 
-下面的无参数命令会直接进入 Master TUI 主控台，由菜单完成预检、
-安装、配置、订阅/规则导入和同步：
+下面的无参数命令会直接进入 Master TUI 主控台。主菜单分为“安装相关”、
+“Master 节点相关”、“节点配置相关”和“服务相关”，由菜单完成预检、安装、
+配置、订阅/规则导入和同步：
 
 ```bash
 sudo scripts/proxyfleet-master.sh
@@ -347,18 +348,29 @@ Master managed 端口白名单默认写入：
 config-src/port-policy.yaml
 ```
 
+TUI 里选择“节点配置相关 → 配置端口白名单”，输入一个或多个端口号即可自动
+写入该文件。多个端口可用空格或逗号分隔，例如：
+
+```text
+7890, 7891 9090
+```
+
+当前端口策略文件使用 JSON 语法，保存为 `.yaml` 扩展名时仍是合法 YAML 子集。
 示例：
 
-```yaml
-schema_version: "1.0"
-owner: master
-mode: merge
-allow:
-  - protocol: tcp
-    port: 22
-    source: 192.168.1.0/24
-    comment: ssh management
-deny: []
+```json
+{
+  "allow": [
+    {
+      "port": 7890,
+      "protocol": "tcp",
+      "source": "192.168.1.0/24"
+    }
+  ],
+  "deny": [],
+  "owner": "master",
+  "schema_version": "1.0"
+}
 ```
 
 该文件默认被 `.gitignore` 排除，不会误提交。`select-sync`
@@ -384,3 +396,7 @@ Minion 本机 override 位于：
 ```
 
 Salt state 不覆盖、不删除 `/etc/proxyfleet/local` 下的本地规则。
+
+Salt Master 自身需要让 Minion 访问 TCP `4505` 和 `4506`。如果你配置的是
+Master 机器自己的入站防火墙，这两个端口必须放行给 Minion；如果配置的是
+ProxyFleet 下发到 Minion 的端口白名单，通常不需要把 `4505/4506` 加进去。

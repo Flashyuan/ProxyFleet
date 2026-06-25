@@ -28,6 +28,7 @@ class MasterScriptTuiTests(unittest.TestCase):
         args: list[str],
         user_input: str = "",
         allow_tui: bool = True,
+        project_root: Path | None = None,
     ) -> subprocess.CompletedProcess:
         fakebin = self._fakebin(root)
         env = os.environ.copy()
@@ -35,7 +36,7 @@ class MasterScriptTuiTests(unittest.TestCase):
             {
                 "PATH": f"{fakebin}:{env['PATH']}",
                 "PROXYFLEET_TEST_ALLOW_NON_ROOT": "1",
-                "PROJECT_ROOT": str(ROOT),
+                "PROJECT_ROOT": str(project_root or ROOT),
             }
         )
         if allow_tui:
@@ -57,6 +58,11 @@ class MasterScriptTuiTests(unittest.TestCase):
 
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertIn("ProxyFleet Master 主控台", result.stdout)
+            self.assertIn("1) 安装相关", result.stdout)
+            self.assertIn("2) Master 节点相关", result.stdout)
+            self.assertIn("3) 节点配置相关", result.stdout)
+            self.assertIn("4) 服务相关", result.stdout)
+            self.assertNotIn("10) 配置端口白名单", result.stdout)
             self.assertNotIn("用法：scripts/proxyfleet-master.sh <command>", result.stdout)
 
     def test_no_tty_master_fallback_shows_commands(self):
@@ -75,6 +81,28 @@ class MasterScriptTuiTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("已取消 purge-data", result.stderr)
             self.assertFalse((root / "commands.log").exists())
+
+    def test_port_policy_tui_writes_ports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            project.mkdir()
+            result = self._run(
+                root,
+                [],
+                "3\n5\n7890, 9090 7891\n192.168.1.0/24\nWRITE\n\nb\nq\n",
+                project_root=project,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            policy = project / "config-src" / "port-policy.yaml"
+            self.assertTrue(policy.exists())
+            text = policy.read_text(encoding="utf-8")
+            self.assertIn('"port": 7890', text)
+            self.assertIn('"port": 7891', text)
+            self.assertIn('"port": 9090', text)
+            self.assertIn('"source": "192.168.1.0/24"', text)
+            self.assertIn("Salt Master 自身需要对 Minion 开放 TCP 4505/4506", result.stdout)
 
 
 if __name__ == "__main__":

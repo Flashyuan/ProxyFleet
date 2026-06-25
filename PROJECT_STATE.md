@@ -170,3 +170,4 @@ remote_expected_state   已观察：main 初始不存在，已由 bootstrap push
 - `VERIFIED-TEST`：`PYTHONPATH=src python3 -m proxyfleet.cli verify-locks component-locks.json` 通过，当前 Mihomo installable artifacts 满足 URL/SHA-256/gzip 契约。
 - `VERIFIED-TEST`：TP-0019/TP-0020/TP-0021 全量回归 `PYTHONPATH=src python3 -m unittest discover -s tests` 通过 77 项；`py_compile`、安装脚本 `bash -n` 和 `git diff --check` 均通过。仍观察到既有 `ResourceWarning`，未影响断言。
 - `VERIFIED-TEST`：TP-0025 全量回归 `PYTHONPATH=src python3 -m unittest discover -s tests` 通过 127 项；`bash -n scripts/proxyfleet-master.sh scripts/proxyfleet-minion.sh`、`python3 -m py_compile src/proxyfleet/*.py salt/modules/proxyfleet_mihomo.py` 和 `verify-locks` 通过。仍观察到既有 socket `ResourceWarning`，未影响断言。
+- `VERIFIED-TEST`：Master TUI 已简化为四个父级菜单；端口白名单支持输入一个或多个端口自动写入 `config-src/port-policy.yaml`。全量回归通过 128 项。

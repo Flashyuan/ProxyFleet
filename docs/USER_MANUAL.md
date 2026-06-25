@@ -266,18 +266,29 @@ Master 公共端口白名单默认写在：
 config-src/port-policy.yaml
 ```
 
+在 Master TUI 中进入“节点配置相关 → 配置端口白名单”，输入一个或多个端口号
+即可自动写入该文件。多个端口可用空格或逗号分隔，例如：
+
+```text
+7890, 7891 9090
+```
+
+当前端口策略文件使用 JSON 语法，保存为 `.yaml` 扩展名时仍是合法 YAML 子集。
 示例：
 
-```yaml
-schema_version: "1.0"
-owner: master
-mode: merge
-allow:
-  - protocol: tcp
-    port: 22
-    source: 192.168.1.0/24
-    comment: ssh management
-deny: []
+```json
+{
+  "allow": [
+    {
+      "port": 7890,
+      "protocol": "tcp",
+      "source": "192.168.1.0/24"
+    }
+  ],
+  "deny": [],
+  "owner": "master",
+  "schema_version": "1.0"
+}
 ```
 
 该文件默认被 `.gitignore` 排除，不会误提交。执行
@@ -292,6 +303,10 @@ Minion 自己的本机例外规则写在：
 ```
 
 Master 不覆盖这个 local 文件。
+
+Salt Master 自身需要让 Minion 访问 TCP `4505` 和 `4506`。如果你配置的是
+Master 机器自己的入站防火墙，这两个端口必须放行给 Minion；如果配置的是
+下发到 Minion 的端口白名单，通常不需要把 `4505/4506` 加进去。
 
 ## 9. Minion 命令参数说明
 
