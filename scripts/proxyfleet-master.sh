@@ -222,6 +222,7 @@ live_health_menu() {
   local concurrency="$4"
   python3 - "${catalog_file}" "${mihomo_api}" "${timeout_ms}" "${concurrency}" <<'PY'
 import json
+import os
 import queue
 import select
 import sys
@@ -231,7 +232,6 @@ import time
 import tty
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 
 catalog_file, mihomo_api, timeout_ms_raw, concurrency_raw = sys.argv[1:5]
 timeout_ms = int(timeout_ms_raw)
@@ -266,6 +266,7 @@ for idx, node in enumerate(nodes, start=1):
 
 lock = threading.Lock()
 updates = queue.Queue()
+tasks = queue.Queue()
 stop_event = threading.Event()
 started = time.monotonic()
 
@@ -294,23 +295,31 @@ def probe(item):
     updates.put(result)
 
 
+for item in state:
+    tasks.put(item)
+
+
 def worker():
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = [executor.submit(probe, item) for item in state]
-        for future in futures:
-            if stop_event.is_set():
-                break
-            try:
-                future.result()
-            except Exception:
-                pass
+    while not stop_event.is_set():
+        try:
+            item = tasks.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            probe(item)
+        finally:
+            tasks.task_done()
 
 
 def visible_name(name, width=58):
     return name if len(name) <= width else name[: width - 1] + "…"
 
 
-def draw(tty_out, typed):
+def write_tty(fd, text):
+    os.write(fd, text.encode("utf-8", errors="replace"))
+
+
+def draw(fd, typed):
     with lock:
         rows = list(state)
     done = sum(1 for item in rows if item["status"] != "pending")
@@ -318,24 +327,27 @@ def draw(tty_out, typed):
     timeout = sum(1 for item in rows if item["status"] == "timeout")
     failed = sum(1 for item in rows if item["status"] == "failed")
     elapsed = int(time.monotonic() - started)
-    tty_out.write("\033[H\033[J")
-    tty_out.write("ProxyFleet 实时测速选择菜单\n")
-    tty_out.write(f"进度 {done}/{len(rows)} ok={ok} timeout={timeout} failed={failed} elapsed={elapsed}s 并发={concurrency}\n")
-    tty_out.write("输入序号并回车即可选择；测速未完成也可以直接选择。\n\n")
+    chunks = [
+        "\033[H\033[J",
+        "ProxyFleet 实时测速选择菜单\n",
+        f"进度 {done}/{len(rows)} ok={ok} timeout={timeout} failed={failed} elapsed={elapsed}s 并发={concurrency}\n",
+        "输入序号并回车即可选择；测速未完成也可以直接选择。\n\n",
+    ]
     for item in rows:
         delay = f"{item['delay']}ms" if isinstance(item.get("delay"), int) else "-"
         status = item["status"]
-        tty_out.write(f"{item['index']:4d}. {visible_name(item['name']):58s}  [{status} {delay}]\n")
-    tty_out.write(f"\n请输入节点序号: {typed}")
-    tty_out.flush()
+        chunks.append(f"{item['index']:4d}. {visible_name(item['name']):58s}  [{status} {delay}]\n")
+    chunks.append(f"\n请输入节点序号: {typed}")
+    write_tty(fd, "".join(chunks))
 
 
-threading.Thread(target=worker, daemon=True).start()
+for _ in range(min(concurrency, len(state))):
+    threading.Thread(target=worker, daemon=True).start()
 typed = ""
 selected = None
 
-with open("/dev/tty", "r+", encoding="utf-8", buffering=1) as tty_io:
-    fd = tty_io.fileno()
+fd = os.open("/dev/tty", os.O_RDWR)
+try:
     old = termios.tcgetattr(fd)
     try:
         tty.setcbreak(fd)
@@ -351,12 +363,12 @@ with open("/dev/tty", "r+", encoding="utf-8", buffering=1) as tty_io:
                     item.update(result)
             now = time.monotonic()
             if now >= next_draw:
-                draw(tty_io, typed)
+                draw(fd, typed)
                 next_draw = now + 0.25
             readable, _, _ = select.select([fd], [], [], 0.1)
             if not readable:
                 continue
-            ch = tty_io.read(1)
+            ch = os.read(fd, 1).decode("utf-8", errors="ignore")
             if ch in ("\n", "\r"):
                 if typed.isdigit() and 1 <= int(typed) <= len(state):
                     selected = int(typed)
@@ -371,8 +383,9 @@ with open("/dev/tty", "r+", encoding="utf-8", buffering=1) as tty_io:
     finally:
         stop_event.set()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        tty_io.write("\033[H\033[J")
-        tty_io.flush()
+        write_tty(fd, "\033[H\033[J")
+finally:
+    os.close(fd)
 
 item = state[selected - 1]
 print(f"{item['index']}\t{item['node_id']}\t{item['name']}\t{item['status']}\t{item['delay'] if isinstance(item.get('delay'), int) else '-'}")

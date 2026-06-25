@@ -32,6 +32,16 @@ class SecurityContractTests(unittest.TestCase):
         self.assertIn("--concurrency", text)
         self.assertIn('local health_timeout_ms="2000"', text)
 
+    def test_live_health_menu_uses_non_seekable_tty_safely(self):
+        text = (ROOT / "scripts" / "proxyfleet-master.sh").read_text(encoding="utf-8")
+        self.assertIn("live_health_menu()", text)
+        self.assertIn('fd = os.open("/dev/tty", os.O_RDWR)', text)
+        self.assertIn("os.read(fd, 1)", text)
+        self.assertIn("os.write(fd", text)
+        self.assertIn("threading.Thread(target=worker, daemon=True)", text)
+        self.assertNotIn('open("/dev/tty", "r+"', text)
+        self.assertNotIn(".seek(", text)
+
     def test_proxyfleet_sync_sls_has_unique_state_ids(self):
         text = (ROOT / "salt" / "states" / "proxyfleet" / "sync.sls").read_text(encoding="utf-8")
         state_ids = []
