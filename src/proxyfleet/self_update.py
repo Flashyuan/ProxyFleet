@@ -242,7 +242,7 @@ def check_update(context: UpdateContext, *, respect_suppressed: bool = False) ->
     current_commit = str(state.get("installed_commit", context.current_commit))
     suppressed = set(state.get("suppressed_versions") or [])
     status = "available"
-    if remote_commit == current_commit or (current_commit == "unknown" and remote_version == current_version):
+    if remote_version == current_version or remote_commit == current_commit:
         status = "not_available"
     elif respect_suppressed and remote_version in suppressed:
         status = "skipped"
