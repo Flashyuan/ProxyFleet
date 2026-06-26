@@ -1,32 +1,40 @@
-# Master 节点安装、配置与常用命令
+# Master 节点安装、配置与命令说明
 
-> 适用：Ubuntu 22.04/24.04 原生 systemd Master。Master 负责构建 release、
-> 管理 Salt Master、接受 Minion key、选择代理节点并同步到 Minion。
+本文只描述 Master 节点。Master 负责安装 Salt Master、管理配置源、构建
+release、接受 Minion key、选择代理节点并同步到所有 Minion。
 
 ## 1. Master 节点职责
 
-Master 节点执行：
+Master 负责：
 
-- 下载完整 ProxyFleet 项目；
-- 安装并运行 Salt Master 3008.1；
+- 运行 Salt Master `3008.1`；
+- 管理订阅 URL、自建节点、自定义规则和端口白名单；
 - 构建 Mihomo release；
-- 管理订阅 URL、自建节点、自定义规则；
 - 接受 Minion key；
-- 通过 Salt 同步 release、desired state 和节点选择。
+- 通过 Salt 下发 release、desired state 和代理节点选择。
 
-Master 不承载业务代理流量，业务流量由各 Minion 本机 Mihomo 直接连接代理节点。
+Master 默认不承担业务代理流量。业务代理由各 Minion 上的 Mihomo 执行。
 
 ## 2. 前置条件
 
-- 当前机器为 Ubuntu 22.04/24.04；
+- Ubuntu 22.04 或 24.04；
 - 当前用户具备 sudo 权限；
-- Minion 可以访问 Master 的 TCP 4505/4506；
-- 不启用公网 `salt-api`；
-- Salt 固定安装 `3008.1`，安装后 `apt-mark hold`。
+- Minion 能访问 Master 的 TCP `4505` 和 `4506`；
+- 不把 Salt Master 直接暴露到不可信公网；
+- Salt 组件固定安装 `3008.1`，安装后会被 `apt-mark hold` 锁定。
 
-## 3. 通过 curl 获取完整项目
+如果 Master 有本机防火墙或云安全组，需要放行给 Minion：
 
-Master 需要完整项目文件，不能只下载一个脚本。
+```text
+TCP 4505
+TCP 4506
+```
+
+这两个端口是 Salt 通信端口，通常不需要写入下发给 Minion 的代理端口白名单。
+
+## 3. 用 curl 下载完整项目
+
+Master 需要完整项目文件，不能只下载单个脚本。
 
 在 Master 节点执行：
 
@@ -44,47 +52,60 @@ chmod +x scripts/proxyfleet-master.sh scripts/proxyfleet-minion.sh
 export PROXYFLEET_SOURCE_REF="github-main-curl-$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-更新项目时，重新执行 `curl | tar` 解压命令即可。生产配置和运行数据请放在
-`runtime/`、`config-src/` 或外部受控路径，并避免覆盖真实配置文件。
+后续更新项目时，可以重新执行 `curl | tar` 下载覆盖项目代码。真实配置和运行数据
+位于 `config-src/`、`runtime/`、`releases/` 和 `.env.proxyfleet`，这些目录和文件
+默认不会提交到 Git。
 
 ## 4. 安装 Master
 
-在 Master 节点执行：
+推荐先做预检，再安装：
 
 ```bash
+cd ~/project/ProxyFleet
 scripts/proxyfleet-master.sh preflight
 sudo scripts/proxyfleet-master.sh install
+scripts/proxyfleet-master.sh status
 ```
 
-下面的无参数命令会直接进入 Master TUI 主控台。主菜单分为“安装相关”、
-“Master 节点相关”、“节点配置相关”和“服务相关”，由菜单完成预检、安装、
-配置、订阅/规则导入和同步：
+安装后会写入：
+
+```text
+/etc/apt/keyrings/salt-archive-keyring.pgp
+/etc/apt/sources.list.d/salt.sources
+/etc/apt/preferences.d/proxyfleet-salt-pin
+/etc/salt/master.d/proxyfleet.conf
+/srv/proxyfleet/salt/states
+/srv/proxyfleet/salt/pillar
+```
+
+检查 Salt Master 端口：
+
+```bash
+sudo ss -ltnp | grep -E ':4505|:4506'
+apt-cache policy salt-master salt-common
+apt-mark showhold
+```
+
+## 5. Master TUI 主控台
+
+无参数运行脚本会直接进入 Master TUI：
 
 ```bash
 sudo scripts/proxyfleet-master.sh
 ```
 
-子命令仍保留给自动化、排障和文档复现。
+主菜单分为四类：
 
-安装会写入：
-
-- `/etc/apt/keyrings/salt-archive-keyring.pgp`
-- `/etc/apt/sources.list.d/salt.sources`
-- `/etc/apt/preferences.d/proxyfleet-salt-pin`
-- `/etc/salt/master.d/proxyfleet.conf`
-- `/srv/proxyfleet/salt/states`
-- `/srv/proxyfleet/salt/pillar`
-
-安装后检查：
-
-```bash
-scripts/proxyfleet-master.sh status
-apt-cache policy salt-master salt-common
-apt-mark showhold
-sudo ss -ltnp | grep -E ':4505|:4506'
+```text
+安装相关          预检、安装/修复、卸载 Master
+Master 节点相关   查看 Master 状态、Salt key、接受 Minion key
+节点配置相关      订阅、自建节点、规则、端口白名单、构建和同步
+服务相关          启动、停止、重启和查看 Master 服务
 ```
 
-## 5. Master 脚本命令
+日常配置推荐优先使用 TUI。下面的子命令主要用于自动化、排障和文档复现。
+
+## 6. Master 脚本命令
 
 ```text
 scripts/proxyfleet-master.sh <command>
@@ -93,18 +114,17 @@ scripts/proxyfleet-master.sh <command>
 常用命令：
 
 ```text
-preflight              只读检查 OS、systemd、sudo 和 Salt 目标版本
-install                安装 Salt Master 3008.1 并配置 file_roots/pillar_roots
-start                  启动 salt-master
-stop                   停止 salt-master
-restart                重启 salt-master
-status                 查看 salt-master 状态和 Salt key 列表
-sync-assets            同步项目 Salt module/state 到 /srv/proxyfleet/salt/states
-refresh-health         刷新 Master 本机 Mihomo API 测速缓存
-select-sync            选择代理节点并同步到 Minion
-uninstall              停止并完整卸载 ProxyFleet Master 受管数据和组件
-uninstall --purge-data [--yes]
-                     兼容旧参数；行为等同 uninstall
+preflight                     只读检查 OS、systemd、sudo 和 Salt 目标版本
+install                       安装 Salt Master 3008.1 并写入 Master 配置
+start                         启动 salt-master
+stop                          停止 salt-master
+restart                       重启 salt-master
+status                        查看 salt-master 状态和 Salt key 列表
+sync-assets                   同步 ProxyFleet Salt module/state 到 file_roots
+refresh-health                刷新 Master 本机 Mihomo API 测速缓存
+select-sync                   进入实时 TUI 选择节点，并同步到 Minion
+uninstall [--yes]             完整卸载 Master 受管数据和组件
+uninstall --purge-data [--yes] 兼容旧参数；行为等同 uninstall
 ```
 
 服务启停：
@@ -116,24 +136,28 @@ sudo scripts/proxyfleet-master.sh restart
 scripts/proxyfleet-master.sh status
 ```
 
-卸载：
+完整卸载：
 
 ```bash
 sudo scripts/proxyfleet-master.sh uninstall
 ```
 
-Master 脚本的 `uninstall` 会停止并卸载 Master 本机 `salt-master`，删除 Master
-PKI、Master 配置、`/srv/proxyfleet/salt` 下的 states/pillar，以及本项目生成的
-`runtime/`、`releases/`、`config-src/`、`.env.proxyfleet` 等运行数据。
+Master 卸载会停止并卸载本机 `salt-master`，删除 Master PKI、Master 配置、
+Salt states/pillar，以及本项目生成的 `runtime/`、`releases/`、`config-src/`、
+`.env.proxyfleet` 等运行数据。
 
-它不会自动进入远端 Minion 卸载 `mihomo.service`。每台 Minion 的完整卸载请在
-对应 Minion 上执行 `sudo scripts/proxyfleet-minion.sh uninstall`。
+Master 卸载不会自动进入远端 Minion 卸载 Mihomo。Minion 的完整卸载需要在对应
+Minion 上执行：
+
+```bash
+sudo scripts/proxyfleet-minion.sh uninstall
+```
 
 卸载不会重置系统路由、DNS、防火墙或其它系统网络配置。
 
-## 6. 接受 Minion Key
+## 7. 接受 Minion Key
 
-Minion 安装后，在 Master 节点执行：
+Minion 安装后，回到 Master 节点执行：
 
 ```bash
 sudo salt-key -L
@@ -144,44 +168,50 @@ sudo salt-key -F
 
 ```bash
 sudo salt-key -a <minion-id>
+sudo salt '<minion-id>' test.ping
 ```
 
-验证连通：
+清理 key：
 
 ```bash
-sudo salt '<minion-id>' test.ping
-sudo salt '<minion-id>' grains.items
+sudo salt-key -d <minion-id>
+sudo salt-key -D
 ```
 
-## 7. 配置订阅、自建节点和自定义规则
+`salt-key -D` 会删除全部 key，是危险操作。
 
-配置源目录为 `config-src/`。常见文件包括：
+## 8. 配置订阅 URL
 
-```text
-config-src/base.json        Mihomo 基础配置
-config-src/providers.json   订阅 Provider 和自建节点 Provider
-config-src/groups.json      FLEET_PROXY 等策略组
-config-src/rules.json       规则顺序和 rule provider
+最少步骤方式：
+
+```bash
+sudo scripts/proxyfleet-master.sh
 ```
 
-### 7.1 只输入订阅 URL 的推荐方式
-
-在 Master TUI 中进入：
+进入：
 
 ```text
 节点配置相关 -> 快速添加订阅 URL 并生成可用配置
 ```
 
-流程：
+按提示输入：
 
-1. 先给订阅取一个名字，例如 `airport-main`；
-2. 输入订阅 URL；
-3. TUI 自动生成或更新 `base.json`、`providers.json`、`groups.json`、`rules.json`；
-4. 订阅 URL 保存到本地 `.env.proxyfleet`，不会提交到 Git；
-5. TUI 自动拉取订阅、提取 `proxies` 并构建 release；
-6. 构建成功后进入 `节点配置相关 -> 选择节点并同步到 Minion`。
+```text
+订阅名称
+订阅 URL
+```
 
-默认生成的规则是：
+脚本会自动完成：
+
+- 把订阅 URL 写入本地 `.env.proxyfleet`；
+- 生成或更新 `config-src/base.json`；
+- 生成或更新 `config-src/providers.json`；
+- 生成或更新 `config-src/groups.json`；
+- 生成或更新 `config-src/rules.json`；
+- 拉取订阅并从完整 Clash/Mihomo 配置中提取顶层 `proxies`；
+- 构建 release。
+
+默认规则是：
 
 ```text
 MATCH,FLEET_PROXY
@@ -189,94 +219,83 @@ MATCH,FLEET_PROXY
 
 也就是所有未被其它规则命中的流量都走当前选择的代理节点。
 
-### 7.2 手动多订阅配置
+## 9. 多订阅
 
-订阅 URL 不写入 Git，推荐用环境变量：
-
-```json
-{
-  "id": "airport-main",
-  "kind": "subscription",
-  "enabled": true,
-  "env": "PROXYFLEET_SUB_AIRPORT_MAIN",
-  "name_prefix": "[AIR] ",
-  "output": "providers/airport-main.yaml"
-}
-```
-
-构建前在 Master 节点注入真实 URL：
-
-```bash
-export PROXYFLEET_SUB_AIRPORT_MAIN='https://你的订阅URL'
-```
-
-订阅返回完整 Mihomo/Clash 配置时，构建器会提取顶层 `proxies`。订阅里的
-`proxy-groups` 和 `rules` 不进入 release，策略组和规则仍由 Master 本地
-`groups.json`、`rules.json` 统一管理。
-
-## 8. 构建 release
-
-在 Master 节点执行：
-
-```bash
-PYTHONPATH=src python3 -m proxyfleet.cli build-release \
-  config-src \
-  releases \
-  --revision 1 \
-  --source-git-commit "${PROXYFLEET_SOURCE_REF:-manual-config}" \
-  --component-locks component-locks.json \
-  --subscription-cache runtime/subscriptions
-```
-
-参数说明：
+多订阅不需要手写 JSON。重复执行：
 
 ```text
-config-src                  配置源目录
-releases                    release 输出根目录
---revision                  release 编号
---source-git-commit         来源标识；curl 部署可用 PROXYFLEET_SOURCE_REF
---component-locks           组件锁定清单
---subscription-cache        订阅 Last Known Good 缓存目录
+节点配置相关 -> 快速添加订阅 URL 并生成可用配置
 ```
 
-## 9. 查看节点和测速
+每次使用不同订阅名称和 URL。脚本会新增 provider，并把该 provider 追加进
+`FLEET_PROXY` 策略组。
 
-查看可选节点：
+订阅 URL 只保存在本地 `.env.proxyfleet`，不会提交到 Git。
 
-```bash
-PYTHONPATH=src python3 -m proxyfleet.cli nodes releases/000001
+## 10. 导入自建节点和自定义规则
+
+在 Master TUI 中进入：
+
+```text
+节点配置相关 -> 导入自建节点文件
+节点配置相关 -> 导入自定义规则文件
 ```
 
-刷新测速缓存：
+自建节点文件需要包含 Mihomo/Clash `proxies`。订阅返回的是完整配置文件也没关系，
+构建器会自动提取顶层 `proxies`。
 
-```bash
-PYTHONPATH=src python3 -m proxyfleet.cli health-check \
-  releases/000001 runtime/health.json \
-  --mihomo-api http://127.0.0.1:9090 \
-  --all
+自定义规则用于补充 `rules.json` 或 rule provider。规则顺序由 Master 本地
+配置统一管理，订阅里的 `proxy-groups` 和 `rules` 不会直接进入最终 release。
+
+## 11. 端口白名单
+
+Master managed 端口白名单默认写入：
+
+```text
+config-src/port-policy.yaml
 ```
 
-合并测速缓存查看：
+在 Master TUI 中进入：
 
-```bash
-PYTHONPATH=src python3 -m proxyfleet.cli nodes \
-  releases/000001 \
-  --health-cache runtime/health.json
+```text
+节点配置相关 -> 配置端口白名单
 ```
 
-测速只调用 Master 本机 Mihomo delay API，不改变当前 `FLEET_PROXY`。
+直接输入一个或多个端口号即可。多个端口可以用空格或逗号分隔：
 
-## 10. 选择节点并同步
+```text
+7890, 7891 9090
+```
 
-最常用命令：
+`select-sync` 会默认检查 `config-src/port-policy.yaml`。文件存在时按 `merge`
+模式同步到 Minion managed 层；文件不存在时显示 `端口白名单：未配置`。
+
+Minion 本地 override 文件是：
+
+```text
+/etc/proxyfleet/local/port-policy.yaml
+```
+
+Salt state 只保证 `/etc/proxyfleet/local` 目录存在，不覆盖、不删除这个本地文件。
+因此 Minion 可以保留自己的本机端口规则。
+
+## 12. 选择节点并同步
+
+推荐命令：
 
 ```bash
 sudo scripts/proxyfleet-master.sh select-sync
 ```
 
-当前版本中，`select-sync` 默认进入 `curses` TUI。`--live-health` 只作为兼容别名。
+当前版本中，`select-sync` 默认进入实时 TUI。`--live-health` 只是兼容别名。
 
-TUI 按键：
+TUI 顶部会显示当前选择。没有已选择节点时显示：
+
+```text
+当前选择：无
+```
+
+常用按键：
 
 ```text
 ↑/↓ 或 j/k    移动
@@ -291,29 +310,29 @@ q             退出
 只同步指定 Minion：
 
 ```bash
-sudo scripts/proxyfleet-master.sh select-sync \
-  --target '<minion-id>'
+sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id>'
 ```
 
-`select-sync` 参数：
+`select-sync` 会把选择写入 `runtime/desired.yaml`，发布 release 到 Salt
+file_roots，然后执行 Salt 同步。
 
-`select-sync` 默认进入实时 TUI。`--live-health` 只作为兼容别名保留。
+## 13. `select-sync` 参数
 
 ```text
---release-dir PATH       默认 releases/000001；不存在时取 releases 下最大编号
---runtime-dir PATH       默认 runtime
---salt-root PATH         默认 /srv/proxyfleet/salt/states
+--release-dir PATH       release 目录，默认 releases/000001；不存在时取最大编号
+--runtime-dir PATH       runtime 目录，默认 runtime
+--salt-root PATH         Salt file_roots，默认 /srv/proxyfleet/salt/states
 --target TARGET          Salt 目标，默认 *
 --target-group NAME      desired target_group，默认 production
---health-cache PATH      默认 runtime/health.json
---mihomo-api URL         默认 http://127.0.0.1:9090，仅允许 loopback
---health-timeout-ms N    默认 2000
---health-concurrency N   默认 16
---port-policy PATH       默认 config-src/port-policy.yaml，发布 Master managed 端口白名单
+--health-cache PATH      测速缓存，默认 runtime/health.json
+--mihomo-api URL         Mihomo API，默认 http://127.0.0.1:9090
+--health-timeout-ms N    单节点测速超时，默认 2000
+--health-concurrency N   测速并发，默认 16
+--port-policy PATH       Master managed 端口白名单，默认 config-src/port-policy.yaml
 --port-policy-mode MODE  merge/master-only/local-only/disabled
 ```
 
-废弃参数：
+废弃但兼容的参数：
 
 ```text
 --live-health            兼容别名，等同 select-sync 默认 TUI
@@ -321,113 +340,40 @@ sudo scripts/proxyfleet-master.sh select-sync \
 --no-health-cache        废弃，不再作为推荐入口
 ```
 
-## 11. 手动分步发布
+## 14. 手动构建 release
 
-选择节点，只写 `runtime/desired.yaml`：
-
-```bash
-PYTHONPATH=src python3 -m proxyfleet.cli select-node \
-  releases/000001 \
-  runtime \
-  --node-id <node-id> \
-  --target-group production
-```
-
-发布 release 和 desired 到 Salt file_roots：
+通常 TUI 会自动构建。需要手动复现时执行：
 
 ```bash
-sudo PYTHONPATH=src python3 -m proxyfleet.cli publish-salt \
-  releases/000001 \
-  runtime/desired.yaml \
-  /srv/proxyfleet/salt/states \
-  --component-locks component-locks.json
-```
-
-同步 Salt module：
-
-```bash
-sudo scripts/proxyfleet-master.sh sync-assets
-sudo salt '*' saltutil.sync_modules
-```
-
-先 dry-run：
-
-```bash
-PYTHONPATH=src python3 -m proxyfleet.cli sync \
-  releases/000001 \
-  runtime/desired.yaml \
-  /srv/proxyfleet/salt/states \
-  --target '<minion-id-or-target>' \
-  --dry-run
-```
-
-正式同步：
-
-```bash
-sudo PYTHONPATH=src python3 -m proxyfleet.cli sync \
-  releases/000001 \
-  runtime/desired.yaml \
-  /srv/proxyfleet/salt/states \
-  --target '<minion-id-or-target>'
-```
-
-## 12. 端口白名单
-
-Master managed 端口白名单默认写入：
-
-```text
-config-src/port-policy.yaml
-```
-
-TUI 里选择“节点配置相关 → 配置端口白名单”，输入一个或多个端口号即可自动
-写入该文件。多个端口可用空格或逗号分隔，例如：
-
-```text
-7890, 7891 9090
-```
-
-当前端口策略文件使用 JSON 语法，保存为 `.yaml` 扩展名时仍是合法 YAML 子集。
-示例：
-
-```json
-{
-  "allow": [
-    {
-      "port": 7890,
-      "protocol": "tcp",
-      "source": "192.168.1.0/24"
-    }
-  ],
-  "deny": [],
-  "owner": "master",
-  "schema_version": "1.0"
-}
-```
-
-该文件默认被 `.gitignore` 排除，不会误提交。`select-sync`
-会默认检查这个文件：存在则按 `merge` 模式发布到 managed 层；不存在则显示
-`端口白名单：未配置`。
-
-手动发布 Master managed 端口白名单：
-
-```bash
-sudo PYTHONPATH=src python3 -m proxyfleet.cli publish-salt \
-  releases/000001 \
-  runtime/desired.yaml \
-  /srv/proxyfleet/salt/states \
+PYTHONPATH=src python3 -m proxyfleet.cli build-release \
+  config-src releases \
+  --revision 1 \
+  --source-git-commit "${PROXYFLEET_SOURCE_REF:-manual-config}" \
   --component-locks component-locks.json \
-  --port-policy config-src/port-policy.yaml \
-  --port-policy-mode merge
+  --subscription-cache runtime/subscriptions
 ```
 
-Minion 本机 override 位于：
+查看节点：
 
-```text
-/etc/proxyfleet/local/port-policy.yaml
+```bash
+PYTHONPATH=src python3 -m proxyfleet.cli nodes releases/000001
 ```
 
-Salt state 不覆盖、不删除 `/etc/proxyfleet/local` 下的本地规则。
+合并测速缓存查看：
 
-Salt Master 自身需要让 Minion 访问 TCP `4505` 和 `4506`。如果你配置的是
-Master 机器自己的入站防火墙，这两个端口必须放行给 Minion；如果配置的是
-ProxyFleet 下发到 Minion 的端口白名单，通常不需要把 `4505/4506` 加进去。
+```bash
+PYTHONPATH=src python3 -m proxyfleet.cli nodes \
+  releases/000001 \
+  --health-cache runtime/health.json
+```
+
+## 15. 常见验证
+
+在 Master 节点执行：
+
+```bash
+sudo salt '*' test.ping
+sudo salt '*' grains.items
+sudo salt '*' systemctl.status mihomo.service
+sudo salt '*' state.apply proxyfleet.sync test=true
+```

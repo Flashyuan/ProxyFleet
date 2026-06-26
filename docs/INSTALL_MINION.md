@@ -1,33 +1,43 @@
-# Minion 节点安装、配置与常用命令
+# Minion 节点安装、配置与命令说明
 
-> 适用：Ubuntu 22.04/24.04 原生 systemd Minion。Minion 负责运行 Salt Minion，
-> 等待 Master 下发 release、安装 Mihomo、应用配置和切换 `FLEET_PROXY`。
+本文只描述 Minion 节点。Minion 负责运行 Salt Minion，等待 Master 下发
+release、安装并运行 ProxyFleet 受管 Mihomo、应用代理节点选择。
 
 ## 1. Minion 节点职责
 
-Minion 节点执行：
+Minion 负责：
 
-- 安装并运行 Salt Minion 3008.1；
+- 运行 Salt Minion `3008.1`；
 - 主动连接 Master；
 - 等待 Master 人工接受 key；
-- 接收 Master 下发的 Mihomo release 和 desired state；
-- 由 Salt state 安装/更新 Mihomo 并应用节点选择。
+- 接收 Master 下发的 release 和 desired state；
+- 由 Salt state 安装固定版本 Mihomo；
+- 应用 Master 选择的 `FLEET_PROXY` 节点。
 
-Minion 不需要 Git 仓库，也不需要完整项目文件。一般只需要下载
+Minion 不需要 Git 仓库，也不需要完整项目。通常只下载
 `scripts/proxyfleet-minion.sh`。
 
 ## 2. 前置条件
 
-- 当前机器为 Ubuntu 22.04/24.04；
+- Ubuntu 22.04 或 24.04；
 - 当前用户具备 sudo 权限；
-- Minion 可以访问 Master TCP 4505/4506；
+- Minion 可以访问 Master TCP `4505` 和 `4506`；
 - 已规划唯一 Minion ID；
 - Master 不自动接受 key，必须人工核验 fingerprint；
-- Salt 固定安装 `3008.1`，安装后 `apt-mark hold`。
+- Salt 组件固定安装 `3008.1`，安装后会被 `apt-mark hold` 锁定。
 
-## 3. 通过 curl 获取 Minion 安装脚本
+Minion 上检查 Master 端口：
 
-在 Minion 节点执行：
+```bash
+timeout 3 bash -c '</dev/tcp/<master-ip>/4505' && echo 4505-ok
+timeout 3 bash -c '</dev/tcp/<master-ip>/4506' && echo 4506-ok
+```
+
+注意把 `<master-ip>` 替换成真实 IP，不要带尖括号。
+
+## 3. 用 curl 下载 Minion 脚本
+
+在每台 Minion 节点执行：
 
 ```bash
 sudo apt-get update
@@ -43,28 +53,14 @@ curl -fsSL \
 chmod +x scripts/proxyfleet-minion.sh
 ```
 
-以后更新脚本时，重复执行上面的 `curl -o scripts/proxyfleet-minion.sh` 即可。
-
-如果你希望 Minion 测试机也保留完整项目文件，可以下载完整压缩包：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y curl tar ca-certificates
-
-mkdir -p ~/project/ProxyFleet
-curl -fsSL \
-  https://github.com/Flashyuan/ProxyFleet/archive/refs/heads/main.tar.gz \
-  | tar -xz --strip-components=1 -C ~/project/ProxyFleet
-
-cd ~/project/ProxyFleet
-chmod +x scripts/proxyfleet-minion.sh
-```
+后续更新脚本时，重复执行上面的 `curl -o scripts/proxyfleet-minion.sh` 即可。
 
 ## 4. 安装 Minion
 
-在 Minion 节点执行：
+推荐先预检，再安装：
 
 ```bash
+cd ~/project/proxyfleet-minion
 scripts/proxyfleet-minion.sh preflight
 
 sudo scripts/proxyfleet-minion.sh install \
@@ -75,16 +71,7 @@ sudo scripts/proxyfleet-minion.sh install \
   --release-channel stable
 ```
 
-下面的无参数命令会直接进入 Minion TUI 主控台，由菜单完成 Master
-地址、Minion ID、Salt Minion 安装、Mihomo 生命周期和本机端口策略配置：
-
-```bash
-sudo scripts/proxyfleet-minion.sh
-```
-
-子命令仍保留给自动化、排障和文档复现。
-
-兼容参数：
+兼容旧参数：
 
 ```bash
 sudo scripts/proxyfleet-minion.sh install \
@@ -94,14 +81,80 @@ sudo scripts/proxyfleet-minion.sh install \
 
 安装会写入：
 
-- `/etc/apt/keyrings/salt-archive-keyring.pgp`
-- `/etc/apt/sources.list.d/salt.sources`
-- `/etc/apt/preferences.d/proxyfleet-salt-pin`
-- `/etc/salt/minion.d/proxyfleet.conf`
+```text
+/etc/apt/keyrings/salt-archive-keyring.pgp
+/etc/apt/sources.list.d/salt.sources
+/etc/apt/preferences.d/proxyfleet-salt-pin
+/etc/salt/minion.d/proxyfleet.conf
+```
 
 安装后脚本会输出本机 fingerprint，并提示回到 Master 接受 key。
 
-## 5. Minion 安装参数
+## 5. Minion TUI 主控台
+
+无参数运行脚本会进入 Minion TUI：
+
+```bash
+sudo scripts/proxyfleet-minion.sh
+```
+
+TUI 可完成：
+
+- Salt Minion 安装；
+- Master 地址和 Minion ID 配置；
+- Salt Minion 启动、停止、重启；
+- ProxyFleet 受管 Mihomo 启动、停止、重启和卸载；
+- 本机端口白名单 override 配置；
+- 完整卸载 Minion。
+
+日常安装和配置推荐使用 TUI。下面的子命令主要用于自动化、排障和文档复现。
+
+## 6. 回到 Master 接受 Key
+
+这一步在 Master 节点执行，不是在 Minion 上执行：
+
+```bash
+sudo salt-key -L
+sudo salt-key -F
+sudo salt-key -a <minion-id>
+sudo salt '<minion-id>' test.ping
+```
+
+如果 Master 看不到 unaccepted key：
+
+1. 确认 Minion 安装命令里的 `--master` 是真实 Master IP 或 DNS；
+2. 在 Minion 上确认能访问 Master `4505/4506`；
+3. 在 Minion 上执行 `sudo systemctl restart salt-minion`；
+4. 在 Master 上确认 `salt-master` 正在监听 `4505/4506`。
+
+## 7. Minion 脚本命令
+
+```text
+scripts/proxyfleet-minion.sh <command> [options]
+```
+
+常用命令：
+
+```text
+preflight                       只读检查 OS、systemd、sudo 和 Salt 目标版本
+install/bootstrap               安装 Salt Minion 3008.1，并写入 Master/ID/grains
+start                           启动 salt-minion
+start --with-mihomo             启动 salt-minion 后安全启动 Mihomo
+stop                            停止 salt-minion
+stop --with-mihomo              安全停止 Mihomo 后停止 salt-minion
+restart                         重启 salt-minion
+restart --with-mihomo           同时按安全流程重启 salt-minion 和 Mihomo
+status                          查看 salt-minion 状态
+uninstall [--yes]               完整卸载 Minion、受管 Mihomo 和本项目数据
+uninstall --purge-data [--yes]  兼容旧参数；行为等同 uninstall
+mihomo-start                    只安全启动本机 Mihomo
+mihomo-stop                     只停止本机 Mihomo，保留配置和 release
+mihomo-restart                  只重启本机 Mihomo
+mihomo-status                   查看 Mihomo 受管状态
+mihomo-uninstall [--yes]        完整卸载 ProxyFleet 受管 Mihomo
+```
+
+安装参数：
 
 ```text
 --master / --master-ip     Master IP 或 DNS
@@ -111,85 +164,7 @@ sudo scripts/proxyfleet-minion.sh install \
 --release-channel          默认 stable
 ```
 
-当前推荐生产迁移方向是卸载 ShellCrash 后使用 `native-mihomo`，让 ProxyFleet 统一安装
-和管控 Mihomo。
-
-## 6. 在 Master 接受 key
-
-这一步在 Master 节点执行，不是在 Minion 节点执行：
-
-```bash
-sudo salt-key -L
-sudo salt-key -F
-sudo salt-key -a <minion-id>
-sudo salt '<minion-id>' test.ping
-```
-
-如果 Master 上看不到 unaccepted key，先在 Minion 检查：
-
-```bash
-scripts/proxyfleet-minion.sh status
-sudo systemctl restart salt-minion
-```
-
-同时确认 Minion 能访问 Master：
-
-```bash
-timeout 3 bash -c '</dev/tcp/<master-ip>/4505' && echo 4505-ok
-timeout 3 bash -c '</dev/tcp/<master-ip>/4506' && echo 4506-ok
-```
-
-## 7. Minion 常用命令
-
-在 Minion 节点执行：
-
-```bash
-sudo scripts/proxyfleet-minion.sh start
-sudo scripts/proxyfleet-minion.sh stop
-sudo scripts/proxyfleet-minion.sh restart
-scripts/proxyfleet-minion.sh status
-```
-
-卸载：
-
-```bash
-sudo scripts/proxyfleet-minion.sh uninstall
-```
-
-命令说明：
-
-```text
-preflight              只读检查 OS、systemd、sudo 和 Salt 目标版本
-install/bootstrap      安装 Salt Minion 3008.1，并写入 Master/ID/grains 配置
-start                  启动 salt-minion
-stop                   停止 salt-minion
-restart                重启 salt-minion
-status                 查看 salt-minion 状态
-uninstall              停止并完整卸载 ProxyFleet Minion、受管 Mihomo 和本项目数据
-uninstall --purge-data [--yes]
-                     兼容旧参数；行为等同 uninstall
-```
-
-### 7.1 Mihomo 生命周期控制
-
-`proxyfleet-minion.sh start/stop/restart/status` 默认只控制 `salt-minion`。
-`uninstall` 是例外：它会先停止并清理 ProxyFleet 受管 Mihomo，然后卸载
-`salt-minion` 并删除 `/etc/proxyfleet`、Minion PKI 和配置。
-
-显式 Mihomo 控制入口：
-
-```text
-start --with-mihomo         启动 salt-minion 后安全启动 Mihomo
-stop --with-mihomo          安全停止 Mihomo 后停止 salt-minion
-restart --with-mihomo       同时按安全流程重启 salt-minion 和 Mihomo
-mihomo-start                只安全启动本机 Mihomo
-mihomo-stop                 只停止本机 Mihomo，保留配置和 release
-mihomo-restart              只重启本机 Mihomo
-mihomo-status               查看 Mihomo 受管状态
-mihomo-uninstall            停止并完整卸载 ProxyFleet 受管 Mihomo
-```
-
-旧参数仍兼容，但不再改变卸载语义：
+旧 Mihomo 卸载参数仍兼容，但不再改变当前完整卸载语义：
 
 ```text
 --purge-managed
@@ -198,16 +173,60 @@ mihomo-uninstall            停止并完整卸载 ProxyFleet 受管 Mihomo
 --with-mihomo
 ```
 
-任何 unit 不属于 ProxyFleet、路径不匹配或二进制来源无法确认时，卸载只会跳过
-对应的非受管对象，不会猜测删除范围。
+## 8. Mihomo 生命周期
+
+`start`、`stop`、`restart` 默认只控制 `salt-minion`。
+
+需要同时控制 Mihomo 时使用：
+
+```bash
+sudo scripts/proxyfleet-minion.sh start --with-mihomo
+sudo scripts/proxyfleet-minion.sh stop --with-mihomo
+sudo scripts/proxyfleet-minion.sh restart --with-mihomo
+```
+
+只控制 Mihomo：
+
+```bash
+sudo scripts/proxyfleet-minion.sh mihomo-start
+sudo scripts/proxyfleet-minion.sh mihomo-stop
+sudo scripts/proxyfleet-minion.sh mihomo-restart
+scripts/proxyfleet-minion.sh mihomo-status
+```
+
+完整卸载 Mihomo：
+
+```bash
+sudo scripts/proxyfleet-minion.sh mihomo-uninstall
+```
+
+脚本只处理 ProxyFleet 明确受管的 Mihomo unit、二进制、receipt 和
+`/etc/proxyfleet`。如果 unit 不属于 ProxyFleet、路径不匹配或来源无法确认，
+脚本会跳过对应对象，不猜测删除范围。
+
+## 9. 完整卸载 Minion
+
+在 Minion 节点执行：
+
+```bash
+sudo scripts/proxyfleet-minion.sh uninstall
+```
+
+Minion 完整卸载会：
+
+- 停止 ProxyFleet 受管 Mihomo；
+- 删除 ProxyFleet 受管 Mihomo unit、二进制和 receipt；
+- 删除 `/etc/proxyfleet`；
+- 停止并卸载 `salt-minion`；
+- 删除 Minion PKI 和 Salt Minion 配置。
 
 卸载不会重置系统路由、DNS、防火墙或其它系统网络配置。
 
-## 8. 被 Master 管控后的操作边界
+## 10. 被 Master 管控后的操作边界
 
-Minion 安装完成并被 Master 接受 key 后，日常代理配置不在 Minion 本机手动操作。
+Minion 安装完成并被 Master 接受 key 后，日常代理配置不要在 Minion 本机手动改。
 
-在 Master 上执行：
+代理源、节点选择、规则和公共端口白名单都在 Master 上配置，然后由 Master 执行：
 
 ```bash
 sudo scripts/proxyfleet-master.sh select-sync
@@ -218,17 +237,19 @@ Master 会通过 Salt 下发：
 - Mihomo 固定版本资产；
 - release 配置；
 - desired state；
-- `FLEET_PROXY` 选择。
+- `FLEET_PROXY` 当前选择；
+- Master managed 端口白名单。
 
-Minion 本机只保留本地 override：
+Minion 本机只保留 local override：
 
 ```text
 /etc/proxyfleet/local/port-policy.yaml
 ```
 
-该文件不会被 Master 覆盖，用于保留 Minion 自己的端口白名单规则。
+该文件不会被 Master 覆盖。完整卸载 Minion 时，该文件会随 `/etc/proxyfleet`
+一起删除。
 
-## 9. 常见验证命令
+## 11. 常见验证
 
 在 Minion 节点执行：
 
