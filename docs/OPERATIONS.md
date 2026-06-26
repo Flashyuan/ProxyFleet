@@ -67,6 +67,36 @@ TUI 入口：
 安装相关 -> 检测并更新 ProxyFleet Master
 ```
 
+健康监控和邮件告警：
+
+```bash
+sudo scripts/proxyfleet-master.sh monitor init
+sudo scripts/proxyfleet-master.sh monitor status
+sudo scripts/proxyfleet-master.sh monitor auto-switch true
+sudo scripts/proxyfleet-master.sh monitor auto-switch false
+sudo scripts/proxyfleet-master.sh monitor once --dry-run
+sudo scripts/proxyfleet-master.sh monitor once
+```
+
+TUI 入口：
+
+```text
+节点配置相关 -> 配置节点健康监控和邮件告警
+```
+
+默认路径：
+
+```text
+策略：runtime/health-monitor-policy.json
+状态：runtime/health-monitor-state.json
+邮件配置：/etc/proxyfleet/notify/email.json
+SMTP 授权码：/etc/proxyfleet/secrets/smtp-password
+```
+
+健康监控默认 10 分钟检测一次。连续多轮低分后先给多个管理员邮箱发告警，
+等待 10 分钟人工处理；自动切换默认关闭，启用后仍受节点名称黑名单、冷却期
+和每小时/每日次数限制。
+
 ## 3. Minion 常用操作
 
 进入 Minion 脚本目录：

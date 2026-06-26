@@ -26,6 +26,17 @@ from .fleet import (
     write_desired_state,
     write_node_catalog,
 )
+from .health_monitor import (
+    HealthMonitorError,
+    MonitorPaths,
+    configure_email_profile,
+    default_policy,
+    monitor_once,
+    monitor_status,
+    set_auto_switch,
+    write_default_policy,
+    write_smtp_password,
+)
 from .live_select import DEFAULT_TEST_URL, run_live_select
 from .port_policy import PortPolicyError, build_effective_policy, status as port_policy_status
 from .self_update import (
@@ -155,6 +166,42 @@ def build_parser() -> argparse.ArgumentParser:
     port_status.add_argument("local_path")
     port_status.add_argument("effective_path")
     port_status.add_argument("--mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
+
+    monitor = subparsers.add_parser("monitor", help="节点健康监控、邮件告警和延迟自动切换")
+    monitor_subparsers = monitor.add_subparsers(dest="monitor_command", required=True)
+    monitor_init = monitor_subparsers.add_parser("init", help="写入默认健康监控策略")
+    monitor_init.add_argument("--policy-path", required=True)
+    monitor_status_parser = monitor_subparsers.add_parser("status", help="查看健康监控状态")
+    monitor_status_parser.add_argument("--policy-path", required=True)
+    monitor_status_parser.add_argument("--state-path", required=True)
+    monitor_status_parser.add_argument("--email-config", default=None)
+    monitor_switch = monitor_subparsers.add_parser("auto-switch", help="显式启用或关闭健康监控自动切换")
+    monitor_switch.add_argument("--policy-path", required=True)
+    monitor_switch.add_argument("--enabled", required=True, choices=["true", "false"])
+    monitor_email = monitor_subparsers.add_parser("configure-email", help="配置多管理员邮件告警")
+    monitor_email.add_argument("--email-config", required=True)
+    monitor_email.add_argument("--smtp-host", required=True)
+    monitor_email.add_argument("--smtp-port", type=int, default=465)
+    monitor_email.add_argument("--smtp-tls", choices=["true", "false"], default="true")
+    monitor_email.add_argument("--username", required=True)
+    monitor_email.add_argument("--password-file", required=True)
+    monitor_email.add_argument("--password-stdin", action="store_true", help="从 stdin 读取 SMTP 密码或授权码")
+    monitor_email.add_argument("--from", dest="sender", required=True)
+    monitor_email.add_argument("--recipient", action="append", required=True)
+    monitor_once_parser = monitor_subparsers.add_parser("once", help="执行一轮健康监控")
+    monitor_once_parser.add_argument("--release-dir", required=True)
+    monitor_once_parser.add_argument("--runtime-dir", required=True)
+    monitor_once_parser.add_argument("--policy-path", required=True)
+    monitor_once_parser.add_argument("--state-path", required=True)
+    monitor_once_parser.add_argument("--email-config", default=None)
+    monitor_once_parser.add_argument("--mihomo-api", default="http://127.0.0.1:9090")
+    monitor_once_parser.add_argument("--mihomo-secret", default=None)
+    monitor_once_parser.add_argument("--salt-root", default=None)
+    monitor_once_parser.add_argument("--component-locks", default=None)
+    monitor_once_parser.add_argument("--target", default="*")
+    monitor_once_parser.add_argument("--salt-bin", default="salt")
+    monitor_once_parser.add_argument("--dry-run", action="store_true")
+    monitor_once_parser.add_argument("--no-email", action="store_true")
 
     check_update_parser = subparsers.add_parser("check-update", help="检测 ProxyFleet 新版本")
     check_update_parser.add_argument("--role", required=True, choices=["master", "minion"], help="当前节点角色")
@@ -529,6 +576,59 @@ def main(argv: list[str] | None = None) -> int:
                 )
         except PortPolicyError as exc:
             print(f"{exc.error_code}: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "monitor":
+        try:
+            if args.monitor_command == "init":
+                payload = write_default_policy(Path(args.policy_path))
+            elif args.monitor_command == "status":
+                payload = monitor_status(
+                    Path(args.policy_path),
+                    Path(args.state_path),
+                    Path(args.email_config) if args.email_config else None,
+                )
+            elif args.monitor_command == "auto-switch":
+                payload = set_auto_switch(Path(args.policy_path), args.enabled == "true")
+            elif args.monitor_command == "configure-email":
+                password_file = Path(args.password_file)
+                if args.password_stdin:
+                    write_smtp_password(password_file, sys.stdin.read())
+                payload = configure_email_profile(
+                    Path(args.email_config),
+                    smtp_host=args.smtp_host,
+                    smtp_port=args.smtp_port,
+                    smtp_tls=args.smtp_tls == "true",
+                    username=args.username,
+                    password_file=password_file,
+                    sender=args.sender,
+                    recipients=args.recipient,
+                )
+            else:
+                policy_path = Path(args.policy_path)
+                if not policy_path.exists():
+                    write_default_policy(policy_path)
+                payload = monitor_once(
+                    release_dir=Path(args.release_dir),
+                    runtime_dir=Path(args.runtime_dir),
+                    paths=MonitorPaths(
+                        policy_path=policy_path,
+                        state_path=Path(args.state_path),
+                        email_config_path=Path(args.email_config) if args.email_config else None,
+                    ),
+                    mihomo_api=args.mihomo_api,
+                    mihomo_secret=args.mihomo_secret,
+                    salt_root=Path(args.salt_root) if args.salt_root else None,
+                    component_locks=Path(args.component_locks) if args.component_locks else None,
+                    target=args.target,
+                    salt_bin=args.salt_bin,
+                    dry_run=args.dry_run,
+                    send_email=not args.no_email,
+                )
+        except HealthMonitorError as exc:
+            print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
             return 2
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         return 0

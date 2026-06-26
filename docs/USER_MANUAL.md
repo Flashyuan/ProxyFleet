@@ -242,6 +242,11 @@ status                        查看 salt-master 和 salt-key 状态
 sync-assets                   同步 Salt module/state 到 file_roots
 refresh-health                刷新 Master 本机 Mihomo API 测速缓存
 select-sync                   进入实时 TUI 选择节点并同步
+monitor init                  初始化默认健康监控策略
+monitor status                查看健康监控策略、状态和邮件配置状态
+monitor auto-switch true|false
+                              显式启用或关闭自动切换
+monitor once [--dry-run]      执行一轮健康检查；dry-run 不发邮件、不切换
 check-update                  检测 ProxyFleet Master 新版本
 update [--yes]                应用 ProxyFleet Master 更新
 uninstall [--yes]             完整卸载 Master 受管数据和组件
@@ -263,6 +268,38 @@ Master 更新：
 sudo scripts/proxyfleet-master.sh check-update
 sudo scripts/proxyfleet-master.sh update
 ```
+
+Master 健康监控：
+
+```bash
+sudo scripts/proxyfleet-master.sh monitor init
+sudo scripts/proxyfleet-master.sh monitor status
+sudo scripts/proxyfleet-master.sh monitor auto-switch true
+sudo scripts/proxyfleet-master.sh monitor auto-switch false
+sudo scripts/proxyfleet-master.sh monitor once --dry-run
+sudo scripts/proxyfleet-master.sh monitor once
+```
+
+TUI 入口：
+
+```text
+节点配置相关 -> 配置节点健康监控和邮件告警
+```
+
+邮件告警在 TUI 中配置发件 SMTP 和多个收件人。SMTP 授权码默认写入：
+
+```text
+/etc/proxyfleet/secrets/smtp-password
+```
+
+邮件配置默认写入：
+
+```text
+/etc/proxyfleet/notify/email.json
+```
+
+授权码文件权限会设置为 `0600`。健康监控默认 10 分钟检测一次，自动切换默认关闭；
+进入等待人工处理窗口后默认 10 分钟内不会自动切换。
 
 ## 10. `select-sync` 参数说明
 

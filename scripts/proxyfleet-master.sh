@@ -15,6 +15,10 @@ SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
 PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.0}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://raw.githubusercontent.com/Flashyuan/ProxyFleet/main/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
+MONITOR_POLICY_PATH="${MONITOR_POLICY_PATH:-${PROJECT_ROOT}/runtime/health-monitor-policy.json}"
+MONITOR_STATE_PATH="${MONITOR_STATE_PATH:-${PROJECT_ROOT}/runtime/health-monitor-state.json}"
+MONITOR_EMAIL_CONFIG="${MONITOR_EMAIL_CONFIG:-/etc/proxyfleet/notify/email.json}"
+SMTP_PASSWORD_FILE="${SMTP_PASSWORD_FILE:-/etc/proxyfleet/secrets/smtp-password}"
 
 die() {
   echo "错误：$*" >&2
@@ -230,6 +234,130 @@ suppress_update_master() {
     --current-version "${PROXYFLEET_VERSION}" \
     --current-commit "$(current_commit)" \
     --version "${version}"
+}
+
+monitor_init() {
+  need_root
+  proxyfleet_python monitor init --policy-path "${MONITOR_POLICY_PATH}"
+}
+
+monitor_status_cmd() {
+  proxyfleet_python monitor status \
+    --policy-path "${MONITOR_POLICY_PATH}" \
+    --state-path "${MONITOR_STATE_PATH}" \
+    --email-config "${MONITOR_EMAIL_CONFIG}"
+}
+
+monitor_auto_switch_cmd() {
+  need_root
+  local enabled="$1"
+  [[ -f "${MONITOR_POLICY_PATH}" ]] || monitor_init >/dev/null
+  proxyfleet_python monitor auto-switch --policy-path "${MONITOR_POLICY_PATH}" --enabled "${enabled}"
+}
+
+monitor_once_cmd() {
+  need_root
+  local release_dir="${PROJECT_ROOT}/releases/000001"
+  local runtime_dir="${PROJECT_ROOT}/runtime"
+  local mihomo_api="http://127.0.0.1:9090"
+  local dry_run="false"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --release-dir) release_dir="$2"; shift 2 ;;
+      --runtime-dir) runtime_dir="$2"; shift 2 ;;
+      --mihomo-api) mihomo_api="$2"; shift 2 ;;
+      --dry-run) dry_run="true"; shift ;;
+      *) die "未知 monitor once 参数：$1" ;;
+    esac
+  done
+  if [[ ! -d "${release_dir}" ]]; then
+    local latest
+    latest="$(latest_release_dir || true)"
+    [[ -n "${latest}" ]] || die "找不到 release 目录，请先构建 release"
+    release_dir="${latest}"
+  fi
+  [[ -f "${runtime_dir}/desired.yaml" ]] || die "缺少 ${runtime_dir}/desired.yaml，请先选择节点"
+  [[ -f "${MONITOR_POLICY_PATH}" ]] || monitor_init >/dev/null
+  local args=(
+    monitor once
+    --release-dir "${release_dir}"
+    --runtime-dir "${runtime_dir}"
+    --policy-path "${MONITOR_POLICY_PATH}"
+    --state-path "${MONITOR_STATE_PATH}"
+    --email-config "${MONITOR_EMAIL_CONFIG}"
+    --mihomo-api "${mihomo_api}"
+    --salt-root "${SALT_STATES_ROOT}"
+    --component-locks "${PROJECT_ROOT}/component-locks.json"
+    --target "*"
+  )
+  if [[ "${dry_run}" == "true" ]]; then
+    args+=(--dry-run --no-email)
+  fi
+  proxyfleet_python "${args[@]}"
+}
+
+monitor_email_tui() {
+  need_root
+  local smtp_host smtp_port smtp_tls username sender recipients password
+  read -r -p "SMTP Host: " smtp_host
+  read -r -p "SMTP Port [465]: " smtp_port
+  smtp_port="${smtp_port:-465}"
+  read -r -p "启用 TLS/SSL？[Y/n]: " smtp_tls
+  case "${smtp_tls}" in
+    n|N|no|NO) smtp_tls="false" ;;
+    *) smtp_tls="true" ;;
+  esac
+  read -r -p "SMTP 用户名/发件邮箱: " username
+  read -r -p "发件人显示，例如 ProxyFleet Alert <alert@example.com>: " sender
+  read -r -p "收件人邮箱，多个用逗号分隔: " recipients
+  read -r -s -p "SMTP 密码或授权码（不会回显）: " password
+  echo
+  preview_write "high" \
+    "写入邮件配置 ${MONITOR_EMAIL_CONFIG}" \
+    "写入 SMTP 授权码 ${SMTP_PASSWORD_FILE}，权限 0600" \
+    "收件人支持多个邮箱；不会写入 Git"
+  confirm_phrase "WRITE" "确认写入邮件告警配置？" || return 0
+  printf '%s\n' "${password}" | proxyfleet_python monitor configure-email \
+    --email-config "${MONITOR_EMAIL_CONFIG}" \
+    --smtp-host "${smtp_host}" \
+    --smtp-port "${smtp_port}" \
+    --smtp-tls "${smtp_tls}" \
+    --username "${username}" \
+    --password-file "${SMTP_PASSWORD_FILE}" \
+    --password-stdin \
+    --from "${sender}" \
+    --recipient "${recipients}"
+}
+
+monitor_tui() {
+  local choice
+  while true; do
+    tui_clear
+    cat <<'MENU'
+ProxyFleet Master / 节点健康监控
+
+1) 初始化/修复默认健康监控策略
+2) 配置邮件告警发件人和收件人
+3) 查看健康监控状态
+4) 启用自动切换
+5) 关闭自动切换
+6) 执行一次健康检查（dry-run，不发邮件、不切换）
+7) 执行一次健康检查（按策略推进状态）
+b) 返回
+MENU
+    read -r -p "请选择: " choice
+    case "${choice}" in
+      1) preview_write "medium" "写入默认策略 ${MONITOR_POLICY_PATH}" "默认 10 分钟检测，自动切换关闭"; confirm_phrase "WRITE" "确认写入默认健康监控策略？" && monitor_init; tui_pause ;;
+      2) monitor_email_tui; tui_pause ;;
+      3) monitor_status_cmd; tui_pause ;;
+      4) preview_write "critical" "启用健康监控自动切换" "仍会先邮件告警并等待 10 分钟；黑名单和限频保护继续生效"; confirm_phrase "ENABLE" "确认启用自动切换？" && monitor_auto_switch_cmd true; tui_pause ;;
+      5) preview_write "medium" "关闭健康监控自动切换" "保留检测和邮件告警"; confirm_phrase "DISABLE" "确认关闭自动切换？" && monitor_auto_switch_cmd false; tui_pause ;;
+      6) monitor_once_cmd --dry-run; tui_pause ;;
+      7) preview_write "high" "执行健康检查并按状态机推进" "可能发送邮件；仅当策略显式启用自动切换且等待窗口到期时才会切换"; confirm_phrase "RUN" "确认执行？" && monitor_once_cmd; tui_pause ;;
+      b|B|q|Q) return 0 ;;
+      *) echo "未知选项"; tui_pause ;;
+    esac
+  done
 }
 
 load_local_env() {
@@ -645,6 +773,7 @@ ProxyFleet Master / 节点配置相关
 5) 构建并校验 release
 6) 配置端口白名单
 7) 选择节点并同步到 Minion
+8) 配置节点健康监控和邮件告警
 b) 返回
 MENU
     read -r -p "请选择: " choice
@@ -656,6 +785,7 @@ MENU
       5) build_release_tui; tui_pause ;;
       6) port_policy_tui; tui_pause ;;
       7) select_sync; tui_pause ;;
+      8) monitor_tui ;;
       b|B|q|Q) return 0 ;;
       *) echo "未知选项"; tui_pause ;;
     esac
@@ -1030,6 +1160,7 @@ usage() {
   sync-assets      同步 ProxyFleet Salt module/state 到 file_roots
   refresh-health   刷新本机 Mihomo API 节点测速缓存
   select-sync      进入实时 TUI 选择节点，并同步到所有 Minion
+  monitor          节点健康监控：init/status/once
   check-update     检测 ProxyFleet Master 更新
   update [--yes]   应用 ProxyFleet Master 更新
   uninstall [--yes]
@@ -1049,6 +1180,13 @@ select-sync 常用参数：
   --port-policy PATH       可选：同步 Master managed 端口白名单；默认检测 config-src/port-policy.yaml
   --refresh-health         deprecated：进入 TUI 前先刷新测速缓存
   --no-health-cache        deprecated：不读取测速缓存，只显示 unknown
+
+monitor 常用子命令：
+  monitor init              写入默认健康监控策略
+  monitor status            查看策略、状态和邮件配置状态
+  monitor auto-switch true|false
+                            显式启用或关闭自动切换
+  monitor once [--dry-run]  执行一轮健康检查；dry-run 不发邮件、不切换
 USAGE
 }
 
@@ -1064,6 +1202,17 @@ case "${command}" in
   sync-assets) sync_assets ;;
   refresh-health) shift; refresh_health "$@" ;;
   select-sync) shift; select_sync "$@" ;;
+  monitor)
+    shift
+    subcommand="${1:-}"
+    case "${subcommand}" in
+      init) shift; monitor_init "$@" ;;
+      status) shift; monitor_status_cmd "$@" ;;
+      auto-switch) shift; monitor_auto_switch_cmd "${1:-}" ;;
+      once) shift; monitor_once_cmd "$@" ;;
+      *) die "未知 monitor 子命令：${subcommand:-}" ;;
+    esac
+    ;;
   check-update) shift; check_update_master "$@" ;;
   update) shift; need_root; if [[ "${1:-}" == "--yes" ]]; then apply_update_master; else update_master_tui; fi ;;
   uninstall) shift; uninstall_master "$@" ;;

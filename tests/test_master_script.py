@@ -45,6 +45,10 @@ class MasterScriptTuiTests(unittest.TestCase):
                 "SALT_SOURCES": str(root / "salt.sources"),
                 "SALT_PIN": str(root / "salt.pin"),
                 "SALT_KEYRING": str(root / "salt.keyring"),
+                "MONITOR_POLICY_PATH": str(root / "runtime" / "health-monitor-policy.json"),
+                "MONITOR_STATE_PATH": str(root / "runtime" / "health-monitor-state.json"),
+                "MONITOR_EMAIL_CONFIG": str(root / "etc" / "proxyfleet" / "notify" / "email.json"),
+                "SMTP_PASSWORD_FILE": str(root / "etc" / "proxyfleet" / "secrets" / "smtp-password"),
             }
         )
         if allow_tui:
@@ -148,6 +152,50 @@ class MasterScriptTuiTests(unittest.TestCase):
             self.assertIn('"port": 9090', text)
             self.assertIn('"source": "192.168.1.0/24"', text)
             self.assertIn("Salt Master 自身需要对 Minion 开放 TCP 4505/4506", result.stdout)
+
+    def test_master_config_menu_contains_health_monitor_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run(Path(tmp), [], "3\nb\nq\n")
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("配置节点健康监控和邮件告警", result.stdout)
+
+    def test_monitor_email_tui_writes_config_and_password(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            project.mkdir()
+            (project / "src").symlink_to(ROOT / "src", target_is_directory=True)
+            result = self._run(
+                root,
+                [],
+                "3\n8\n2\nsmtp.example.com\n465\nY\nalert@example.com\nProxyFleet Alert <alert@example.com>\nadmin1@example.com,admin2@example.com\nsecret-token\nWRITE\n\nb\nb\nq\n",
+                project_root=project,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            email_config = root / "etc" / "proxyfleet" / "notify" / "email.json"
+            password_file = root / "etc" / "proxyfleet" / "secrets" / "smtp-password"
+            self.assertTrue(email_config.exists())
+            self.assertTrue(password_file.exists())
+            config = json.loads(email_config.read_text(encoding="utf-8"))
+            self.assertEqual(["admin1@example.com", "admin2@example.com"], config["profiles"]["default"]["recipients"])
+            self.assertEqual(0o600, password_file.stat().st_mode & 0o777)
+            self.assertIn("配置邮件告警发件人和收件人", result.stdout)
+
+    def test_monitor_email_tui_does_not_pass_password_as_argument(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("--password-stdin", text)
+        self.assertNotIn("--password \"${password}\"", text)
+
+    def test_monitor_tui_contains_auto_switch_toggle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run(Path(tmp), [], "3\n8\nb\nb\nq\n")
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("启用自动切换", result.stdout)
+            self.assertIn("关闭自动切换", result.stdout)
 
     def test_quick_subscription_tui_generates_config_and_release(self):
         with tempfile.TemporaryDirectory() as tmp:
