@@ -91,6 +91,28 @@ class SecurityContractTests(unittest.TestCase):
         self.assertNotIn("pillar.get('proxyfleet_release_root'", text)
         self.assertNotIn("pillar.get('proxyfleet_desired_path'", text)
 
+    def test_self_update_has_manifest_scope_and_no_forced_background_update(self):
+        updater = (ROOT / "src" / "proxyfleet" / "self_update.py").read_text(encoding="utf-8")
+        master = (ROOT / "scripts" / "proxyfleet-master.sh").read_text(encoding="utf-8")
+        minion = (ROOT / "scripts" / "proxyfleet-minion.sh").read_text(encoding="utf-8")
+
+        self.assertIn("MASTER_ALLOWLIST", updater)
+        self.assertIn("MASTER_DENYLIST", updater)
+        self.assertIn("MINION_ALLOWLIST", updater)
+        self.assertIn("MINION_DENYLIST", updater)
+        self.assertIn("E_UPDATE_SCOPE", updater)
+        self.assertIn("raw.githubusercontent.com", updater)
+        self.assertIn("apply_update", updater)
+        self.assertIn("assume_yes", updater)
+        self.assertIn("check-update", master)
+        self.assertIn("update [--yes]", master)
+        self.assertIn("check-update", minion)
+        self.assertIn("update [--yes]", minion)
+        for text in [master, minion]:
+            self.assertNotIn("systemctl enable --now proxyfleet-update", text)
+            self.assertNotIn("cron", text.lower())
+            self.assertNotIn("timer", text.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

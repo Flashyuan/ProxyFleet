@@ -54,6 +54,19 @@ sudo scripts/proxyfleet-master.sh uninstall
 Master 卸载只清理 Master 本机受管组件和项目运行数据，不会进入远端 Minion
 卸载 Mihomo，也不会重置系统路由、DNS、防火墙。
 
+检测并更新 Master：
+
+```bash
+sudo scripts/proxyfleet-master.sh check-update
+sudo scripts/proxyfleet-master.sh update
+```
+
+TUI 入口：
+
+```text
+安装相关 -> 检测并更新 ProxyFleet Master
+```
+
 ## 3. Minion 常用操作
 
 进入 Minion 脚本目录：
@@ -102,6 +115,13 @@ sudo scripts/proxyfleet-minion.sh uninstall
 
 Minion 卸载会清理 `salt-minion`、ProxyFleet 受管 Mihomo 和 `/etc/proxyfleet`，
 但不会重置系统路由、DNS、防火墙。
+
+检测并更新 Minion 脚本：
+
+```bash
+sudo scripts/proxyfleet-minion.sh check-update
+sudo scripts/proxyfleet-minion.sh update
+```
 
 ## 4. Salt Key 运维
 

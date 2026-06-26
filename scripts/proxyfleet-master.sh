@@ -12,6 +12,9 @@ MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
 MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
 SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
 SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-unknown}"
+UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://raw.githubusercontent.com/Flashyuan/ProxyFleet/main/update-manifest.json}"
+UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
 
 die() {
   echo "错误：$*" >&2
@@ -185,6 +188,48 @@ preview_write() {
   shift
   echo "将执行的操作（危险等级：${level}）："
   printf '  - %s\n' "$@"
+}
+
+current_commit() {
+  git -C "${PROJECT_ROOT}" rev-parse HEAD 2>/dev/null || echo "unknown"
+}
+
+proxyfleet_python() {
+  PYTHONPATH="${PROJECT_ROOT}/src" python3 -m proxyfleet.cli "$@"
+}
+
+check_update_master() {
+  proxyfleet_python check-update \
+    --role master \
+    --install-root "${PROJECT_ROOT}" \
+    --state-path "${UPDATE_STATE_PATH}" \
+    --manifest-url "${UPDATE_MANIFEST_URL}" \
+    --current-version "${PROXYFLEET_VERSION}" \
+    --current-commit "$(current_commit)"
+}
+
+apply_update_master() {
+  need_root
+  proxyfleet_python update \
+    --role master \
+    --install-root "${PROJECT_ROOT}" \
+    --state-path "${UPDATE_STATE_PATH}" \
+    --manifest-url "${UPDATE_MANIFEST_URL}" \
+    --current-version "${PROXYFLEET_VERSION}" \
+    --current-commit "$(current_commit)" \
+    --yes
+}
+
+suppress_update_master() {
+  local version="$1"
+  proxyfleet_python suppress-update \
+    --role master \
+    --install-root "${PROJECT_ROOT}" \
+    --state-path "${UPDATE_STATE_PATH}" \
+    --manifest-url "${UPDATE_MANIFEST_URL}" \
+    --current-version "${PROXYFLEET_VERSION}" \
+    --current-commit "$(current_commit)" \
+    --version "${version}"
 }
 
 load_local_env() {
@@ -549,14 +594,16 @@ ProxyFleet Master / 安装相关
 
 1) 只读预检
 2) 安装/修复 Salt Master
-3) 卸载 Master
+3) 检测并更新 ProxyFleet Master
+4) 卸载 Master
 b) 返回
 MENU
     read -r -p "请选择: " choice
     case "${choice}" in
       1) preflight; tui_pause ;;
       2) preview_write "medium" "安装 Salt Master ${SALT_VERSION}" "写入 ${MASTER_CONF}" "同步 Salt states"; confirm_phrase "INSTALL" "确认安装/修复 Master？" && install_master; tui_pause ;;
-      3) preview_write "critical" "停止 salt-master" "卸载 salt-master" "删除 Master PKI、配置、Salt states/pillar 和本项目运行数据"; confirm_phrase "UNINSTALL" "确认完整卸载 Master？" && uninstall_master --yes; tui_pause ;;
+      3) update_master_tui; tui_pause ;;
+      4) preview_write "critical" "停止 salt-master" "卸载 salt-master" "删除 Master PKI、配置、Salt states/pillar 和本项目运行数据"; confirm_phrase "UNINSTALL" "确认完整卸载 Master？" && uninstall_master --yes; tui_pause ;;
       b|B|q|Q) return 0 ;;
       *) echo "未知选项"; tui_pause ;;
     esac
@@ -674,8 +721,36 @@ latest_release_dir() {
   fi
 }
 
-proxyfleet_python() {
-  PYTHONPATH="${PROJECT_ROOT}/src" python3 -m proxyfleet.cli "$@"
+update_master_tui() {
+  local payload status version choice
+  payload="$(check_update_master)" || return $?
+  echo "${payload}"
+  status="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' <<<"${payload}")"
+  version="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("remote_version","unknown"))' <<<"${payload}")"
+  if [[ "${status}" != "available" ]]; then
+    echo "当前没有需要应用的更新。"
+    return 0
+  fi
+  echo
+  echo "发现新版本：${version}"
+  echo "1) 是，应用更新"
+  echo "2) 否，本次跳过"
+  echo "3) 否，并不再提醒此版本"
+  read -r -p "请选择: " choice
+  case "${choice}" in
+    1)
+      preview_write "high" \
+        "下载并校验 update manifest 中的 Master 资产" \
+        "备份并原子替换 allowlist 内文件" \
+        "不会覆盖 .env.proxyfleet、config-src、runtime、releases、Salt PKI 或节点配置" \
+        "更新后不会自动接受 key、不会自动切换节点"
+      confirm_phrase "UPDATE" "确认应用 ProxyFleet Master 更新？" || return 0
+      apply_update_master
+      echo "更新完成。如更新了 salt/，请按需执行 sync-assets。"
+      ;;
+    3) suppress_update_master "${version}" ;;
+    *) echo "已跳过更新" ;;
+  esac
 }
 
 health_cache_has_useful_result() {
@@ -955,6 +1030,8 @@ usage() {
   sync-assets      同步 ProxyFleet Salt module/state 到 file_roots
   refresh-health   刷新本机 Mihomo API 节点测速缓存
   select-sync      进入实时 TUI 选择节点，并同步到所有 Minion
+  check-update     检测 ProxyFleet Master 更新
+  update [--yes]   应用 ProxyFleet Master 更新
   uninstall [--yes]
                    停止并完整卸载 ProxyFleet Master 受管数据和组件
   uninstall --purge-data [--yes]
@@ -987,6 +1064,8 @@ case "${command}" in
   sync-assets) sync_assets ;;
   refresh-health) shift; refresh_health "$@" ;;
   select-sync) shift; select_sync "$@" ;;
+  check-update) shift; check_update_master "$@" ;;
+  update) shift; need_root; if [[ "${1:-}" == "--yes" ]]; then apply_update_master; else update_master_tui; fi ;;
   uninstall) shift; uninstall_master "$@" ;;
   *) usage; exit 2 ;;
 esac

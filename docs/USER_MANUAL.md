@@ -242,6 +242,8 @@ status                        查看 salt-master 和 salt-key 状态
 sync-assets                   同步 Salt module/state 到 file_roots
 refresh-health                刷新 Master 本机 Mihomo API 测速缓存
 select-sync                   进入实时 TUI 选择节点并同步
+check-update                  检测 ProxyFleet Master 新版本
+update [--yes]                应用 ProxyFleet Master 更新
 uninstall [--yes]             完整卸载 Master 受管数据和组件
 uninstall --purge-data [--yes] 兼容旧参数；行为等同 uninstall
 ```
@@ -253,6 +255,13 @@ sudo scripts/proxyfleet-master.sh start
 sudo scripts/proxyfleet-master.sh stop
 sudo scripts/proxyfleet-master.sh restart
 scripts/proxyfleet-master.sh status
+```
+
+Master 更新：
+
+```bash
+sudo scripts/proxyfleet-master.sh check-update
+sudo scripts/proxyfleet-master.sh update
 ```
 
 ## 10. `select-sync` 参数说明
@@ -291,6 +300,8 @@ stop --with-mihomo              安全停止 Mihomo 后停止 salt-minion
 restart                         重启 salt-minion
 restart --with-mihomo           同时重启 salt-minion 和 Mihomo
 status                          查看 salt-minion 状态
+check-update                    检测 ProxyFleet Minion 脚本新版本
+update [--yes]                  应用 ProxyFleet Minion 脚本更新
 uninstall [--yes]               完整卸载 Minion、受管 Mihomo 和本项目数据
 uninstall --purge-data [--yes]  兼容旧参数；行为等同 uninstall
 mihomo-start                    只启动本机 Mihomo
@@ -307,6 +318,13 @@ sudo scripts/proxyfleet-minion.sh start
 sudo scripts/proxyfleet-minion.sh stop
 sudo scripts/proxyfleet-minion.sh restart
 scripts/proxyfleet-minion.sh status
+```
+
+Minion 更新：
+
+```bash
+sudo scripts/proxyfleet-minion.sh check-update
+sudo scripts/proxyfleet-minion.sh update
 ```
 
 Mihomo 服务：

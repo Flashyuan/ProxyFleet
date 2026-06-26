@@ -195,6 +195,7 @@ exit 0
 
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertIn("ProxyFleet Minion 主控台", result.stdout)
+            self.assertIn("检测并更新 ProxyFleet Minion", result.stdout)
             self.assertNotIn("用法：scripts/proxyfleet-minion.sh <command>", result.stdout)
 
     def test_no_tty_minion_fallback_shows_commands(self):
@@ -209,7 +210,7 @@ exit 0
     def test_tui_writes_local_port_policy_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            result = self._run_with_input(root, [], "7\n3\nWRITE\n\nq\n")
+            result = self._run_with_input(root, [], "8\n3\nWRITE\n\nq\n")
 
             self.assertEqual(0, result.returncode, result.stderr)
             options = root / "etc" / "proxyfleet" / "local" / "options.json"
@@ -296,6 +297,69 @@ exit 0
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertTrue(tree["unit"].exists())
             self.assertIn("跳过 Mihomo 服务删除", result.stdout)
+
+    def test_single_script_minion_update_fallback_replaces_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "minion"
+            script_dir = project / "scripts"
+            script_dir.mkdir(parents=True)
+            target = script_dir / "proxyfleet-minion.sh"
+            target.write_text("#!/usr/bin/env bash\necho old-minion\n", encoding="utf-8")
+            target.chmod(0o755)
+            asset = root / "new-minion.sh"
+            asset.write_text("#!/usr/bin/env bash\necho new-minion\n", encoding="utf-8")
+            asset.chmod(0o755)
+            manifest = root / "update-manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "product": "proxyfleet",
+                        "channel": "stable",
+                        "version": "v0.2.0",
+                        "commit": "d" * 40,
+                        "published_at": "2026-06-26T00:00:00Z",
+                        "minimum_supported_version": "v0.1.0",
+                        "summary": ["minion script"],
+                        "assets": [
+                            {
+                                "role": "minion",
+                                "path": "scripts/proxyfleet-minion.sh",
+                                "url": asset.as_uri(),
+                                "sha256": hashlib.sha256(asset.read_bytes()).hexdigest(),
+                                "mode": "0755",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PROJECT_ROOT": str(project),
+                    "PROXYFLEET_TEST_ALLOW_NON_ROOT": "1",
+                    "PROXYFLEET_ETC_ROOT": str(root / "etc" / "proxyfleet"),
+                    "UPDATE_MANIFEST_URL": str(manifest),
+                }
+            )
+
+            result = subprocess.run(
+                ["bash", str(SCRIPT), "update", "--yes"],
+                cwd=ROOT,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("new-minion", target.read_text(encoding="utf-8"))
+            state = root / "etc" / "proxyfleet" / "local" / "update-state.json"
+            self.assertTrue(state.exists())
+            self.assertEqual("success", json.loads(state.read_text(encoding="utf-8"))["last_update_status"])
 
 
 if __name__ == "__main__":

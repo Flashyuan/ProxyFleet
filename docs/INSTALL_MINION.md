@@ -101,6 +101,7 @@ sudo scripts/proxyfleet-minion.sh
 TUI 可完成：
 
 - Salt Minion 安装；
+- ProxyFleet Minion 脚本检测更新和确认后更新；
 - Master 地址和 Minion ID 配置；
 - Salt Minion 启动、停止、重启；
 - ProxyFleet 受管 Mihomo 启动、停止、重启和卸载；
@@ -145,6 +146,8 @@ stop --with-mihomo              安全停止 Mihomo 后停止 salt-minion
 restart                         重启 salt-minion
 restart --with-mihomo           同时按安全流程重启 salt-minion 和 Mihomo
 status                          查看 salt-minion 状态
+check-update                    检测 ProxyFleet Minion 脚本新版本
+update [--yes]                  应用 ProxyFleet Minion 脚本更新
 uninstall [--yes]               完整卸载 Minion、受管 Mihomo 和本项目数据
 uninstall --purge-data [--yes]  兼容旧参数；行为等同 uninstall
 mihomo-start                    只安全启动本机 Mihomo
@@ -173,7 +176,34 @@ mihomo-uninstall [--yes]        完整卸载 ProxyFleet 受管 Mihomo
 --with-mihomo
 ```
 
-## 8. Mihomo 生命周期
+## 8. 检测并更新 Minion 脚本
+
+推荐在 Minion TUI 中选择：
+
+```text
+检测并更新 ProxyFleet Minion
+```
+
+非交互命令：
+
+```bash
+sudo scripts/proxyfleet-minion.sh check-update
+sudo scripts/proxyfleet-minion.sh update
+sudo scripts/proxyfleet-minion.sh update --yes
+```
+
+`check-update` 只读。`update` 默认仍会询问确认；`--yes` 用于自动化，但不会跳过
+manifest、SHA-256、路径 allowlist/denylist、备份、语法检查和回滚。
+
+Minion 更新默认只允许覆盖 `scripts/proxyfleet-minion.sh` 和
+`/etc/proxyfleet/local/update-state.json`。不会覆盖 `/etc/salt`、`/etc/proxyfleet`
+中的 current/managed/effective、local override、Mihomo 二进制、Mihomo systemd
+unit、release 或运行数据。
+
+更新不会自动启动、停止、重启或卸载 Mihomo。只有旧版单脚本且没有 `src/` 的
+Minion，也可以使用内置轻量 fallback 更新 `scripts/proxyfleet-minion.sh`。
+
+## 9. Mihomo 生命周期
 
 `start`、`stop`、`restart` 默认只控制 `salt-minion`。
 
@@ -204,7 +234,7 @@ sudo scripts/proxyfleet-minion.sh mihomo-uninstall
 `/etc/proxyfleet`。如果 unit 不属于 ProxyFleet、路径不匹配或来源无法确认，
 脚本会跳过对应对象，不猜测删除范围。
 
-## 9. 完整卸载 Minion
+## 10. 完整卸载 Minion
 
 在 Minion 节点执行：
 
@@ -222,7 +252,7 @@ Minion 完整卸载会：
 
 卸载不会重置系统路由、DNS、防火墙或其它系统网络配置。
 
-## 10. 被 Master 管控后的操作边界
+## 11. 被 Master 管控后的操作边界
 
 Minion 安装完成并被 Master 接受 key 后，日常代理配置不要在 Minion 本机手动改。
 
@@ -249,7 +279,7 @@ Minion 本机只保留 local override：
 该文件不会被 Master 覆盖。完整卸载 Minion 时，该文件会随 `/etc/proxyfleet`
 一起删除。
 
-## 11. 常见验证
+## 12. 常见验证
 
 在 Minion 节点执行：
 

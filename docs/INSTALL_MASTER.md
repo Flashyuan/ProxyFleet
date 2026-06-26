@@ -97,7 +97,7 @@ sudo scripts/proxyfleet-master.sh
 主菜单分为四类：
 
 ```text
-安装相关          预检、安装/修复、卸载 Master
+安装相关          预检、安装/修复、检测更新、卸载 Master
 Master 节点相关   查看 Master 状态、Salt key、接受 Minion key
 节点配置相关      订阅、自建节点、规则、端口白名单、构建和同步
 服务相关          启动、停止、重启和查看 Master 服务
@@ -123,6 +123,8 @@ status                        查看 salt-master 状态和 Salt key 列表
 sync-assets                   同步 ProxyFleet Salt module/state 到 file_roots
 refresh-health                刷新 Master 本机 Mihomo API 测速缓存
 select-sync                   进入实时 TUI 选择节点，并同步到 Minion
+check-update                  检测 ProxyFleet Master 新版本
+update [--yes]                应用 ProxyFleet Master 更新
 uninstall [--yes]             完整卸载 Master 受管数据和组件
 uninstall --purge-data [--yes] 兼容旧参数；行为等同 uninstall
 ```
@@ -155,7 +157,39 @@ sudo scripts/proxyfleet-minion.sh uninstall
 
 卸载不会重置系统路由、DNS、防火墙或其它系统网络配置。
 
-## 7. 接受 Minion Key
+## 7. 检测并更新 Master
+
+推荐在 Master TUI 中进入：
+
+```text
+安装相关 -> 检测并更新 ProxyFleet Master
+```
+
+非交互命令：
+
+```bash
+sudo scripts/proxyfleet-master.sh check-update
+sudo scripts/proxyfleet-master.sh update
+sudo scripts/proxyfleet-master.sh update --yes
+```
+
+`check-update` 只读。`update` 默认仍会询问确认；`--yes` 用于自动化，但不会跳过
+manifest、SHA-256、路径 allowlist/denylist、备份、语法检查和回滚。
+
+Master 更新只允许覆盖 `README.md`、`component-locks.json`、`update-manifest.json`、
+`scripts/` 中的 ProxyFleet 脚本、`src/`、`salt/` 和 `docs/`。
+
+更新不会覆盖 `.env.proxyfleet`、`config-src/`、`runtime/`、`releases/`、Salt PKI、
+Minion key、订阅缓存或节点配置。更新也不会自动接受 Minion key，且不会自动切换
+代理节点。
+
+如果更新了 `salt/`，更新完成后按需执行：
+
+```bash
+sudo scripts/proxyfleet-master.sh sync-assets
+```
+
+## 8. 接受 Minion Key
 
 Minion 安装后，回到 Master 节点执行：
 
@@ -180,7 +214,7 @@ sudo salt-key -D
 
 `salt-key -D` 会删除全部 key，是危险操作。
 
-## 8. 配置订阅 URL
+## 9. 配置订阅 URL
 
 最少步骤方式：
 
@@ -219,7 +253,7 @@ MATCH,FLEET_PROXY
 
 也就是所有未被其它规则命中的流量都走当前选择的代理节点。
 
-## 9. 多订阅
+## 10. 多订阅
 
 多订阅不需要手写 JSON。重复执行：
 
@@ -232,7 +266,7 @@ MATCH,FLEET_PROXY
 
 订阅 URL 只保存在本地 `.env.proxyfleet`，不会提交到 Git。
 
-## 10. 导入自建节点和自定义规则
+## 11. 导入自建节点和自定义规则
 
 在 Master TUI 中进入：
 
@@ -247,7 +281,7 @@ MATCH,FLEET_PROXY
 自定义规则用于补充 `rules.json` 或 rule provider。规则顺序由 Master 本地
 配置统一管理，订阅里的 `proxy-groups` 和 `rules` 不会直接进入最终 release。
 
-## 11. 端口白名单
+## 12. 端口白名单
 
 Master managed 端口白名单默认写入：
 
@@ -279,7 +313,7 @@ Minion 本地 override 文件是：
 Salt state 只保证 `/etc/proxyfleet/local` 目录存在，不覆盖、不删除这个本地文件。
 因此 Minion 可以保留自己的本机端口规则。
 
-## 12. 选择节点并同步
+## 13. 选择节点并同步
 
 推荐命令：
 
@@ -316,7 +350,7 @@ sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id>'
 `select-sync` 会把选择写入 `runtime/desired.yaml`，发布 release 到 Salt
 file_roots，然后执行 Salt 同步。
 
-## 13. `select-sync` 参数
+## 14. `select-sync` 参数
 
 ```text
 --release-dir PATH       release 目录，默认 releases/000001；不存在时取最大编号
@@ -340,7 +374,7 @@ file_roots，然后执行 Salt 同步。
 --no-health-cache        废弃，不再作为推荐入口
 ```
 
-## 14. 手动构建 release
+## 15. 手动构建 release
 
 通常 TUI 会自动构建。需要手动复现时执行：
 
@@ -367,7 +401,7 @@ PYTHONPATH=src python3 -m proxyfleet.cli nodes \
   --health-cache runtime/health.json
 ```
 
-## 15. 常见验证
+## 16. 常见验证
 
 在 Master 节点执行：
 

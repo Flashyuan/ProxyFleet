@@ -73,6 +73,13 @@ class MasterScriptTuiTests(unittest.TestCase):
             self.assertNotIn("10) 配置端口白名单", result.stdout)
             self.assertNotIn("用法：scripts/proxyfleet-master.sh <command>", result.stdout)
 
+    def test_master_install_menu_contains_update_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run(Path(tmp), [], "1\nb\nq\n")
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("检测并更新 ProxyFleet Master", result.stdout)
+
     def test_no_tty_master_fallback_shows_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = self._run(Path(tmp), [], allow_tui=False)

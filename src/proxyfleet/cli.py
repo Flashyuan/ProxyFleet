@@ -28,6 +28,14 @@ from .fleet import (
 )
 from .live_select import DEFAULT_TEST_URL, run_live_select
 from .port_policy import PortPolicyError, build_effective_policy, status as port_policy_status
+from .self_update import (
+    UpdateContext,
+    UpdateError,
+    apply_update,
+    check_update,
+    generate_manifest,
+    suppress_update,
+)
 from .subscription import SubscriptionError, build_subscription_status
 
 
@@ -147,6 +155,43 @@ def build_parser() -> argparse.ArgumentParser:
     port_status.add_argument("local_path")
     port_status.add_argument("effective_path")
     port_status.add_argument("--mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
+
+    check_update_parser = subparsers.add_parser("check-update", help="检测 ProxyFleet 新版本")
+    check_update_parser.add_argument("--role", required=True, choices=["master", "minion"], help="当前节点角色")
+    check_update_parser.add_argument("--install-root", required=True, help="安装根目录")
+    check_update_parser.add_argument("--state-path", required=True, help="update-state.json 路径")
+    check_update_parser.add_argument("--manifest-url", required=True, help="update-manifest.json URL 或路径")
+    check_update_parser.add_argument("--current-version", default="unknown", help="当前版本")
+    check_update_parser.add_argument("--current-commit", default="unknown", help="当前 commit")
+    check_update_parser.add_argument("--respect-suppressed", action="store_true", help="尊重 suppressed 版本")
+
+    update_parser = subparsers.add_parser("update", help="确认后应用 ProxyFleet 更新")
+    update_parser.add_argument("--role", required=True, choices=["master", "minion"], help="当前节点角色")
+    update_parser.add_argument("--install-root", required=True, help="安装根目录")
+    update_parser.add_argument("--state-path", required=True, help="update-state.json 路径")
+    update_parser.add_argument("--manifest-url", required=True, help="update-manifest.json URL 或路径")
+    update_parser.add_argument("--current-version", default="unknown", help="当前版本")
+    update_parser.add_argument("--current-commit", default="unknown", help="当前 commit")
+    update_parser.add_argument("--yes", action="store_true", help="确认应用更新")
+
+    suppress_update_parser = subparsers.add_parser("suppress-update", help="不再自动提醒指定版本")
+    suppress_update_parser.add_argument("--role", required=True, choices=["master", "minion"], help="当前节点角色")
+    suppress_update_parser.add_argument("--install-root", required=True, help="安装根目录")
+    suppress_update_parser.add_argument("--state-path", required=True, help="update-state.json 路径")
+    suppress_update_parser.add_argument("--manifest-url", required=True, help="update-manifest.json URL 或路径")
+    suppress_update_parser.add_argument("--version", required=True, help="要抑制自动提醒的版本")
+    suppress_update_parser.add_argument("--current-version", default="unknown", help="当前版本")
+    suppress_update_parser.add_argument("--current-commit", default="unknown", help="当前 commit")
+
+    update_manifest = subparsers.add_parser("generate-update-manifest", help="生成受控自更新 manifest")
+    update_manifest.add_argument("--install-root", required=True, help="项目根目录")
+    update_manifest.add_argument("--output", required=True, help="输出 update-manifest.json")
+    update_manifest.add_argument("--version", required=True, help="发布版本")
+    update_manifest.add_argument("--commit", required=True, help="发布 commit")
+    update_manifest.add_argument("--base-url", required=True, help="资产下载 URL 前缀")
+    update_manifest.add_argument("--role", required=True, choices=["master", "minion"], help="资产角色")
+    update_manifest.add_argument("--asset", action="append", required=True, help="资产相对路径，可重复")
+    update_manifest.add_argument("--summary", action="append", default=[], help="变更摘要，可重复")
 
     return parser
 
@@ -484,6 +529,46 @@ def main(argv: list[str] | None = None) -> int:
                 )
         except PortPolicyError as exc:
             print(f"{exc.error_code}: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.command in {"check-update", "update", "suppress-update"}:
+        context = UpdateContext(
+            role=args.role,
+            install_root=Path(args.install_root),
+            state_path=Path(args.state_path),
+            manifest_source=args.manifest_url,
+            current_version=args.current_version,
+            current_commit=args.current_commit,
+        )
+        try:
+            if args.command == "check-update":
+                payload = check_update(context, respect_suppressed=args.respect_suppressed)
+            elif args.command == "update":
+                payload = apply_update(context, assume_yes=args.yes)
+            else:
+                payload = suppress_update(context, args.version)
+        except UpdateError as exc:
+            print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
+            return 2
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "generate-update-manifest":
+        try:
+            payload = generate_manifest(
+                install_root=Path(args.install_root),
+                output=Path(args.output),
+                version=args.version,
+                commit=args.commit,
+                base_url=args.base_url,
+                role=args.role,
+                assets=args.asset,
+                summary=args.summary,
+            )
+        except UpdateError as exc:
+            print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
             return 2
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
