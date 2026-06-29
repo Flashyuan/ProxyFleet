@@ -21,6 +21,33 @@ sudo scripts/proxyfleet-master.sh
 sudo scripts/proxyfleet-minion.sh
 ```
 
+也可以配置全局命令。推荐使用 wrapper，不要直接软链接脚本：
+
+```bash
+sudo tee /usr/local/bin/pfmaster >/dev/null <<'EOF'
+#!/usr/bin/env bash
+export PROJECT_ROOT=/home/ubuntu/project/ProxyFleet
+exec /home/ubuntu/project/ProxyFleet/scripts/proxyfleet-master.sh "$@"
+EOF
+
+sudo chmod +x /usr/local/bin/pfmaster
+```
+
+Minion：
+
+```bash
+sudo tee /usr/local/bin/pfminion >/dev/null <<'EOF'
+#!/usr/bin/env bash
+export PROJECT_ROOT=/home/ubuntu/project/proxyfleet-minion
+exec /home/ubuntu/project/proxyfleet-minion/scripts/proxyfleet-minion.sh "$@"
+EOF
+
+sudo chmod +x /usr/local/bin/pfminion
+```
+
+如果项目目录不是 `/home/ubuntu/project/...`，请替换成真实路径。wrapper 会固定
+`PROJECT_ROOT`，避免从 `/usr/local/bin` 启动时找不到 release。
+
 ## 2. Master 节点安装
 
 在 Master 节点执行：
@@ -206,6 +233,12 @@ Salt Master 自身需要开放 TCP `4505/4506` 给 Minion，这是 Master 防火
 sudo scripts/proxyfleet-master.sh select-sync
 ```
 
+如果已配置全局命令，也可以执行：
+
+```bash
+sudo pfmaster select-sync
+```
+
 `select-sync` 默认进入实时 TUI，顶部会显示当前已选择节点。没有选择时显示：
 
 ```text
@@ -300,6 +333,10 @@ TUI 入口：
 
 授权码文件权限会设置为 `0600`。健康监控默认 10 分钟检测一次，自动切换默认关闭；
 进入等待人工处理窗口后默认 10 分钟内不会自动切换。
+
+同一份邮件配置也会用于手动切换节点成功通知。通过 `select-sync` 或 TUI
+“选择节点并同步到 Minion”完成同步后，Master 会向多个管理员收件人发送邮件。
+该通知只依赖 Master 侧配置，Minion 不需要为此功能单独更新。
 
 ## 10. `select-sync` 参数说明
 

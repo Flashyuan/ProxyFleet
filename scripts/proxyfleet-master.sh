@@ -360,6 +360,22 @@ MENU
   done
 }
 
+manual_switch_notify() {
+  local node_id="$1"
+  local mihomo_name="$2"
+  local target="$3"
+  [[ -f "${MONITOR_EMAIL_CONFIG}" ]] || return 0
+  if ! proxyfleet_python monitor notify-manual-switch \
+    --policy-path "${MONITOR_POLICY_PATH}" \
+    --email-config "${MONITOR_EMAIL_CONFIG}" \
+    --node-id "${node_id}" \
+    --mihomo-name "${mihomo_name}" \
+    --target "${target}" \
+    --actor "${SUDO_USER:-${USER:-unknown}}" >/dev/null; then
+    echo "警告：节点已同步，但手动切换邮件通知发送失败" >&2
+  fi
+}
+
 load_local_env() {
   local env_file="${PROJECT_ROOT}/.env.proxyfleet"
   if [[ -f "${env_file}" ]]; then
@@ -1102,6 +1118,7 @@ select_sync() {
     sync_args+=(--port-policy-enabled)
   fi
   proxyfleet_python "${sync_args[@]}"
+  manual_switch_notify "${selected_node_id}" "${selected_name}" "${target}"
 }
 
 uninstall_master() {

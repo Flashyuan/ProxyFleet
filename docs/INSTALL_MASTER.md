@@ -56,6 +56,36 @@ export PROXYFLEET_SOURCE_REF="github-main-curl-$(date -u +%Y%m%dT%H%M%SZ)"
 位于 `config-src/`、`runtime/`、`releases/` 和 `.env.proxyfleet`，这些目录和文件
 默认不会提交到 Git。
 
+## 3.1 配置全局命令 `pfmaster`
+
+如果希望在任意目录执行 Master 脚本，不要直接把脚本软链接到
+`/usr/local/bin/pfmaster`。直接软链接会让脚本把项目根目录误判成 `/usr/local`，
+导致找不到 `releases/`、`config-src/` 等目录。
+
+推荐使用 wrapper：
+
+```bash
+sudo tee /usr/local/bin/pfmaster >/dev/null <<'EOF'
+#!/usr/bin/env bash
+export PROJECT_ROOT=/home/ubuntu/project/ProxyFleet
+exec /home/ubuntu/project/ProxyFleet/scripts/proxyfleet-master.sh "$@"
+EOF
+
+sudo chmod +x /usr/local/bin/pfmaster
+```
+
+如果你的项目不在 `/home/ubuntu/project/ProxyFleet`，请把上面两处路径替换成真实
+Master 项目路径，例如 `/home/ubuntu/it_project/proxyfleet-master`。
+
+验证：
+
+```bash
+sudo pfmaster preflight
+sudo pfmaster status
+```
+
+确认输出中的 `Project root` 是真实项目目录，而不是 `/usr/local`。
+
 ## 4. 安装 Master
 
 推荐先做预检，再安装：

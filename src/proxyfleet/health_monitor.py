@@ -178,6 +178,46 @@ def monitor_status(policy_path: Path, state_path: Path, email_config_path: Path 
     }
 
 
+def notify_manual_switch(
+    *,
+    policy_path: Path | None,
+    email_config_path: Path | None,
+    selected_node_id: str,
+    selected_mihomo_name: str,
+    target: str,
+    actor: str,
+    operation_id: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """手动切换节点成功后发送邮件通知。"""
+
+    now = now or datetime.now(timezone.utc)
+    if email_config_path is None or not email_config_path.exists():
+        return {
+            "schema_version": MONITOR_SCHEMA_VERSION,
+            "status": "skipped",
+            "reason": "email_config_missing",
+        }
+    policy = load_policy(policy_path if policy_path and policy_path.exists() else None)
+    profile = str(policy.get("notify", {}).get("email_profile", "default"))
+    event = {
+        "schema_version": MONITOR_SCHEMA_VERSION,
+        "event_type": "manual_switch_success",
+        "created_at": _fmt_time(now),
+        "node_id": selected_node_id,
+        "mihomo_name": selected_mihomo_name,
+        "target": target,
+        "actor": actor,
+        "operation_id": operation_id,
+    }
+    send_email_event(email_config_path, profile, "ProxyFleet 手动切换节点成功", event)
+    return {
+        "schema_version": MONITOR_SCHEMA_VERSION,
+        "status": "sent",
+        "event": _redact_obj(event),
+    }
+
+
 def monitor_once(
     *,
     release_dir: Path,

@@ -197,6 +197,13 @@ class MasterScriptTuiTests(unittest.TestCase):
             self.assertIn("启用自动切换", result.stdout)
             self.assertIn("关闭自动切换", result.stdout)
 
+    def test_select_sync_calls_manual_switch_notification_after_success(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("manual_switch_notify()", text)
+        self.assertIn('manual_switch_notify "${selected_node_id}" "${selected_name}" "${target}"', text)
+        self.assertIn("monitor notify-manual-switch", text)
+
     def test_quick_subscription_tui_generates_config_and_release(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

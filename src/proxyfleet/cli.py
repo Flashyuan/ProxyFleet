@@ -30,9 +30,9 @@ from .health_monitor import (
     HealthMonitorError,
     MonitorPaths,
     configure_email_profile,
-    default_policy,
     monitor_once,
     monitor_status,
+    notify_manual_switch,
     set_auto_switch,
     write_default_policy,
     write_smtp_password,
@@ -202,6 +202,14 @@ def build_parser() -> argparse.ArgumentParser:
     monitor_once_parser.add_argument("--salt-bin", default="salt")
     monitor_once_parser.add_argument("--dry-run", action="store_true")
     monitor_once_parser.add_argument("--no-email", action="store_true")
+    monitor_notify = monitor_subparsers.add_parser("notify-manual-switch", help="手动切换节点成功后发送邮件通知")
+    monitor_notify.add_argument("--policy-path", required=True)
+    monitor_notify.add_argument("--email-config", required=True)
+    monitor_notify.add_argument("--node-id", required=True)
+    monitor_notify.add_argument("--mihomo-name", required=True)
+    monitor_notify.add_argument("--target", default="*")
+    monitor_notify.add_argument("--actor", default=None)
+    monitor_notify.add_argument("--operation-id", default=None)
 
     check_update_parser = subparsers.add_parser("check-update", help="检测 ProxyFleet 新版本")
     check_update_parser.add_argument("--role", required=True, choices=["master", "minion"], help="当前节点角色")
@@ -605,6 +613,16 @@ def main(argv: list[str] | None = None) -> int:
                     password_file=password_file,
                     sender=args.sender,
                     recipients=args.recipient,
+                )
+            elif args.monitor_command == "notify-manual-switch":
+                payload = notify_manual_switch(
+                    policy_path=Path(args.policy_path),
+                    email_config_path=Path(args.email_config),
+                    selected_node_id=args.node_id,
+                    selected_mihomo_name=args.mihomo_name,
+                    target=args.target,
+                    actor=args.actor or os.environ.get("SUDO_USER") or os.environ.get("USER") or "unknown",
+                    operation_id=args.operation_id,
                 )
             else:
                 policy_path = Path(args.policy_path)

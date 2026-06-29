@@ -16,6 +16,7 @@ from proxyfleet.health_monitor import (
     default_policy,
     evaluate_current_node,
     monitor_once,
+    notify_manual_switch,
     set_auto_switch,
     write_smtp_password,
 )
@@ -229,6 +230,48 @@ class HealthMonitorTests(unittest.TestCase):
 
             self.assertFalse(disabled["auto_switch_enabled"])
             self.assertTrue(enabled["auto_switch_enabled"])
+
+    def test_notify_manual_switch_sends_event_to_email_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy_path = root / "policy.json"
+            email_config = root / "email.json"
+            policy_path.write_text(json.dumps(default_policy()), encoding="utf-8")
+            email_config.write_text(
+                json.dumps({"schema_version": "1.0", "profiles": {"default": {"recipients": ["admin@example.com"]}}}),
+                encoding="utf-8",
+            )
+
+            with mock.patch("proxyfleet.health_monitor.send_email_event") as send:
+                payload = notify_manual_switch(
+                    policy_path=policy_path,
+                    email_config_path=email_config,
+                    selected_node_id="node-a",
+                    selected_mihomo_name="日本 A01",
+                    target="*",
+                    actor="ubuntu",
+                    operation_id="op-test",
+                )
+
+            self.assertEqual("sent", payload["status"])
+            subject = send.call_args.args[2]
+            event = send.call_args.args[3]
+            self.assertEqual("ProxyFleet 手动切换节点成功", subject)
+            self.assertEqual("manual_switch_success", event["event_type"])
+            self.assertEqual("node-a", event["node_id"])
+
+    def test_notify_manual_switch_skips_without_email_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = notify_manual_switch(
+                policy_path=Path(tmp) / "missing-policy.json",
+                email_config_path=Path(tmp) / "missing-email.json",
+                selected_node_id="node-a",
+                selected_mihomo_name="日本 A01",
+                target="*",
+                actor="ubuntu",
+            )
+
+            self.assertEqual("skipped", payload["status"])
 
     def test_password_file_rejects_group_readable(self):
         with tempfile.TemporaryDirectory() as tmp:
