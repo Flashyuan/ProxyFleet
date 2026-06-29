@@ -5,117 +5,117 @@
       "path": "README.md",
       "role": "master",
       "sha256": "120bf8bfb14f0b4cca707380822bd863b22dbfdde4e3557d476f1fe17d54892d",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/README.md"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/README.md"
     },
     {
       "mode": "0700",
       "path": "scripts/proxyfleet-master.sh",
       "role": "master",
-      "sha256": "ce6bbbd2b3bef43a75738aa1788b4999044467d9666c16dc872b38d867329c01",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/scripts/proxyfleet-master.sh"
+      "sha256": "9e405f2738902e2cb9b8974244906c8462be04566ddaa52738d55bf072e8dd0a",
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/scripts/proxyfleet-master.sh"
     },
     {
       "mode": "0700",
       "path": "scripts/proxyfleet-minion.sh",
       "role": "master",
-      "sha256": "f2dc20ed1a5ee7cb3f0714bd762a888263240b83b0f0094969c872eb1c65d63a",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/scripts/proxyfleet-minion.sh"
+      "sha256": "acc7f31976fdaa96efbf0421cf4bd206a8ca20c6be9fa53bd03a2f475160ad47",
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/scripts/proxyfleet-minion.sh"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/cli.py",
       "role": "master",
       "sha256": "c2cc13965aed0036ae773d87a57628c688dbfef079f1c295e964d59dbc1f0c28",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/src/proxyfleet/cli.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/src/proxyfleet/cli.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/fleet.py",
       "role": "master",
       "sha256": "2d5b94e79040455b026a47c75b7063be45d62778f8d6d2ec819aaa3d096b4fce",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/src/proxyfleet/fleet.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/src/proxyfleet/fleet.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/health_monitor.py",
       "role": "master",
       "sha256": "1502cb94e4e9bd649ef0bb935b178508dbfbe578e6c2cacb981680c892b284cc",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/src/proxyfleet/health_monitor.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/src/proxyfleet/health_monitor.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/live_select.py",
       "role": "master",
       "sha256": "181b2430f0520bad6cb5cc5a2583f8a65d98ca64c869944a0e15fb87305bef6a",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/src/proxyfleet/live_select.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/src/proxyfleet/live_select.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/port_policy.py",
       "role": "master",
       "sha256": "00bdf8cfef882346f973b5d8fca37bbe0e281deed20740e36544493c30ac0dfa",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/src/proxyfleet/port_policy.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/src/proxyfleet/port_policy.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/self_update.py",
       "role": "master",
       "sha256": "c6f6b352108f06ebcac793334d95241ab9026893a127a6067ef1f9e3829e9457",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/src/proxyfleet/self_update.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/src/proxyfleet/self_update.py"
     },
     {
       "mode": "0600",
       "path": "docs/INSTALL_MASTER.md",
       "role": "master",
       "sha256": "9ee3496b7bb285c1a85eeb3a7d861d0e13082503392670e9f5d7a0232e7b7187",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/docs/INSTALL_MASTER.md"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/docs/INSTALL_MASTER.md"
     },
     {
       "mode": "0600",
       "path": "docs/INSTALL_MINION.md",
       "role": "master",
       "sha256": "c2fc71eb5411fffc168eb65e3c5a758d73c2ca2f76a04bda8402a2251b98ba8a",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/docs/INSTALL_MINION.md"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/docs/INSTALL_MINION.md"
     },
     {
       "mode": "0600",
       "path": "docs/MASTER_TUI_GUIDE.md",
       "role": "master",
       "sha256": "15bb68e5f311dca73b468e97d11433288feb403305a19c46048604e810a0bb72",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/docs/MASTER_TUI_GUIDE.md"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/docs/MASTER_TUI_GUIDE.md"
     },
     {
       "mode": "0600",
       "path": "docs/OPERATIONS.md",
       "role": "master",
       "sha256": "b1b53a5af1415e969c928b0843a077b1ac6f0193f7caddb82ef451abebc8bfd1",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/docs/OPERATIONS.md"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/docs/OPERATIONS.md"
     },
     {
       "mode": "0600",
       "path": "docs/USER_MANUAL.md",
       "role": "master",
       "sha256": "44602a7c4b7843b269e6f4a9e056820fe8d60a6b4680b7f7fc587a0de0023f5d",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/docs/USER_MANUAL.md"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/docs/USER_MANUAL.md"
     },
     {
       "mode": "0600",
       "path": "component-locks.json",
       "role": "master",
       "sha256": "d3f050ad6e46ed45b23da281da93d09af2d478250594ae3d8d1183c8aa139139",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de/component-locks.json"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/fb76e2b98ea170ac4aab9aebcd25280796f029ad/component-locks.json"
     }
   ],
   "channel": "stable",
-  "commit": "1af68b42c2c1e7c7fa5ed599c3f8c48084d6c9de",
+  "commit": "fb76e2b98ea170ac4aab9aebcd25280796f029ad",
   "minimum_supported_version": "v0.0.0",
   "product": "proxyfleet",
-  "published_at": "2026-06-29T01:56:32Z",
+  "published_at": "2026-06-29T04:19:42Z",
   "schema_version": "1.0",
   "summary": [
-    "手动切换节点并同步成功后向管理员发送邮件通知",
-    "新增 Master TUI 使用引导和 pfmaster/pfminion wrapper 文档",
-    "该通知仅需 Master 更新，Minion 不需要更新"
+    "修正发布版本号为 v0.1.1，确保生产 Master 能检测到更新",
+    "包含手动切换节点邮件通知和 Master TUI 使用引导",
+    "手动切换邮件通知仅需 Master 更新，Minion 不需要更新"
   ],
-  "version": "v0.1.0"
+  "version": "v0.1.1"
 }
