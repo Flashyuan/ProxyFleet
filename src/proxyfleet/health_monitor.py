@@ -31,6 +31,7 @@ from .fleet import (
 MONITOR_SCHEMA_VERSION = "1.0"
 DEFAULT_CHECK_INTERVAL_SECONDS = 600
 DEFAULT_ADMIN_GRACE_SECONDS = 600
+DEFAULT_CANDIDATE_VALIDATION_TTL_SECONDS = 900
 DEFAULT_BLACKLIST_KEYWORDS = ["香港", "港", "HK", "Hong Kong", "台湾", "台", "TW", "Taiwan"]
 DEFAULT_PROBE_ALLOWLIST = {
     "exit_ip": ["https://ipdata.co", "https://ipinfo.io/json"],
@@ -65,6 +66,9 @@ def default_policy() -> dict[str, Any]:
         "max_auto_switches_per_hour": 1,
         "max_auto_switches_per_day": 3,
         "failed_candidate_ttl_seconds": 3600,
+        "candidate_validation_enabled": True,
+        "candidate_validation_ttl_seconds": DEFAULT_CANDIDATE_VALIDATION_TTL_SECONDS,
+        "max_candidate_validations_per_round": 8,
         "proxy_url": "http://127.0.0.1:7890",
         "probes": {"mihomo_delay": True, "exit_ip": True, "google": True, "chatgpt": True},
         "probe_allowlist": DEFAULT_PROBE_ALLOWLIST,
@@ -176,6 +180,43 @@ def monitor_status(policy_path: Path, state_path: Path, email_config_path: Path 
         "state": _redact_obj(state),
         "email_configured": email_configured,
     }
+
+
+def validate_candidates_for_current_selection(
+    *,
+    release_dir: Path,
+    runtime_dir: Path,
+    paths: MonitorPaths,
+    mihomo_api: str,
+    mihomo_secret: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """按自动切换优先级验证候选节点，并把可用节点写入状态缓存。"""
+
+    now = now or datetime.now(timezone.utc)
+    policy = load_policy(paths.policy_path)
+    desired = load_desired_state(runtime_dir / "desired.yaml")
+    selected_node_id = str(desired["selected_node_id"])
+    selected_name = str(desired["selected_mihomo_name"])
+    nodes = build_node_catalog(release_dir)
+    current_node = next((node for node in nodes if node.node_id == selected_node_id), None)
+    if current_node is None:
+        raise HealthMonitorError("E_NODE_NOT_FOUND", f"当前 desired 节点不在 release 中: {selected_node_id}")
+    state = _load_state(paths.state_path)
+    if state.get("selected_node_id") != selected_node_id:
+        state = _fresh_state(selected_node_id, selected_name, now)
+    result = validate_auto_switch_candidates(
+        nodes,
+        current_node,
+        policy,
+        state,
+        mihomo_api=mihomo_api,
+        mihomo_secret=mihomo_secret,
+        now=now,
+    )
+    state["updated_at"] = _fmt_time(now)
+    _atomic_write_json(paths.state_path, _redact_obj(state), mode=0o600)
+    return _redact_obj(result)
 
 
 def notify_manual_switch(
@@ -292,6 +333,8 @@ def monitor_once(
                 component_locks=component_locks,
                 target=target,
                 salt_bin=salt_bin,
+                mihomo_api=mihomo_api,
+                mihomo_secret=mihomo_secret,
                 dry_run=dry_run,
                 send_email=send_email,
             )
@@ -374,8 +417,130 @@ def choose_auto_switch_candidate(
     current_node: Any,
     policy: dict[str, Any],
     state: dict[str, Any] | None = None,
+    allowed_node_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """按黑名单、同地域优先和失败候选 TTL 选择备用节点。"""
+
+    ranked = _rank_auto_switch_candidates(nodes, current_node, policy, state, allowed_node_ids=allowed_node_ids)
+    if not ranked["priority"]:
+        return {"selected": None, "reason": "no_candidate", "rejected": ranked["rejected"]}
+    selected = ranked["priority"][0]
+    return {
+        "selected": selected.to_dict(),
+        "reason": ranked["reason_by_node_id"].get(selected.node_id, "fallback_region"),
+        "current_region": ranked["current_region"],
+        "selected_region": infer_region(selected.mihomo_name),
+        "rejected": ranked["rejected"],
+    }
+
+
+def validate_auto_switch_candidates(
+    nodes: list[Any],
+    current_node: Any,
+    policy: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    mihomo_api: str,
+    mihomo_secret: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """临时切换 Master 本机 Mihomo，验证候选节点真实可用性并缓存结果。"""
+
+    now = now or datetime.now(timezone.utc)
+    ranked = _rank_auto_switch_candidates(nodes, current_node, policy, state)
+    max_count = int(policy.get("max_candidate_validations_per_round", 8))
+    max_count = max(1, min(max_count, len(ranked["priority"]) or 1))
+    client = MihomoClient(mihomo_api, mihomo_secret)
+    group = MANAGED_POLICY_GROUP
+    original_name = current_node.mihomo_name
+    validated: list[dict[str, Any]] = []
+    rejected = list(ranked["rejected"])
+    restore_error: str | None = None
+    expires_at = _fmt_time(now + timedelta(seconds=int(policy["candidate_validation_ttl_seconds"])))
+
+    try:
+        for node in ranked["priority"][:max_count]:
+            try:
+                client.select_node(group, node.mihomo_name)
+                probe = evaluate_current_node(
+                    node.mihomo_name,
+                    policy,
+                    mihomo_api=mihomo_api,
+                    mihomo_secret=mihomo_secret,
+                    now=now,
+                )
+                if int(probe["score"]) >= int(policy["min_success_score"]):
+                    validated.append(
+                        {
+                            "node_id": node.node_id,
+                            "mihomo_name": node.mihomo_name,
+                            "region": infer_region(node.mihomo_name),
+                            "validated_at": _fmt_time(now),
+                            "expires_at": expires_at,
+                            "score": probe.get("score"),
+                            "health_status": probe.get("status"),
+                            "reason": ranked["reason_by_node_id"].get(node.node_id, "fallback_region"),
+                        }
+                    )
+                else:
+                    _mark_failed_candidate(state, node.node_id, now)
+                    rejected.append(
+                        {
+                            "node_id": node.node_id,
+                            "mihomo_name": node.mihomo_name,
+                            "reason": "validation_failed",
+                            "score": probe.get("score"),
+                            "health_status": probe.get("status"),
+                            "last_error_code": probe.get("last_error_code"),
+                        }
+                    )
+            except Exception as exc:
+                _mark_failed_candidate(state, node.node_id, now)
+                rejected.append(
+                    {
+                        "node_id": node.node_id,
+                        "mihomo_name": node.mihomo_name,
+                        "reason": "validation_error",
+                        "error": _redact(str(exc)),
+                    }
+                )
+    finally:
+        try:
+            client.select_node(group, original_name)
+        except Exception as exc:
+            restore_error = _redact(str(exc))
+
+    state["validated_candidates"] = validated
+    if restore_error is not None:
+        validated = []
+        state["validated_candidates"] = []
+    state["candidate_validation"] = {
+        "validated_at": _fmt_time(now),
+        "expires_at": expires_at,
+        "checked": min(max_count, len(ranked["priority"])),
+        "valid": len(validated),
+        "restore_error": restore_error,
+    }
+    return {
+        "schema_version": MONITOR_SCHEMA_VERSION,
+        "status": "success" if validated else "no_valid_candidate",
+        "current_node_id": current_node.node_id,
+        "current_mihomo_name": current_node.mihomo_name,
+        "validated_candidates": validated,
+        "rejected": rejected,
+        "restore_error": restore_error,
+    }
+
+
+def _rank_auto_switch_candidates(
+    nodes: list[Any],
+    current_node: Any,
+    policy: dict[str, Any],
+    state: dict[str, Any] | None = None,
+    *,
+    allowed_node_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """生成自动切换候选优先级：同地域优先，再回退到其它地域。"""
 
     state = state or {}
     now = datetime.now(timezone.utc)
@@ -387,6 +552,8 @@ def choose_auto_switch_candidate(
         reason = None
         if node.node_id == current_node.node_id:
             reason = "current"
+        elif allowed_node_ids is not None and node.node_id not in allowed_node_ids:
+            reason = "not_validated"
         elif _is_blacklisted(node.mihomo_name, policy):
             reason = "blacklisted"
         elif node.node_id in failed_candidates:
@@ -401,16 +568,15 @@ def choose_auto_switch_candidate(
         candidates.append(node)
 
     same_region = [node for node in candidates if infer_region(node.mihomo_name) == current_region and current_region]
-    selected_pool = same_region or candidates
-    if not selected_pool:
-        return {"selected": None, "reason": "no_candidate", "rejected": rejected}
-    selected = selected_pool[0]
+    fallback = [node for node in candidates if node not in same_region]
+    priority = same_region + fallback
+    reason_by_node_id = {node.node_id: "same_region" for node in same_region}
+    reason_by_node_id.update({node.node_id: "fallback_region" for node in fallback})
     return {
-        "selected": selected.to_dict(),
-        "reason": "same_region" if selected in same_region else "fallback_region",
+        "priority": priority,
         "current_region": current_region,
-        "selected_region": infer_region(selected.mihomo_name),
         "rejected": rejected,
+        "reason_by_node_id": reason_by_node_id,
     }
 
 
@@ -450,6 +616,8 @@ def _advance_failure_state(
     component_locks: Path | None,
     target: str,
     salt_bin: str,
+    mihomo_api: str,
+    mihomo_secret: str | None,
     dry_run: bool,
     send_email: bool,
 ) -> dict[str, Any]:
@@ -482,16 +650,46 @@ def _advance_failure_state(
         _send_policy_email(paths.email_config_path, policy, "ProxyFleet 自动切换被限制", event, send_email)
         return {"type": "blocked_by_limit", "reason": limit_error, "events": events}
 
-    decision = choose_auto_switch_candidate(nodes, current_node, policy, state)
+    validation = None
+    allowed_node_ids: set[str] | None = None
+    if bool(policy.get("candidate_validation_enabled", True)):
+        allowed_node_ids = _fresh_validated_candidate_ids(state, policy, now)
+        if not allowed_node_ids:
+            validation = validate_auto_switch_candidates(
+                nodes,
+                current_node,
+                policy,
+                state,
+                mihomo_api=mihomo_api,
+                mihomo_secret=mihomo_secret,
+                now=now,
+            )
+            allowed_node_ids = _fresh_validated_candidate_ids(state, policy, now)
+        if not allowed_node_ids:
+            state["status"] = "FAILED_NEED_MANUAL"
+            event = _event("auto_switch_no_valid_candidate", current_node.node_id, current_node.mihomo_name, now, round_result)
+            if validation is not None:
+                event["validation"] = validation
+            events.append(event)
+            _send_policy_email(paths.email_config_path, policy, "ProxyFleet 自动切换失败", event, send_email)
+            return {"type": "no_valid_candidate", "validation": validation, "events": events}
+
+    decision = choose_auto_switch_candidate(nodes, current_node, policy, state, allowed_node_ids=allowed_node_ids)
     if not decision.get("selected"):
         state["status"] = "FAILED_NEED_MANUAL"
         event = _event("auto_switch_no_candidate", current_node.node_id, current_node.mihomo_name, now, round_result)
         event["decision"] = decision
+        if validation is not None:
+            event["validation"] = validation
         events.append(event)
         _send_policy_email(paths.email_config_path, policy, "ProxyFleet 自动切换失败", event, send_email)
         return {"type": "no_candidate", "decision": decision, "events": events}
 
     selected = decision["selected"]
+    if validation is not None:
+        decision["validation"] = validation
+    elif allowed_node_ids is not None:
+        decision["validation"] = {"status": "cached", "validated_node_ids": sorted(allowed_node_ids)}
     state["status"] = "AUTO_SWITCHING"
     if not dry_run:
         try:
@@ -664,6 +862,24 @@ def _active_failed_candidates(state: dict[str, Any], policy: dict[str, Any], now
         if at and isinstance(node_id, str) and (now - at).total_seconds() <= ttl:
             active.add(node_id)
     return active
+
+
+def _fresh_validated_candidate_ids(state: dict[str, Any], policy: dict[str, Any], now: datetime) -> set[str]:
+    ttl = int(policy.get("candidate_validation_ttl_seconds", DEFAULT_CANDIDATE_VALIDATION_TTL_SECONDS))
+    fresh: set[str] = set()
+    for item in state.get("validated_candidates", []):
+        if not isinstance(item, dict):
+            continue
+        node_id = item.get("node_id")
+        if not isinstance(node_id, str):
+            continue
+        expires_at = _parse_time(str(item.get("expires_at")))
+        validated_at = _parse_time(str(item.get("validated_at")))
+        if expires_at and now <= expires_at:
+            fresh.add(node_id)
+        elif validated_at and (now - validated_at).total_seconds() <= ttl:
+            fresh.add(node_id)
+    return fresh
 
 
 def _mark_failed_candidate(state: dict[str, Any], node_id: str, now: datetime) -> None:

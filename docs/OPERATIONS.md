@@ -74,6 +74,7 @@ sudo scripts/proxyfleet-master.sh monitor init
 sudo scripts/proxyfleet-master.sh monitor status
 sudo scripts/proxyfleet-master.sh monitor auto-switch true
 sudo scripts/proxyfleet-master.sh monitor auto-switch false
+sudo scripts/proxyfleet-master.sh monitor validate-candidates
 sudo scripts/proxyfleet-master.sh monitor once --dry-run
 sudo scripts/proxyfleet-master.sh monitor once
 ```
@@ -96,6 +97,11 @@ SMTP 授权码：/etc/proxyfleet/secrets/smtp-password
 健康监控默认 10 分钟检测一次。连续多轮低分后先给多个管理员邮箱发告警，
 等待 10 分钟人工处理；自动切换默认关闭，启用后仍受节点名称黑名单、冷却期
 和每小时/每日次数限制。
+
+`monitor validate-candidates` 会按自动切换优先级临时切换 Master 本机 Mihomo
+节点，验证候选节点的 delay、出口 IP、Google、ChatGPT 可达性，完成后恢复当前
+节点，并把可用候选写入 `runtime/health-monitor-state.json`。自动切换前会优先
+使用这批未过期的可用候选；没有可用候选时不会自动切换。
 
 ## 3. Minion 常用操作
 

@@ -12,7 +12,7 @@ MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
 MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
 SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
 SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.1}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.2}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://raw.githubusercontent.com/Flashyuan/ProxyFleet/main/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
 MONITOR_POLICY_PATH="${MONITOR_POLICY_PATH:-${PROJECT_ROOT}/runtime/health-monitor-policy.json}"
@@ -296,6 +296,36 @@ monitor_once_cmd() {
   proxyfleet_python "${args[@]}"
 }
 
+monitor_validate_candidates_cmd() {
+  need_root
+  local release_dir="${PROJECT_ROOT}/releases/000001"
+  local runtime_dir="${PROJECT_ROOT}/runtime"
+  local mihomo_api="http://127.0.0.1:9090"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --release-dir) release_dir="$2"; shift 2 ;;
+      --runtime-dir) runtime_dir="$2"; shift 2 ;;
+      --mihomo-api) mihomo_api="$2"; shift 2 ;;
+      *) die "未知 monitor validate-candidates 参数：$1" ;;
+    esac
+  done
+  if [[ ! -d "${release_dir}" ]]; then
+    local latest
+    latest="$(latest_release_dir || true)"
+    [[ -n "${latest}" ]] || die "找不到 release 目录，请先构建 release"
+    release_dir="${latest}"
+  fi
+  [[ -f "${runtime_dir}/desired.yaml" ]] || die "缺少 ${runtime_dir}/desired.yaml，请先选择节点"
+  [[ -f "${MONITOR_POLICY_PATH}" ]] || monitor_init >/dev/null
+  proxyfleet_python monitor validate-candidates \
+    --release-dir "${release_dir}" \
+    --runtime-dir "${runtime_dir}" \
+    --policy-path "${MONITOR_POLICY_PATH}" \
+    --state-path "${MONITOR_STATE_PATH}" \
+    --email-config "${MONITOR_EMAIL_CONFIG}" \
+    --mihomo-api "${mihomo_api}"
+}
+
 monitor_email_tui() {
   need_root
   local smtp_host smtp_port smtp_tls username sender recipients password
@@ -342,7 +372,8 @@ ProxyFleet Master / 节点健康监控
 4) 启用自动切换
 5) 关闭自动切换
 6) 执行一次健康检查（dry-run，不发邮件、不切换）
-7) 执行一次健康检查（按策略推进状态）
+7) 预验证自动切换候选节点并缓存可用节点
+8) 执行一次健康检查（按策略推进状态）
 b) 返回
 MENU
     read -r -p "请选择: " choice
@@ -353,7 +384,8 @@ MENU
       4) preview_write "critical" "启用健康监控自动切换" "仍会先邮件告警并等待 10 分钟；黑名单和限频保护继续生效"; confirm_phrase "ENABLE" "确认启用自动切换？" && monitor_auto_switch_cmd true; tui_pause ;;
       5) preview_write "medium" "关闭健康监控自动切换" "保留检测和邮件告警"; confirm_phrase "DISABLE" "确认关闭自动切换？" && monitor_auto_switch_cmd false; tui_pause ;;
       6) monitor_once_cmd --dry-run; tui_pause ;;
-      7) preview_write "high" "执行健康检查并按状态机推进" "可能发送邮件；仅当策略显式启用自动切换且等待窗口到期时才会切换"; confirm_phrase "RUN" "确认执行？" && monitor_once_cmd; tui_pause ;;
+      7) preview_write "medium" "预验证自动切换候选节点" "会临时切换 Master 本机 Mihomo 节点做真实出口验证，完成后恢复当前节点，并缓存可用候选"; confirm_phrase "RUN" "确认执行候选节点预验证？" && monitor_validate_candidates_cmd; tui_pause ;;
+      8) preview_write "high" "执行健康检查并按状态机推进" "可能发送邮件；仅当策略显式启用自动切换且等待窗口到期时才会切换"; confirm_phrase "RUN" "确认执行？" && monitor_once_cmd; tui_pause ;;
       b|B|q|Q) return 0 ;;
       *) echo "未知选项"; tui_pause ;;
     esac
@@ -1204,6 +1236,8 @@ monitor 常用子命令：
   monitor auto-switch true|false
                             显式启用或关闭自动切换
   monitor once [--dry-run]  执行一轮健康检查；dry-run 不发邮件、不切换
+  monitor validate-candidates
+                            预验证自动切换候选节点并缓存可用节点
 USAGE
 }
 
@@ -1227,6 +1261,7 @@ case "${command}" in
       status) shift; monitor_status_cmd "$@" ;;
       auto-switch) shift; monitor_auto_switch_cmd "${1:-}" ;;
       once) shift; monitor_once_cmd "$@" ;;
+      validate-candidates) shift; monitor_validate_candidates_cmd "$@" ;;
       *) die "未知 monitor 子命令：${subcommand:-}" ;;
     esac
     ;;

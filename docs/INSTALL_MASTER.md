@@ -153,6 +153,8 @@ status                        查看 salt-master 状态和 Salt key 列表
 sync-assets                   同步 ProxyFleet Salt module/state 到 file_roots
 refresh-health                刷新 Master 本机 Mihomo API 测速缓存
 select-sync                   进入实时 TUI 选择节点，并同步到 Minion
+monitor validate-candidates   预验证自动切换候选节点并缓存可用节点
+monitor once [--dry-run]      执行一轮健康监控；dry-run 不发邮件、不切换
 check-update                  检测 ProxyFleet Master 新版本
 update [--yes]                应用 ProxyFleet Master 更新
 uninstall [--yes]             完整卸载 Master 受管数据和组件

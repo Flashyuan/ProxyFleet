@@ -18,6 +18,7 @@ from proxyfleet.health_monitor import (
     monitor_once,
     notify_manual_switch,
     set_auto_switch,
+    validate_candidates_for_current_selection,
     write_smtp_password,
 )
 
@@ -200,6 +201,180 @@ class HealthMonitorTests(unittest.TestCase):
             self.assertEqual("日本 A02", decision["selected"]["mihomo_name"])
             rejected = {item["mihomo_name"]: item["reason"] for item in decision["rejected"]}
             self.assertEqual("blacklisted", rejected["香港 HK01"])
+
+    def test_auto_switch_uses_only_validated_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _multi_release(root)
+            nodes = build_node_catalog(release)
+            current = next(node for node in nodes if node.mihomo_name == "日本 A01")
+            select_node(release, root / "runtime", current.node_id, "production")
+            policy_path = root / "policy.json"
+            state_path = root / "state.json"
+            policy = default_policy()
+            policy["auto_switch_enabled"] = True
+            policy["max_candidate_validations_per_round"] = 2
+            policy_path.write_text(json.dumps(policy), encoding="utf-8")
+            start = datetime(2026, 6, 26, 0, 0, tzinfo=timezone.utc)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "status": "WAITING_ADMIN",
+                        "selected_node_id": current.node_id,
+                        "selected_mihomo_name": current.mihomo_name,
+                        "bad_rounds": 3,
+                        "auto_switch_after": start.isoformat().replace("+00:00", "Z"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bad = {"score": 0, "status": "suspect_failed", "last_error_code": "E_PROBE_TIMEOUT"}
+            healthy = {"score": 4, "status": "healthy", "last_error_code": None}
+
+            with mock.patch("proxyfleet.health_monitor.evaluate_current_node", side_effect=[bad, bad, healthy]), \
+                mock.patch("proxyfleet.health_monitor.MihomoClient") as client_cls:
+                client_cls.return_value.select_node.return_value = {"status": "success"}
+                payload = monitor_once(
+                    release_dir=release,
+                    runtime_dir=root / "runtime",
+                    paths=MonitorPaths(policy_path, state_path),
+                    mihomo_api="http://127.0.0.1:9090",
+                    dry_run=True,
+                    send_email=False,
+                    now=start + timedelta(seconds=601),
+                )
+
+            self.assertEqual("auto_switch_success", payload["action"]["type"])
+            self.assertEqual("新加坡 SG01", payload["action"]["decision"]["selected"]["mihomo_name"])
+            validated = payload["state"]["validated_candidates"]
+            self.assertEqual(["新加坡 SG01"], [item["mihomo_name"] for item in validated])
+
+    def test_auto_switch_blocks_when_no_candidate_validates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _multi_release(root)
+            current = next(node for node in build_node_catalog(release) if node.mihomo_name == "日本 A01")
+            select_node(release, root / "runtime", current.node_id, "production")
+            policy_path = root / "policy.json"
+            state_path = root / "state.json"
+            policy = default_policy()
+            policy["auto_switch_enabled"] = True
+            policy["max_candidate_validations_per_round"] = 2
+            policy_path.write_text(json.dumps(policy), encoding="utf-8")
+            start = datetime(2026, 6, 26, 0, 0, tzinfo=timezone.utc)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "status": "WAITING_ADMIN",
+                        "selected_node_id": current.node_id,
+                        "selected_mihomo_name": current.mihomo_name,
+                        "bad_rounds": 3,
+                        "auto_switch_after": start.isoformat().replace("+00:00", "Z"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bad = {"score": 0, "status": "suspect_failed", "last_error_code": "E_PROBE_TIMEOUT"}
+
+            with mock.patch("proxyfleet.health_monitor.evaluate_current_node", side_effect=[bad, bad, bad]), \
+                mock.patch("proxyfleet.health_monitor.MihomoClient") as client_cls:
+                client_cls.return_value.select_node.return_value = {"status": "success"}
+                payload = monitor_once(
+                    release_dir=release,
+                    runtime_dir=root / "runtime",
+                    paths=MonitorPaths(policy_path, state_path),
+                    mihomo_api="http://127.0.0.1:9090",
+                    dry_run=True,
+                    send_email=False,
+                    now=start + timedelta(seconds=601),
+                )
+
+            self.assertEqual("no_valid_candidate", payload["action"]["type"])
+            self.assertEqual("FAILED_NEED_MANUAL", payload["status"])
+            self.assertEqual([], payload["state"]["validated_candidates"])
+
+    def test_auto_switch_reuses_fresh_validated_candidate_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _multi_release(root)
+            nodes = build_node_catalog(release)
+            current = next(node for node in nodes if node.mihomo_name == "日本 A01")
+            fallback = next(node for node in nodes if node.mihomo_name == "新加坡 SG01")
+            select_node(release, root / "runtime", current.node_id, "production")
+            policy_path = root / "policy.json"
+            state_path = root / "state.json"
+            policy = default_policy()
+            policy["auto_switch_enabled"] = True
+            policy_path.write_text(json.dumps(policy), encoding="utf-8")
+            start = datetime(2026, 6, 26, 0, 0, tzinfo=timezone.utc)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "status": "WAITING_ADMIN",
+                        "selected_node_id": current.node_id,
+                        "selected_mihomo_name": current.mihomo_name,
+                        "bad_rounds": 3,
+                        "auto_switch_after": start.isoformat().replace("+00:00", "Z"),
+                        "validated_candidates": [
+                            {
+                                "node_id": fallback.node_id,
+                                "mihomo_name": fallback.mihomo_name,
+                                "validated_at": start.isoformat().replace("+00:00", "Z"),
+                                "expires_at": (start + timedelta(seconds=900)).isoformat().replace("+00:00", "Z"),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bad = {"score": 0, "status": "suspect_failed", "last_error_code": "E_PROBE_TIMEOUT"}
+
+            with mock.patch("proxyfleet.health_monitor.evaluate_current_node", return_value=bad), \
+                mock.patch("proxyfleet.health_monitor.MihomoClient") as client_cls:
+                payload = monitor_once(
+                    release_dir=release,
+                    runtime_dir=root / "runtime",
+                    paths=MonitorPaths(policy_path, state_path),
+                    mihomo_api="http://127.0.0.1:9090",
+                    dry_run=True,
+                    send_email=False,
+                    now=start + timedelta(seconds=601),
+                )
+
+            client_cls.assert_not_called()
+            self.assertEqual("auto_switch_success", payload["action"]["type"])
+            self.assertEqual("cached", payload["action"]["decision"]["validation"]["status"])
+            self.assertEqual("新加坡 SG01", payload["action"]["decision"]["selected"]["mihomo_name"])
+
+    def test_validate_candidates_command_helper_writes_validated_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _multi_release(root)
+            current = next(node for node in build_node_catalog(release) if node.mihomo_name == "日本 A01")
+            select_node(release, root / "runtime", current.node_id, "production")
+            policy_path = root / "policy.json"
+            state_path = root / "state.json"
+            policy = default_policy()
+            policy["max_candidate_validations_per_round"] = 1
+            policy_path.write_text(json.dumps(policy), encoding="utf-8")
+
+            with mock.patch("proxyfleet.health_monitor.evaluate_current_node", return_value={"score": 4, "status": "healthy", "last_error_code": None}), \
+                mock.patch("proxyfleet.health_monitor.MihomoClient") as client_cls:
+                client_cls.return_value.select_node.return_value = {"status": "success"}
+                payload = validate_candidates_for_current_selection(
+                    release_dir=release,
+                    runtime_dir=root / "runtime",
+                    paths=MonitorPaths(policy_path, state_path),
+                    mihomo_api="http://127.0.0.1:9090",
+                )
+
+            self.assertEqual("success", payload["status"])
+            self.assertEqual("日本 A02", payload["validated_candidates"][0]["mihomo_name"])
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual("日本 A02", persisted["validated_candidates"][0]["mihomo_name"])
 
     def test_email_profile_writes_multiple_recipients_and_redacts_password_file(self):
         with tempfile.TemporaryDirectory() as tmp:

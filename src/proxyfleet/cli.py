@@ -34,6 +34,7 @@ from .health_monitor import (
     monitor_status,
     notify_manual_switch,
     set_auto_switch,
+    validate_candidates_for_current_selection,
     write_default_policy,
     write_smtp_password,
 )
@@ -202,6 +203,14 @@ def build_parser() -> argparse.ArgumentParser:
     monitor_once_parser.add_argument("--salt-bin", default="salt")
     monitor_once_parser.add_argument("--dry-run", action="store_true")
     monitor_once_parser.add_argument("--no-email", action="store_true")
+    monitor_validate = monitor_subparsers.add_parser("validate-candidates", help="按自动切换优先级预验证候选节点并缓存可用节点")
+    monitor_validate.add_argument("--release-dir", required=True)
+    monitor_validate.add_argument("--runtime-dir", required=True)
+    monitor_validate.add_argument("--policy-path", required=True)
+    monitor_validate.add_argument("--state-path", required=True)
+    monitor_validate.add_argument("--email-config", default=None)
+    monitor_validate.add_argument("--mihomo-api", default="http://127.0.0.1:9090")
+    monitor_validate.add_argument("--mihomo-secret", default=None)
     monitor_notify = monitor_subparsers.add_parser("notify-manual-switch", help="手动切换节点成功后发送邮件通知")
     monitor_notify.add_argument("--policy-path", required=True)
     monitor_notify.add_argument("--email-config", required=True)
@@ -623,6 +632,21 @@ def main(argv: list[str] | None = None) -> int:
                     target=args.target,
                     actor=args.actor or os.environ.get("SUDO_USER") or os.environ.get("USER") or "unknown",
                     operation_id=args.operation_id,
+                )
+            elif args.monitor_command == "validate-candidates":
+                policy_path = Path(args.policy_path)
+                if not policy_path.exists():
+                    write_default_policy(policy_path)
+                payload = validate_candidates_for_current_selection(
+                    release_dir=Path(args.release_dir),
+                    runtime_dir=Path(args.runtime_dir),
+                    paths=MonitorPaths(
+                        policy_path=policy_path,
+                        state_path=Path(args.state_path),
+                        email_config_path=Path(args.email_config) if args.email_config else None,
+                    ),
+                    mihomo_api=args.mihomo_api,
+                    mihomo_secret=args.mihomo_secret,
                 )
             else:
                 policy_path = Path(args.policy_path)

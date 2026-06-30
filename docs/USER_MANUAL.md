@@ -279,6 +279,7 @@ monitor init                  初始化默认健康监控策略
 monitor status                查看健康监控策略、状态和邮件配置状态
 monitor auto-switch true|false
                               显式启用或关闭自动切换
+monitor validate-candidates   预验证自动切换候选节点并缓存可用节点
 monitor once [--dry-run]      执行一轮健康检查；dry-run 不发邮件、不切换
 check-update                  检测 ProxyFleet Master 新版本
 update [--yes]                应用 ProxyFleet Master 更新
@@ -309,6 +310,7 @@ sudo scripts/proxyfleet-master.sh monitor init
 sudo scripts/proxyfleet-master.sh monitor status
 sudo scripts/proxyfleet-master.sh monitor auto-switch true
 sudo scripts/proxyfleet-master.sh monitor auto-switch false
+sudo scripts/proxyfleet-master.sh monitor validate-candidates
 sudo scripts/proxyfleet-master.sh monitor once --dry-run
 sudo scripts/proxyfleet-master.sh monitor once
 ```
@@ -333,6 +335,10 @@ TUI 入口：
 
 授权码文件权限会设置为 `0600`。健康监控默认 10 分钟检测一次，自动切换默认关闭；
 进入等待人工处理窗口后默认 10 分钟内不会自动切换。
+
+自动切换前会先使用 `monitor validate-candidates` 生成的未过期可用候选缓存。
+如果没有缓存，`monitor once` 在自动切换前会先临时切换 Master 本机 Mihomo
+逐个验证候选节点；验证不通过的候选不会被自动切换选中。
 
 同一份邮件配置也会用于手动切换节点成功通知。通过 `select-sync` 或 TUI
 “选择节点并同步到 Minion”完成同步后，Master 会向多个管理员收件人发送邮件。

@@ -204,6 +204,13 @@ class MasterScriptTuiTests(unittest.TestCase):
         self.assertIn('manual_switch_notify "${selected_node_id}" "${selected_name}" "${target}"', text)
         self.assertIn("monitor notify-manual-switch", text)
 
+    def test_monitor_exposes_candidate_validation_command(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("monitor_validate_candidates_cmd()", text)
+        self.assertIn("monitor validate-candidates", text)
+        self.assertIn("proxyfleet_python monitor validate-candidates", text)
+
     def test_quick_subscription_tui_generates_config_and_release(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
