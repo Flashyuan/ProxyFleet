@@ -20,6 +20,23 @@ class ConfigBuildError(ValueError):
     """配置源或 release 构建失败。"""
 
 
+PROXY_MODE_TPROXY = "tproxy"
+PROXY_MODE_EXPLICIT = "explicit-proxy"
+VALID_PROXY_MODES = {PROXY_MODE_TPROXY, PROXY_MODE_EXPLICIT}
+
+TUN_ROUTE_EXCLUDES = [
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
+]
+
+
 @dataclass(frozen=True)
 class BuildOptions:
     source_dir: Path
@@ -174,6 +191,7 @@ def _write_release_files(staging: Path, source_dir: Path, source: dict[str, Any]
 
 def _compile_config(source: dict[str, Any]) -> dict[str, Any]:
     base = dict(source["base"].get("config", {}))
+    _apply_proxy_mode(base, _base_proxy_mode(source["base"]))
     providers = {
         item["id"]: {
             "type": "file",
@@ -215,6 +233,47 @@ def _compile_config(source: dict[str, Any]) -> dict[str, Any]:
     base["rule-providers"] = rule_providers
     base["rules"] = rules
     return base
+
+
+def _base_proxy_mode(base_source: dict[str, Any]) -> str:
+    mode = str(base_source.get("proxy_mode", PROXY_MODE_TPROXY)).strip()
+    if mode == "mixed":
+        mode = PROXY_MODE_EXPLICIT
+    if mode not in VALID_PROXY_MODES:
+        raise ConfigBuildError(f"proxy_mode 只支持: {', '.join(sorted(VALID_PROXY_MODES))}")
+    return mode
+
+
+def _apply_proxy_mode(config: dict[str, Any], proxy_mode: str) -> None:
+    """为 release 注入默认运行模式；tproxy 通过 Mihomo TUN 自动路由实现透明代理。"""
+
+    config.setdefault("mixed-port", 7890)
+    config.setdefault("external-controller", "127.0.0.1:9090")
+    config.setdefault("mode", "rule")
+    if proxy_mode != PROXY_MODE_TPROXY:
+        return
+
+    config.setdefault("tproxy-port", 7893)
+
+    tun = dict(config.get("tun", {})) if isinstance(config.get("tun"), dict) else {}
+    tun.setdefault("enable", True)
+    tun.setdefault("stack", "system")
+    tun.setdefault("auto-route", True)
+    tun.setdefault("auto-redirect", True)
+    tun.setdefault("auto-detect-interface", True)
+    tun.setdefault("strict-route", True)
+    tun.setdefault("dns-hijack", ["any:53", "tcp://any:53"])
+    tun.setdefault("route-exclude-address", TUN_ROUTE_EXCLUDES)
+    config["tun"] = tun
+
+    dns = dict(config.get("dns", {})) if isinstance(config.get("dns"), dict) else {}
+    dns.setdefault("enable", True)
+    dns.setdefault("listen", "127.0.0.1:1053")
+    dns.setdefault("enhanced-mode", "fake-ip")
+    dns.setdefault("fake-ip-range", "198.18.0.1/16")
+    dns.setdefault("nameserver", ["https://223.5.5.5/dns-query", "https://1.1.1.1/dns-query"])
+    dns.setdefault("fallback", ["https://8.8.8.8/dns-query"])
+    config["dns"] = dns
 
 
 def _build_manifest(

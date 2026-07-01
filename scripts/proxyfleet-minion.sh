@@ -14,14 +14,16 @@ PROXYFLEET_ETC_ROOT="${PROXYFLEET_ETC_ROOT:-/etc/proxyfleet}"
 MIHOMO_BINARY="${MIHOMO_BINARY:-/usr/local/bin/mihomo}"
 MIHOMO_UNIT_PATH="${MIHOMO_UNIT_PATH:-/etc/systemd/system/mihomo.service}"
 MIHOMO_SERVICE="${MIHOMO_SERVICE:-mihomo.service}"
+SYSTEMD_UNIT_DIR="${SYSTEMD_UNIT_DIR:-$(dirname "${MIHOMO_UNIT_PATH}")}"
 MIHOMO_CONFIG_PATH="${MIHOMO_CONFIG_PATH:-${PROXYFLEET_ETC_ROOT}/current/config.yaml}"
 COMPONENT_LOCKS="${COMPONENT_LOCKS:-${PROXYFLEET_ETC_ROOT}/component-locks.json}"
 MIHOMO_RECEIPT="${MIHOMO_RECEIPT:-${MIHOMO_BINARY}.proxyfleet-install.json}"
 LOCAL_OPTIONS_PATH="${LOCAL_OPTIONS_PATH:-${PROXYFLEET_ETC_ROOT}/local/options.json}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.2}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.3}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://raw.githubusercontent.com/Flashyuan/ProxyFleet/main/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROXYFLEET_ETC_ROOT}/local/update-state.json}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+ASSET_MIRROR_PORT="${ASSET_MIRROR_PORT:-48080}"
 
 die() {
   echo "错误：$*" >&2
@@ -63,6 +65,75 @@ Pin-Priority: 1001
 PIN
 }
 
+install_salt_from_master_assets() {
+  local master="$1"
+  local base_url="http://${master}:${ASSET_MIRROR_PORT}/proxyfleet"
+  local workdir
+  workdir="$(mktemp -d)"
+  if ! python3 - "${base_url}" "${SALT_VERSION}" "${workdir}" <<'PY'
+import hashlib
+import json
+import shutil
+import sys
+from pathlib import Path
+from urllib.parse import urljoin
+from urllib.request import urlopen
+
+base = sys.argv[1].rstrip("/") + "/"
+salt_version = sys.argv[2]
+workdir = Path(sys.argv[3])
+
+def read_url(url):
+    with urlopen(url, timeout=10) as response:
+        return response.read()
+
+def sha256(path):
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+manifest = json.loads(read_url(urljoin(base, "bootstrap-manifest.json")).decode("utf-8"))
+if manifest.get("product") != "proxyfleet" or str(manifest.get("schema_version", "")).split(".", 1)[0] != "1":
+    raise SystemExit("bootstrap manifest invalid")
+if str(manifest.get("salt_version")) != salt_version:
+    raise SystemExit("salt version mismatch")
+
+selected = []
+for item in manifest.get("files", []):
+    path = item.get("path")
+    if isinstance(path, str) and path.startswith("salt/") and path.endswith(".deb"):
+        selected.append(item)
+if not any("/salt-common_" in "/" + item["path"] for item in selected):
+    raise SystemExit("salt-common deb missing")
+if not any("/salt-minion_" in "/" + item["path"] for item in selected):
+    raise SystemExit("salt-minion deb missing")
+
+for item in selected:
+    path = item["path"]
+    target = workdir / Path(path).name
+    target.write_bytes(read_url(urljoin(base, path)))
+    if sha256(target) != item.get("sha256"):
+        raise SystemExit(f"sha256 mismatch: {path}")
+print("\n".join(str(path) for path in sorted(workdir.glob("*.deb"))))
+PY
+  then
+    rm -rf "${workdir}"
+    return 1
+  fi
+  mapfile -t debs < <(find "${workdir}" -maxdepth 1 -type f -name '*.deb' | sort)
+  if [[ ${#debs[@]} -eq 0 ]]; then
+    rm -rf "${workdir}"
+    return 1
+  fi
+  DEBIAN_FRONTEND=noninteractive dpkg -i "${debs[@]}" || {
+    rm -rf "${workdir}"
+    return 1
+  }
+  rm -rf "${workdir}"
+}
+
 usage() {
   cat <<'USAGE'
 用法：scripts/proxyfleet-minion.sh <command> [options]
@@ -91,12 +162,14 @@ usage() {
   mihomo-restart
   mihomo-status
   mihomo-uninstall [--yes]
+  takeover-mihomo [--yes] [--backup-dir PATH]
 
 说明：
   --master-ip 是 --master 的兼容别名。
   start/stop/restart 默认只控制 salt-minion。
   uninstall 默认会停止并完整清理 salt-minion、ProxyFleet 受管 Mihomo 和 /etc/proxyfleet。
   脚本只删除 ProxyFleet 明确受管路径，不重置系统路由、DNS 或防火墙。
+  takeover-mihomo 只备份并停止已有 ShellCrash/Mihomo 服务，不删除原始数据。
   install 不会自动接受 key。安装后必须在 Master 上人工核验 fingerprint：
     sudo salt-key -F
     sudo salt-key -a <minion-id>
@@ -523,8 +596,9 @@ ProxyFleet Minion 主控台
 6) 查看 Mihomo 状态
 7) 启动/停止/重启服务
 8) 配置本机端口白名单和同步模式
-9) 卸载 Minion
-10) 卸载 Mihomo
+9) 安全接管已有 ShellCrash/Mihomo
+10) 卸载 Minion
+11) 卸载 Mihomo
 q) 退出
 MENU
     read -r -p "请选择: " choice
@@ -537,8 +611,9 @@ MENU
       6) mihomo_status; tui_pause ;;
       7) minion_services_tui; tui_pause ;;
       8) local_port_policy_tui; tui_pause ;;
-      9) preview_write "critical" "停止 salt-minion 和 ProxyFleet 受管 Mihomo" "卸载 salt-minion" "删除 ${PROXYFLEET_ETC_ROOT}、Minion PKI 和配置"; confirm_phrase "UNINSTALL" "确认完整卸载 Minion？" && uninstall_command --yes; tui_pause ;;
-      10) preview_write "critical" "停止并卸载 ProxyFleet 受管 Mihomo" "删除 ${PROXYFLEET_ETC_ROOT}、受管二进制和 systemd unit"; confirm_phrase "UNINSTALL MIHOMO" "确认卸载 Mihomo？" && mihomo_uninstall --yes; tui_pause ;;
+      9) takeover_mihomo; tui_pause ;;
+      10) preview_write "critical" "停止 salt-minion 和 ProxyFleet 受管 Mihomo" "卸载 salt-minion" "删除 ${PROXYFLEET_ETC_ROOT}、Minion PKI 和配置"; confirm_phrase "UNINSTALL" "确认完整卸载 Minion？" && uninstall_command --yes; tui_pause ;;
+      11) preview_write "critical" "停止并卸载 ProxyFleet 受管 Mihomo" "删除 ${PROXYFLEET_ETC_ROOT}、受管二进制和 systemd unit"; confirm_phrase "UNINSTALL MIHOMO" "确认卸载 Mihomo？" && mihomo_uninstall --yes; tui_pause ;;
       q|Q) return 0 ;;
       *) echo "未知选项"; tui_pause ;;
     esac
@@ -569,11 +644,16 @@ install_minion() {
   need_root
   check_os
   parse_install_args "$@"
-  install_salt_repo
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    "salt-common=${SALT_VERSION}*" \
-    "salt-minion=${SALT_VERSION}*"
+  if install_salt_from_master_assets "${MASTER}"; then
+    echo "已从 Master 组件镜像安装 Salt ${SALT_VERSION}。"
+  else
+    echo "警告：无法从 Master 组件镜像获取 Salt，回退官方 Salt 源。" >&2
+    install_salt_repo
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      "salt-common=${SALT_VERSION}*" \
+      "salt-minion=${SALT_VERSION}*"
+  fi
   apt-mark hold salt-common salt-minion
 
   systemctl stop salt-minion || true
@@ -772,6 +852,84 @@ mihomo_uninstall() {
   echo "Mihomo 卸载完成。未修改系统路由、DNS、防火墙或其它网络配置。"
 }
 
+takeover_mihomo() {
+  need_root
+  local yes="0"
+  local backup_dir=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes) yes="1"; shift ;;
+      --backup-dir) backup_dir="$2"; shift 2 ;;
+      *) die "未知 takeover-mihomo 参数：$1" ;;
+    esac
+  done
+  backup_dir="${backup_dir:-${PROXYFLEET_ETC_ROOT}/takeover-backups/$(date -u +%Y%m%dT%H%M%SZ)}"
+
+  if ( assert_mihomo_unit_owned >/dev/null 2>&1 ); then
+    echo "当前 mihomo.service 已由 ProxyFleet 管理，无需接管。"
+    return 0
+  fi
+
+  local units=()
+  local unit
+  for unit in mihomo.service clash.service shellcrash.service ShellCrash.service crash.service; do
+    if "${SYSTEMCTL}" cat "${unit}" >/dev/null 2>&1 || [[ -f "${SYSTEMD_UNIT_DIR}/${unit}" ]]; then
+      units+=("${unit}")
+    fi
+  done
+  if [[ ${#units[@]} -eq 0 && ! -d /etc/ShellCrash && ! -d /usr/share/ShellCrash ]]; then
+    die "E_TAKEOVER_NOTHING_FOUND: 未发现可接管的 ShellCrash/Mihomo 服务"
+  fi
+
+  preview_write "high" \
+    "备份已有服务到 ${backup_dir}" \
+    "停止并禁用：${units[*]:-未发现 systemd unit}" \
+    "写入 ${PROXYFLEET_ETC_ROOT}/local/takeover.json" \
+    "不会删除 ShellCrash 数据，不修改系统路由、DNS、防火墙"
+  if [[ "${yes}" != "1" ]]; then
+    confirm_phrase "TAKEOVER MIHOMO" "确认进入 ProxyFleet 安全接管流程？" || die "已取消接管"
+  fi
+
+  install -d -m 0750 "${backup_dir}" "${PROXYFLEET_ETC_ROOT}/local"
+  for unit in "${units[@]}"; do
+    "${SYSTEMCTL}" stop "${unit}" || true
+    "${SYSTEMCTL}" disable "${unit}" || true
+    "${SYSTEMCTL}" cat "${unit}" > "${backup_dir}/${unit}.cat" 2>/dev/null || true
+    if [[ -f "${SYSTEMD_UNIT_DIR}/${unit}" ]]; then
+      cp -a "${SYSTEMD_UNIT_DIR}/${unit}" "${backup_dir}/${unit}.unit"
+      mv "${SYSTEMD_UNIT_DIR}/${unit}" "${SYSTEMD_UNIT_DIR}/${unit}.proxyfleet-taken-over"
+    fi
+  done
+  for path in /etc/ShellCrash /usr/share/ShellCrash; do
+    if [[ -e "${path}" ]]; then
+      printf '%s\n' "${path}" >> "${backup_dir}/shellcrash-paths.txt"
+    fi
+  done
+  if [[ -x "${MIHOMO_BINARY}" ]]; then
+    sha256sum "${MIHOMO_BINARY}" > "${backup_dir}/mihomo-binary.sha256" || true
+  fi
+  python3 - "${PROXYFLEET_ETC_ROOT}/local/takeover.json" "${backup_dir}" "${units[@]}" <<'PY'
+import json
+import sys
+import time
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = {
+    "schema_version": "1.0",
+    "taken_over_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "backup_dir": sys.argv[2],
+    "stopped_units": sys.argv[3:],
+    "next_step": "run master select-sync to install ProxyFleet managed Mihomo",
+}
+tmp = path.with_name(path.name + ".next")
+tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+tmp.replace(path)
+PY
+  "${SYSTEMCTL}" daemon-reload || true
+  echo "接管准备完成。下一步请在 Master 执行 select-sync，同步安装 ProxyFleet 受管 Mihomo。"
+}
+
 cleanup_project_runtime() {
   rm -rf "${PROXYFLEET_ETC_ROOT}"
 }
@@ -843,5 +1001,6 @@ case "${command}" in
   mihomo-restart) shift; mihomo_restart "$@" ;;
   mihomo-status) shift; mihomo_status "$@" ;;
   mihomo-uninstall) shift; mihomo_uninstall "$@" ;;
+  takeover-mihomo) shift; takeover_mihomo "$@" ;;
   *) usage; exit 2 ;;
 esac

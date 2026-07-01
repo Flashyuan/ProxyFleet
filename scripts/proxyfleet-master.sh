@@ -12,13 +12,16 @@ MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
 MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
 SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
 SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.2}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.3}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://raw.githubusercontent.com/Flashyuan/ProxyFleet/main/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
 MONITOR_POLICY_PATH="${MONITOR_POLICY_PATH:-${PROJECT_ROOT}/runtime/health-monitor-policy.json}"
 MONITOR_STATE_PATH="${MONITOR_STATE_PATH:-${PROJECT_ROOT}/runtime/health-monitor-state.json}"
 MONITOR_EMAIL_CONFIG="${MONITOR_EMAIL_CONFIG:-/etc/proxyfleet/notify/email.json}"
 SMTP_PASSWORD_FILE="${SMTP_PASSWORD_FILE:-/etc/proxyfleet/secrets/smtp-password}"
+ASSET_MIRROR_PORT="${ASSET_MIRROR_PORT:-48080}"
+ASSET_MIRROR_ROOT="${ASSET_MIRROR_ROOT:-${PROJECT_ROOT}/runtime/asset-mirror}"
+ASSET_MIRROR_SERVICE="${ASSET_MIRROR_SERVICE:-proxyfleet-asset-mirror.service}"
 
 die() {
   echo "错误：$*" >&2
@@ -125,6 +128,166 @@ sync_assets() {
     install -D -m 0644 "${path}" "${target_dir}/${rel}"
   done < <(find "${source_dir}" -type f)
   echo "ProxyFleet Salt assets 已同步到 ${SALT_STATES_ROOT}"
+}
+
+asset_mirror_prepare() {
+  need_root
+  check_os
+  [[ -f "${PROJECT_ROOT}/component-locks.json" ]] || die "缺少 ${PROJECT_ROOT}/component-locks.json"
+  local public_root="${ASSET_MIRROR_ROOT}/public/proxyfleet"
+  local salt_dir="${public_root}/salt"
+  local mihomo_dir="${public_root}/mihomo"
+  install -d -m 0755 "${salt_dir}" "${mihomo_dir}"
+
+  install_salt_repo
+  apt-get update
+  rm -rf "${salt_dir:?}/"*
+  install -d -m 0755 "${salt_dir}/partial"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --download-only \
+    -o "Dir::Cache::archives=${salt_dir}" \
+    "salt-common=${SALT_VERSION}*" \
+    "salt-minion=${SALT_VERSION}*"
+  rm -rf "${salt_dir}/partial" "${salt_dir}/lock"
+
+  python3 - "${PROJECT_ROOT}/component-locks.json" "${mihomo_dir}" <<'PY'
+import gzip
+import hashlib
+import json
+import shutil
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import urlopen
+
+locks = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+target = Path(sys.argv[2])
+target.mkdir(parents=True, exist_ok=True)
+
+def sha256(path):
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def filename(url, digest):
+    parsed = urlparse(url)
+    name = Path(parsed.path).name if parsed.path else ""
+    return name or f"{digest}.gz"
+
+for component in locks.get("components", []):
+    if component.get("name") != "mihomo":
+        continue
+    for arch, artifact in component.get("artifacts", {}).items():
+        if not isinstance(artifact, dict):
+            continue
+        digest = artifact.get("sha256")
+        url = artifact.get("url")
+        if not isinstance(digest, str) or len(digest) != 64 or not isinstance(url, str):
+            raise SystemExit(f"mihomo artifact invalid: {arch}")
+        destination = target / filename(url, digest)
+        if not destination.exists() or sha256(destination) != digest:
+            parsed = urlparse(url)
+            if parsed.scheme == "file":
+                shutil.copyfile(Path(parsed.path), destination)
+            elif parsed.scheme == "https":
+                with urlopen(url, timeout=60) as response, destination.open("wb") as fh:
+                    shutil.copyfileobj(response, fh)
+            else:
+                raise SystemExit(f"unsupported mihomo url: {url}")
+        if sha256(destination) != digest:
+            raise SystemExit(f"mihomo sha256 mismatch: {destination.name}")
+        digest_path = target / digest
+        if not digest_path.exists():
+            shutil.copyfile(destination, digest_path)
+PY
+
+  cp -f "${PROJECT_ROOT}/component-locks.json" "${public_root}/component-locks.json"
+  python3 - "${public_root}" "${SALT_VERSION}" <<'PY'
+import hashlib
+import json
+import sys
+import time
+from pathlib import Path
+
+root = Path(sys.argv[1])
+salt_version = sys.argv[2]
+
+def sha256(path):
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+files = []
+for path in sorted(root.rglob("*")):
+    if path.is_file() and path.name != "bootstrap-manifest.json":
+        files.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": sha256(path),
+                "size": path.stat().st_size,
+            }
+        )
+
+payload = {
+    "schema_version": "1.0",
+    "product": "proxyfleet",
+    "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "salt_version": salt_version,
+    "files": files,
+}
+(root / "bootstrap-manifest.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  echo "组件镜像已准备：${public_root}"
+}
+
+asset_mirror_serve() {
+  need_root
+  local public_dir="${ASSET_MIRROR_ROOT}/public"
+  [[ -d "${public_dir}/proxyfleet" ]] || die "镜像目录不存在，请先执行 asset-mirror-prepare"
+  cat > "/etc/systemd/system/${ASSET_MIRROR_SERVICE}" <<SERVICE
+[Unit]
+Description=ProxyFleet fixed asset mirror
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${public_dir}
+ExecStart=/usr/bin/python3 -m http.server ${ASSET_MIRROR_PORT} --bind 0.0.0.0 --directory ${public_dir}
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+  systemctl daemon-reload
+  systemctl enable --now "${ASSET_MIRROR_SERVICE}"
+  echo "组件镜像服务已启动：http://<Master-IP>:${ASSET_MIRROR_PORT}/proxyfleet/"
+}
+
+asset_mirror_status() {
+  echo "镜像目录：${ASSET_MIRROR_ROOT}/public/proxyfleet"
+  if [[ -f "${ASSET_MIRROR_ROOT}/public/proxyfleet/bootstrap-manifest.json" ]]; then
+    python3 -m json.tool "${ASSET_MIRROR_ROOT}/public/proxyfleet/bootstrap-manifest.json"
+  else
+    echo "bootstrap-manifest.json 不存在"
+  fi
+  systemctl status "${ASSET_MIRROR_SERVICE}" --no-pager || true
+}
+
+asset_mirror_deploy() {
+  preview_write "medium" \
+    "下载 Salt ${SALT_VERSION} deb 包" \
+    "下载 Mihomo component-locks 固定版本资产" \
+    "生成 bootstrap-manifest.json" \
+    "启动只读 HTTP 镜像服务 0.0.0.0:${ASSET_MIRROR_PORT}" \
+    "请在防火墙/安全组只允许局域网或受管 Minion 访问 ${ASSET_MIRROR_PORT}"
+  confirm_phrase "DEPLOY MIRROR" "确认部署组件镜像服务？" || return 0
+  asset_mirror_prepare
+  asset_mirror_serve
 }
 
 start_master() {
@@ -539,6 +702,7 @@ config_dir.mkdir(parents=True, exist_ok=True)
                 "log-level": "info",
                 "external-controller": "127.0.0.1:9090",
             },
+            "proxy_mode": "tproxy",
         },
         ensure_ascii=False,
         indent=2,
@@ -770,16 +934,20 @@ ProxyFleet Master / 安装相关
 
 1) 只读预检
 2) 安装/修复 Salt Master
-3) 检测并更新 ProxyFleet Master
-4) 卸载 Master
+3) 一键部署 Salt/Mihomo 固定组件镜像
+4) 查看组件镜像状态
+5) 检测并更新 ProxyFleet Master
+6) 卸载 Master
 b) 返回
 MENU
     read -r -p "请选择: " choice
     case "${choice}" in
       1) preflight; tui_pause ;;
       2) preview_write "medium" "安装 Salt Master ${SALT_VERSION}" "写入 ${MASTER_CONF}" "同步 Salt states"; confirm_phrase "INSTALL" "确认安装/修复 Master？" && install_master; tui_pause ;;
-      3) update_master_tui; tui_pause ;;
-      4) preview_write "critical" "停止 salt-master" "卸载 salt-master" "删除 Master PKI、配置、Salt states/pillar 和本项目运行数据"; confirm_phrase "UNINSTALL" "确认完整卸载 Master？" && uninstall_master --yes; tui_pause ;;
+      3) asset_mirror_deploy; tui_pause ;;
+      4) asset_mirror_status; tui_pause ;;
+      5) update_master_tui; tui_pause ;;
+      6) preview_write "critical" "停止 salt-master" "卸载 salt-master" "删除 Master PKI、配置、Salt states/pillar 和本项目运行数据"; confirm_phrase "UNINSTALL" "确认完整卸载 Master？" && uninstall_master --yes; tui_pause ;;
       b|B|q|Q) return 0 ;;
       *) echo "未知选项"; tui_pause ;;
     esac
@@ -1034,6 +1202,7 @@ select_sync() {
   local port_policy=""
   local port_policy_explicit="false"
   local port_policy_mode="merge"
+  local proxy_mode="tproxy"
   local refresh_health_first="false"
   local use_health_cache="true"
   local mihomo_api="http://127.0.0.1:9090"
@@ -1056,9 +1225,14 @@ select_sync() {
       --health-concurrency) health_concurrency="$2"; shift 2 ;;
       --port-policy) port_policy="$2"; port_policy_explicit="true"; shift 2 ;;
       --port-policy-mode) port_policy_mode="$2"; shift 2 ;;
+      --proxy-mode) proxy_mode="$2"; shift 2 ;;
       *) die "未知 select-sync 参数：$1" ;;
     esac
   done
+  case "${proxy_mode}" in
+    tproxy|explicit-proxy) ;;
+    *) die "未知 proxy-mode：${proxy_mode}" ;;
+  esac
 
   if [[ ! -d "${release_dir}" ]]; then
     local latest
@@ -1128,6 +1302,7 @@ select_sync() {
     "${salt_root}"
     --component-locks "${PROJECT_ROOT}/component-locks.json"
     --port-policy-mode "${port_policy_mode}"
+    --proxy-mode "${proxy_mode}"
   )
   if [[ -n "${port_policy}" ]]; then
     publish_args+=(--port-policy "${port_policy}")
@@ -1145,6 +1320,7 @@ select_sync() {
     --target "${target}"
     --salt-bin salt
     --port-policy-mode "${port_policy_mode}"
+    --proxy-mode "${proxy_mode}"
   )
   if [[ -n "${port_policy}" ]]; then
     sync_args+=(--port-policy-enabled)
@@ -1202,6 +1378,12 @@ usage() {
 命令：
   preflight        只读预检当前机器是否符合 Master 测试机基线
   install          安装并配置 Salt Master 3008.1
+  asset-mirror-deploy
+                   下载并启动 Salt/Mihomo 固定组件镜像服务，默认端口 48080
+  asset-mirror-prepare
+                   只准备固定组件镜像文件，不启动 HTTP 服务
+  asset-mirror-status
+                   查看组件镜像 manifest 和服务状态
   start            启动 salt-master
   stop             停止 salt-master
   restart          重启 salt-master
@@ -1222,6 +1404,7 @@ select-sync 常用参数：
   --runtime-dir PATH       默认 runtime
   --target '*'             默认同步全部 Minion
   --health-cache PATH      默认 runtime/health.json，存在时展示测速状态
+  --proxy-mode MODE        默认 tproxy；可选 explicit-proxy 作为排障回退
   --live-health            兼容别名：行为与默认入口一致
   --mihomo-api URL         默认 http://127.0.0.1:9090
   --health-timeout-ms N    默认 2000
@@ -1246,6 +1429,9 @@ case "${command}" in
   "") master_tui ;;
   preflight) preflight ;;
   install) install_master ;;
+  asset-mirror-deploy) asset_mirror_deploy ;;
+  asset-mirror-prepare) asset_mirror_prepare ;;
+  asset-mirror-status) asset_mirror_status ;;
   start) start_master ;;
   stop) stop_master ;;
   restart) restart_master ;;

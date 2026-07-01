@@ -90,6 +90,7 @@ class SyncPlan:
     salt_desired_path: Path
     port_policy_enabled: bool = False
     port_policy_mode: str = "merge"
+    proxy_mode: str = "tproxy"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -102,6 +103,7 @@ class SyncPlan:
             "salt_desired_path": str(self.salt_desired_path),
             "port_policy_enabled": self.port_policy_enabled,
             "port_policy_mode": self.port_policy_mode,
+            "proxy_mode": self.proxy_mode,
         }
 
 
@@ -249,6 +251,7 @@ def prepare_salt_publish(
     component_locks_path: Path | None = None,
     port_policy_path: Path | None = None,
     port_policy_mode: str = "merge",
+    proxy_mode: str = "tproxy",
 ) -> SyncPlan:
     """准备 Salt file_roots 中的 release 和 desired state。"""
 
@@ -263,6 +266,7 @@ def prepare_salt_publish(
     release_target = salt_root / "proxyfleet" / "releases" / f"{release.release_revision:06d}"
     desired_target = salt_root / "proxyfleet" / "desired.yaml"
     locks_target = salt_root / "proxyfleet" / "component-locks.json"
+    assets_target = salt_root / "proxyfleet" / "assets"
     release_target.parent.mkdir(parents=True, exist_ok=True)
     if release_target.exists():
         shutil.rmtree(release_target)
@@ -275,6 +279,7 @@ def prepare_salt_publish(
         try:
             shutil.copyfile(component_locks_path, locks_target)
             locks_target.chmod(0o644)
+            _publish_component_assets(component_locks_path, assets_target)
         except OSError as exc:
             raise FleetError("E_COMPONENT_INTEGRITY_MISSING", f"组件锁定清单不可用: {component_locks_path}") from exc
     if port_policy_path is not None:
@@ -293,6 +298,7 @@ def prepare_salt_publish(
         target="*",
         port_policy_enabled=port_policy_path is not None,
         port_policy_mode=port_policy_mode,
+        proxy_mode=proxy_mode,
     )
 
 
@@ -304,6 +310,7 @@ def build_sync_plan(
     *,
     port_policy_enabled: bool = False,
     port_policy_mode: str = "merge",
+    proxy_mode: str = "tproxy",
 ) -> SyncPlan:
     """生成同步计划，不写入 Salt 目录。"""
 
@@ -324,6 +331,7 @@ def build_sync_plan(
         target,
         port_policy_enabled=port_policy_enabled,
         port_policy_mode=port_policy_mode,
+        proxy_mode=proxy_mode,
     )
 
 
@@ -335,7 +343,7 @@ def run_salt_sync(plan: SyncPlan, salt_bin: str = "salt") -> int:
         plan.target,
         "state.apply",
         "proxyfleet.sync",
-        f"pillar={json.dumps({'proxyfleet_operation_id': plan.operation_id, 'proxyfleet_release_root': str(plan.salt_release_dir.parent), 'proxyfleet_desired_path': str(plan.salt_desired_path), 'proxyfleet_component_locks_path': str(plan.salt_desired_path.parent / 'component-locks.json'), 'proxyfleet_port_policy_enabled': plan.port_policy_enabled, 'proxyfleet_port_policy_mode': plan.port_policy_mode}, separators=(',', ':'))}",
+        f"pillar={json.dumps({'proxyfleet_operation_id': plan.operation_id, 'proxyfleet_release_root': str(plan.salt_release_dir.parent), 'proxyfleet_desired_path': str(plan.salt_desired_path), 'proxyfleet_component_locks_path': str(plan.salt_desired_path.parent / 'component-locks.json'), 'proxyfleet_port_policy_enabled': plan.port_policy_enabled, 'proxyfleet_port_policy_mode': plan.port_policy_mode, 'proxyfleet_proxy_mode': plan.proxy_mode}, separators=(',', ':'))}",
     ]
     completed = subprocess.run(cmd, check=False)
     return int(completed.returncode)
@@ -477,6 +485,7 @@ def _sync_plan(
     *,
     port_policy_enabled: bool = False,
     port_policy_mode: str = "merge",
+    proxy_mode: str = "tproxy",
 ) -> SyncPlan:
     operation_id = f"op-{_now_utc().replace(':', '').replace('-', '')}-{desired['desired_revision']}"
     return SyncPlan(
@@ -489,6 +498,7 @@ def _sync_plan(
         salt_desired_path=salt_desired_path,
         port_policy_enabled=port_policy_enabled,
         port_policy_mode=port_policy_mode,
+        proxy_mode=proxy_mode,
     )
 
 
@@ -499,6 +509,53 @@ def _chmod_tree(root: Path, *, dir_mode: int, file_mode: int) -> None:
             path.chmod(dir_mode)
         elif path.is_file():
             path.chmod(file_mode)
+
+
+def _publish_component_assets(component_locks_path: Path, assets_target: Path) -> None:
+    """把 Master 本地离线组件资产发布到 Salt file_roots，供 Minion 无外网安装。"""
+
+    if assets_target.exists():
+        shutil.rmtree(assets_target)
+    assets_target.mkdir(parents=True, exist_ok=True)
+
+    root = component_locks_path.resolve().parent
+    asset_directories = [
+        root / "component-assets",
+        root / "assets",
+        root / "offline-assets",
+        root / "runtime" / "asset-mirror" / "public" / "proxyfleet" / "mihomo",
+    ]
+    for directory in asset_directories:
+        if directory.is_dir():
+            for path in directory.iterdir():
+                if path.is_file():
+                    shutil.copy2(path, assets_target / path.name)
+
+    try:
+        locks = _read_json(component_locks_path)
+    except FleetError:
+        return
+    for component in locks.get("components", []):
+        artifacts = component.get("artifacts", {})
+        if not isinstance(artifacts, dict):
+            continue
+        for artifact in artifacts.values():
+            if not isinstance(artifact, dict):
+                continue
+            local_path = artifact.get("local_path") or artifact.get("file")
+            if not isinstance(local_path, str) or not local_path:
+                continue
+            source = Path(local_path)
+            if not source.is_absolute():
+                source = root / source
+            if not source.is_file():
+                continue
+            target = assets_target / source.name
+            shutil.copy2(source, target)
+            sha256 = artifact.get("sha256")
+            if isinstance(sha256, str) and len(sha256) == 64:
+                shutil.copy2(source, assets_target / sha256)
+    _chmod_tree(assets_target, dir_mode=0o755, file_mode=0o644)
 
 
 def _node_entry(provider_id: str, proxy: dict[str, Any]) -> NodeEntry:

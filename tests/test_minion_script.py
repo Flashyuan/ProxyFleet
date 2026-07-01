@@ -119,6 +119,7 @@ exit 0
                     "MIHOMO_RECEIPT": str(tree["receipt"]),
                     "MIHOMO_CONFIG_PATH": str(tree["config"]),
                     "COMPONENT_LOCKS": str(tree["locks"]),
+                    "SYSTEMD_UNIT_DIR": str(tree["unit"].parent),
                 }
             )
         return subprocess.run(
@@ -187,6 +188,14 @@ exit 0
 
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(["start salt-minion"], self._systemctl_log(root))
+
+    def test_minion_install_defaults_to_master_asset_mirror(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('ASSET_MIRROR_PORT="${ASSET_MIRROR_PORT:-48080}"', text)
+        self.assertIn('local base_url="http://${master}:${ASSET_MIRROR_PORT}/proxyfleet"', text)
+        self.assertIn('if install_salt_from_master_assets "${MASTER}"; then', text)
+        self.assertIn("bootstrap-manifest.json", text)
 
     def test_no_args_enters_minion_tui(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -297,6 +306,24 @@ exit 0
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertTrue(tree["unit"].exists())
             self.assertIn("跳过 Mihomo 服务删除", result.stdout)
+
+    def test_takeover_mihomo_backs_up_and_stops_existing_unit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = self._mihomo_tree(root)
+            tree["unit"].write_text("[Service]\nExecStart=/opt/shellcrash/mihomo -f /etc/ShellCrash/config.yaml\n", encoding="utf-8")
+            backup = root / "backup"
+
+            result = self._run(root, ["takeover-mihomo", "--yes", "--backup-dir", str(backup)], tree)
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertTrue((backup / "mihomo.service.cat").exists())
+            self.assertTrue((tree["etc"] / "local" / "takeover.json").exists())
+            self.assertTrue(tree["unit"].with_name("mihomo.service.proxyfleet-taken-over").exists())
+            log = self._systemctl_log(root)
+            self.assertIn("stop mihomo.service", log)
+            self.assertIn("disable mihomo.service", log)
+            self.assertIn("daemon-reload", log)
 
     def test_single_script_minion_update_fallback_replaces_script(self):
         with tempfile.TemporaryDirectory() as tmp:

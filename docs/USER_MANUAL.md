@@ -358,7 +358,11 @@ TUI 入口：
 --health-concurrency N   测速并发，默认 16
 --port-policy PATH       Master managed 端口白名单，默认 config-src/port-policy.yaml
 --port-policy-mode MODE  merge/master-only/local-only/disabled
+--proxy-mode MODE        Mihomo 运行模式，默认 tproxy；可选 explicit-proxy
 ```
+
+普通使用不需要传 `--proxy-mode`。默认 `tproxy` 会让 Minion 上的命令行程序优先
+通过 Mihomo 当前选中节点访问公网；`explicit-proxy` 仅用于临时回退到手动代理端口。
 
 废弃但兼容：
 
@@ -389,6 +393,7 @@ mihomo-stop                     只停止本机 Mihomo
 mihomo-restart                  只重启本机 Mihomo
 mihomo-status                   查看 Mihomo 状态
 mihomo-uninstall [--yes]        完整卸载 ProxyFleet 受管 Mihomo
+takeover-mihomo [--yes]         备份并停止已有 ShellCrash/Mihomo，准备交给 ProxyFleet 接管
 ```
 
 Minion 服务：
@@ -415,6 +420,49 @@ sudo scripts/proxyfleet-minion.sh mihomo-stop
 sudo scripts/proxyfleet-minion.sh mihomo-restart
 scripts/proxyfleet-minion.sh mihomo-status
 ```
+
+已有 ShellCrash/Mihomo：
+
+```bash
+sudo scripts/proxyfleet-minion.sh takeover-mihomo
+```
+
+该命令只备份、停止并禁用旧服务，不删除 ShellCrash 数据。接管准备完成后，在
+Master 执行 `select-sync`，由 Salt 下发 ProxyFleet 受管 Mihomo。
+
+Mihomo 离线资产：
+
+Master 一键部署固定组件镜像：
+
+```bash
+sudo scripts/proxyfleet-master.sh asset-mirror-deploy
+sudo scripts/proxyfleet-master.sh asset-mirror-status
+```
+
+TUI 路径：
+
+```text
+安装相关 -> 一键部署 Salt/Mihomo 固定组件镜像
+```
+
+默认服务地址：
+
+```text
+http://<Master-IP>:48080/proxyfleet/
+```
+
+Minion 安装时会默认优先从 Master 的 `48080` 获取 Salt 固定版本安装包，不需要
+额外参数。Mihomo 固定资产会在 Master 构建/同步后通过 Salt assets 下发。
+
+```text
+component-assets/
+assets/
+offline-assets/
+```
+
+把锁定版本的 `.gz` 包放到以上任一目录，或在 `component-locks.json` 的 artifact
+中配置 `local_path` / `mirror_urls`。同步时 Master 会发布到 Salt assets，Minion
+安装时仍按 SHA-256 校验后才使用。
 
 ## 12. 卸载
 

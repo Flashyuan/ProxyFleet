@@ -221,6 +221,81 @@ Minion key、订阅缓存或节点配置。更新也不会自动接受 Minion ke
 sudo scripts/proxyfleet-master.sh sync-assets
 ```
 
+## 7.1 Mihomo 资产镜像和离线包
+
+推荐在 Master TUI 中一键部署固定组件镜像：
+
+```bash
+sudo scripts/proxyfleet-master.sh
+```
+
+进入：
+
+```text
+安装相关 -> 一键部署 Salt/Mihomo 固定组件镜像
+```
+
+该操作会：
+
+1. 下载 Salt 固定版本 `3008.1` 的 Minion 安装 deb；
+2. 下载 `component-locks.json` 中 Mihomo 固定版本资产；
+3. 生成 `bootstrap-manifest.json`；
+4. 启动只读 HTTP 服务：
+
+```text
+http://<Master-IP>:48080/proxyfleet/
+```
+
+也可以用命令执行：
+
+```bash
+sudo scripts/proxyfleet-master.sh asset-mirror-deploy
+sudo scripts/proxyfleet-master.sh asset-mirror-status
+```
+
+请在防火墙或安全组中只允许局域网/受管 Minion 访问 TCP `48080`。
+
+Minion 安装 Salt 时会默认优先访问：
+
+```text
+http://<Master-IP>:48080/proxyfleet/bootstrap-manifest.json
+```
+
+下载后会校验 manifest 中的 SHA-256，校验失败会回退官方 Salt 源。
+
+`component-locks.json` 仍然是唯一可信来源，所有 Mihomo 资产都必须固定版本和
+SHA-256。每个架构的 artifact 可以增加：
+
+```json
+{
+  "local_path": "component-assets/mihomo-linux-amd64-compatible-v1.19.27.gz",
+  "mirror_urls": [
+    "https://<your-mirror>/mihomo-linux-amd64-compatible-v1.19.27.gz"
+  ]
+}
+```
+
+推荐把离线包放在 Master 项目目录下：
+
+```text
+component-assets/
+assets/
+offline-assets/
+```
+
+执行 `select-sync` 或 `publish-salt` 时，Master 会把这些文件发布到 Salt
+file_roots 的 `proxyfleet/assets/`，Minion 会同步到 `/etc/proxyfleet/assets/`。
+Minion 安装 Mihomo 时会按顺序尝试：
+
+1. artifact 的 `local_path` 或 `file`；
+2. `/etc/proxyfleet/assets/` 中按文件名或 SHA-256 命中的离线包；
+3. `/var/cache/proxyfleet/assets/` 中的本机离线包；
+4. `mirror_urls` / `mirrors`；
+5. 原始 `url`。
+
+无论来自镜像还是离线包，最终都会校验 artifact 的 `sha256`。校验失败会
+fail-closed，不会安装。
+
 ## 8. 接受 Minion Key
 
 Minion 安装后，回到 Master 节点执行：
@@ -345,6 +420,11 @@ Minion 本地 override 文件是：
 Salt state 只保证 `/etc/proxyfleet/local` 目录存在，不覆盖、不删除这个本地文件。
 因此 Minion 可以保留自己的本机端口规则。
 
+当前版本不会自动把 SSH `22` 或 Salt `4505/4506` 写进这个文件。原因是
+`config-src/port-policy.yaml` 是下发给 Minion 的代理端口策略，而 Salt
+`4505/4506` 是 Master 入站控制平面端口，应该在 Master 防火墙或云安全组中
+只对受管 Minion 放行。SSH 端口是否加入白名单取决于你的本机代理/防火墙策略。
+
 ## 13. 选择节点并同步
 
 推荐命令：
@@ -396,7 +476,12 @@ file_roots，然后执行 Salt 同步。
 --health-concurrency N   测速并发，默认 16
 --port-policy PATH       Master managed 端口白名单，默认 config-src/port-policy.yaml
 --port-policy-mode MODE  merge/master-only/local-only/disabled
+--proxy-mode MODE        Mihomo 运行模式，默认 tproxy；可选 explicit-proxy
 ```
+
+默认 `tproxy` 会在 release 的 `config.yaml` 中启用 Mihomo TUN 自动路由和
+`tproxy-port`，让 Minion 本机进程不显式设置 `HTTP_PROXY` 时也可以走当前选中节点。
+如需排查透明代理导致的路由问题，可临时使用 `--proxy-mode explicit-proxy`。
 
 废弃但兼容的参数：
 

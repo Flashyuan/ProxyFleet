@@ -22,6 +22,7 @@ Minion 不需要 Git 仓库，也不需要完整项目。通常只下载
 - Ubuntu 22.04 或 24.04；
 - 当前用户具备 sudo 权限；
 - Minion 可以访问 Master TCP `4505` 和 `4506`；
+- 推荐 Minion 可以访问 Master TCP `48080`，用于优先获取固定 Salt/Mihomo 组件镜像；
 - 已规划唯一 Minion ID；
 - Master 不自动接受 key，必须人工核验 fingerprint；
 - Salt 组件固定安装 `3008.1`，安装后会被 `apt-mark hold` 锁定。
@@ -34,6 +35,16 @@ timeout 3 bash -c '</dev/tcp/<master-ip>/4506' && echo 4506-ok
 ```
 
 注意把 `<master-ip>` 替换成真实 IP，不要带尖括号。
+
+如果 Master 已经部署固定组件镜像，Minion 安装 Salt 时会默认访问：
+
+```text
+http://<master-ip>:48080/proxyfleet/
+```
+
+不需要额外传参数。脚本会下载 `bootstrap-manifest.json`，校验 Salt deb 的
+SHA-256，然后安装固定版本 Salt `3008.1`。如果 Master 镜像不可达或校验失败，
+才会回退官方 Salt 源。
 
 ## 3. 用 curl 下载 Minion 脚本
 
@@ -155,6 +166,7 @@ mihomo-stop                     只停止本机 Mihomo，保留配置和 release
 mihomo-restart                  只重启本机 Mihomo
 mihomo-status                   查看 Mihomo 受管状态
 mihomo-uninstall [--yes]        完整卸载 ProxyFleet 受管 Mihomo
+takeover-mihomo [--yes]         安全接管已有 ShellCrash/Mihomo
 ```
 
 安装参数：
@@ -202,6 +214,25 @@ unit、release 或运行数据。
 
 更新不会自动启动、停止、重启或卸载 Mihomo。只有旧版单脚本且没有 `src/` 的
 Minion，也可以使用内置轻量 fallback 更新 `scripts/proxyfleet-minion.sh`。
+
+## 8.1 安全接管已有 ShellCrash/Mihomo
+
+如果这台机器已经运行 ShellCrash 或非 ProxyFleet 管理的 Mihomo，先执行：
+
+```bash
+sudo scripts/proxyfleet-minion.sh takeover-mihomo
+```
+
+确认后脚本会：
+
+1. 备份已发现的 `mihomo.service`、`clash.service`、`shellcrash.service` 等 unit；
+2. 停止并禁用这些旧服务；
+3. 记录 `/etc/proxyfleet/local/takeover.json`；
+4. 保留 ShellCrash 原始目录，不删除数据；
+5. 不修改系统路由、DNS、防火墙。
+
+接管完成后，回到 Master 执行 `select-sync`。下一次 Salt 同步会安装
+ProxyFleet 受管 Mihomo，并应用 Master 生成的 `config.yaml`。
 
 ## 9. Mihomo 生命周期
 

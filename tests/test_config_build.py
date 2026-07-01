@@ -36,8 +36,37 @@ class ConfigBuildTests(unittest.TestCase):
             self.assertIn("config.yaml", paths)
             self.assertIn("providers/self-hosted.yaml", paths)
             self.assertIn("rules/force-proxy.yaml", paths)
+            config = json.loads((release / "config.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(7893, config["tproxy-port"])
+            self.assertTrue(config["tun"]["enable"])
+            self.assertTrue(config["tun"]["auto-route"])
+            self.assertTrue(config["tun"]["auto-redirect"])
+            self.assertIn("any:53", config["tun"]["dns-hijack"])
+            self.assertIn("192.168.0.0/16", config["tun"]["route-exclude-address"])
             self.assertTrue((release / "manifest.sha256").exists())
             verify_release(release)
+
+    def test_explicit_proxy_mode_does_not_inject_tun(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as out:
+            shutil.copytree(FIXTURE, src, dirs_exist_ok=True)
+            base_path = Path(src) / "base.json"
+            base = json.loads(base_path.read_text(encoding="utf-8"))
+            base["proxy_mode"] = "explicit-proxy"
+            base_path.write_text(json.dumps(base, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+            release = build_release(
+                BuildOptions(
+                    source_dir=Path(src),
+                    output_dir=Path(out),
+                    revision=1,
+                    source_git_commit="abc123",
+                    component_locks=LOCKS,
+                )
+            )
+
+            config = json.loads((release / "config.yaml").read_text(encoding="utf-8"))
+            self.assertNotIn("tun", config)
+            self.assertNotIn("tproxy-port", config)
 
     def test_verify_release_detects_hash_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:

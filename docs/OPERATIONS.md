@@ -258,7 +258,11 @@ sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id>'
 --health-concurrency N   测速并发，默认 16
 --port-policy PATH       Master managed 端口白名单，默认 config-src/port-policy.yaml
 --port-policy-mode MODE  merge/master-only/local-only/disabled
+--proxy-mode MODE        Mihomo 运行模式，默认 tproxy；可选 explicit-proxy
 ```
+
+默认 `tproxy` 会把透明代理运行参数写入新构建的 release，并在同步切换时作为
+Salt plan 记录。只有排障时建议临时切到 `explicit-proxy`。
 
 废弃但兼容的参数：
 
@@ -328,6 +332,51 @@ Master 不覆盖 Minion local override。
 
 Salt Master 自身的 TCP `4505/4506` 要在 Master 防火墙或安全组中放行给
 Minion。它们通常不需要加入下发到 Minion 的代理端口白名单。
+
+当前版本不会默认写入 SSH `22` 或 Salt `4505/4506`。如确实要把 SSH 端口作为
+Minion 本机代理端口策略的一部分，请在 TUI 中手动输入 `22`，或写入
+`/etc/proxyfleet/local/port-policy.yaml`。
+
+## 9.1 Mihomo 镜像和离线包
+
+推荐入口：
+
+```bash
+sudo scripts/proxyfleet-master.sh asset-mirror-deploy
+```
+
+或在 Master TUI 中进入：
+
+```text
+安装相关 -> 一键部署 Salt/Mihomo 固定组件镜像
+```
+
+服务地址：
+
+```text
+http://<Master-IP>:48080/proxyfleet/
+```
+
+Minion 安装时默认优先从该地址获取 Salt `3008.1` deb 包，并校验
+`bootstrap-manifest.json` 中的 SHA-256。镜像不可用时才回退官方 Salt 源。
+
+Master 会在 `publish-salt` 时把 `component-locks.json` 同目录下的
+`component-assets/`、`assets/`、`offline-assets/` 发布到 Salt 的
+`proxyfleet/assets/`。Minion 同步后会优先使用 `/etc/proxyfleet/assets/`
+中的离线包，再尝试 artifact 的 `mirror_urls`，最后才访问原始 `url`。
+
+所有来源都必须匹配 `component-locks.json` 中对应架构的 SHA-256。
+
+## 9.2 接管已有 ShellCrash/Mihomo
+
+在 Minion 上执行：
+
+```bash
+sudo scripts/proxyfleet-minion.sh takeover-mihomo
+```
+
+该命令只备份、停止并禁用旧服务，不删除 ShellCrash 数据。随后在 Master 上执行
+`select-sync`，由 Salt 安装和接管 ProxyFleet 受管 Mihomo。
 
 ## 10. 手动分步发布
 

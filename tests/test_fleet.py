@@ -155,17 +155,50 @@ proxies:
             select_node(release, root / "runtime", node.node_id, "production")
             port_policy = root / "port-policy.json"
             port_policy.write_text(json.dumps({"owner": "master", "allow": [], "deny": []}), encoding="utf-8")
+            asset = root / "component-assets" / "mihomo.gz"
+            asset.parent.mkdir()
+            asset.write_bytes(b"offline")
+            mirror_asset = root / "runtime" / "asset-mirror" / "public" / "proxyfleet" / "mihomo" / "mirror.gz"
+            mirror_asset.parent.mkdir(parents=True)
+            mirror_asset.write_bytes(b"mirror")
+            asset_sha = hashlib.sha256(asset.read_bytes()).hexdigest()
+            locks = root / "component-locks.json"
+            locks.write_text(
+                json.dumps(
+                    {
+                        "components": [
+                            {
+                                "name": "mihomo",
+                                "version": "v1.19.27",
+                                "artifacts": {
+                                    "linux-amd64": {
+                                        "local_path": "component-assets/mihomo.gz",
+                                        "url": "https://example.invalid/mihomo.gz",
+                                        "sha256": asset_sha,
+                                        "compression": "gzip",
+                                        "target_path": "/usr/local/bin/mihomo",
+                                    }
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
             plan = prepare_salt_publish(
                 release,
                 root / "runtime" / "desired.yaml",
                 root / "srv-salt",
-                LOCKS,
+                locks,
                 port_policy,
                 "merge",
             )
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "releases" / "000001" / "config.yaml").exists())
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "desired.yaml").exists())
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "component-locks.json").exists())
+            self.assertTrue((root / "srv-salt" / "proxyfleet" / "assets" / "mihomo.gz").exists())
+            self.assertTrue((root / "srv-salt" / "proxyfleet" / "assets" / "mirror.gz").exists())
+            self.assertTrue((root / "srv-salt" / "proxyfleet" / "assets" / asset_sha).exists())
             self.assertTrue((root / "srv-salt" / "proxyfleet" / "port-policy.yaml").exists())
             self.assertEqual(0o755, (root / "srv-salt" / "proxyfleet" / "releases" / "000001").stat().st_mode & 0o777)
             self.assertEqual(0o644, (root / "srv-salt" / "proxyfleet" / "releases" / "000001" / "config.yaml").stat().st_mode & 0o777)
@@ -173,6 +206,7 @@ proxies:
             self.assertEqual(1, plan.release_revision)
             self.assertEqual(1, plan.desired_revision)
             self.assertTrue(plan.port_policy_enabled)
+            self.assertEqual("tproxy", plan.proxy_mode)
 
     def test_sync_plan_rejects_provider_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -212,6 +246,7 @@ proxies:
             self.assertIn(str(root / "custom-salt" / "proxyfleet" / "component-locks.json"), pillar)
             self.assertIn('"proxyfleet_port_policy_enabled":true', pillar)
             self.assertIn('"proxyfleet_port_policy_mode":"merge"', pillar)
+            self.assertIn('"proxyfleet_proxy_mode":"tproxy"', pillar)
 
     def test_salt_envelope_redacts_secret_fields(self):
         envelope = salt_envelope(
@@ -876,6 +911,49 @@ class SaltModuleTests(unittest.TestCase):
             unit_text = (root / "mihomo.service").read_text(encoding="utf-8")
             self.assertIn("WorkingDirectory=/etc/proxyfleet/current", unit_text)
             self.assertIn(f"ExecStart={root / 'mihomo'} -d /etc/proxyfleet/current -f /etc/proxyfleet/current/config.yaml", unit_text)
+
+    def test_install_mihomo_uses_offline_local_asset_before_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asset = root / "offline-mihomo.gz"
+            with gzip.open(asset, "wb") as fh:
+                fh.write(b"#!/bin/sh\necho 'Mihomo Meta v1.19.27'\n")
+            asset_sha = hashlib.sha256(asset.read_bytes()).hexdigest()
+            locks = root / "component-locks.json"
+            locks.write_text(
+                json.dumps(
+                    {
+                        "components": [
+                            {
+                                "name": "mihomo",
+                                "version": "v1.19.27",
+                                "artifacts": {
+                                    "linux-amd64": {
+                                        "local_path": str(asset),
+                                        "url": "https://example.invalid/mihomo.gz",
+                                        "sha256": asset_sha,
+                                        "compression": "gzip",
+                                        "target_path": str(root / "mihomo"),
+                                    }
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            module = self._module()
+            with mock.patch.object(module.platform, "machine", return_value="x86_64"), mock.patch.object(module, "_systemctl"):
+                result = module.install_mihomo(
+                    component_locks_path=str(locks),
+                    binary_path=str(root / "mihomo"),
+                    service_path=str(root / "mihomo.service"),
+                    operation_id="op-test",
+                )
+
+            self.assertEqual("success", result["status"])
+            receipt = json.loads((root / "mihomo.proxyfleet-install.json").read_text(encoding="utf-8"))
+            self.assertTrue(receipt["source"].startswith("file://"))
             receipt = json.loads((root / "mihomo.proxyfleet-install.json").read_text(encoding="utf-8"))
             self.assertEqual(asset_sha, receipt["artifact_sha256"])
             self.assertEqual("gzip", receipt["compression"])

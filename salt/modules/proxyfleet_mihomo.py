@@ -57,12 +57,9 @@ def install_mihomo(
         version = str(component.get("version"))
         artifact = _component_artifact(component)
         sha256 = artifact.get("sha256")
-        source = artifact.get("url")
         compression = artifact.get("compression", "none")
         if not isinstance(sha256, str) or len(sha256) != 64:
             raise _ApplyError("E_COMPONENT_INTEGRITY_MISSING", "mihomo sha256 missing")
-        if not isinstance(source, str) or not source.startswith(("https://", "file://")):
-            raise _ApplyError("E_COMPONENT_SOURCE", "mihomo source is not installable")
 
         artifact_target = artifact.get("target_path")
         if artifact_target is not None and Path(str(artifact_target)) != Path(str(binary_path)):
@@ -77,7 +74,7 @@ def install_mihomo(
                 tmp = Path(tmpdir)
                 downloaded = tmp / "mihomo.asset"
                 unpacked = tmp / "mihomo"
-                _download(source, downloaded)
+                source = _download_first_available(_artifact_sources(artifact, sha256, Path(component_locks_path).parent), downloaded)
                 if _sha256(downloaded) != sha256:
                     raise _ApplyError("E_COMPONENT_HASH", "mihomo asset hash mismatch")
                 _unpack_artifact(downloaded, unpacked, compression)
@@ -623,13 +620,95 @@ def _cpu_flags():
     return flags
 
 
+def _artifact_sources(artifact, sha256, locks_dir):
+    sources = []
+    for key in ("local_path", "file"):
+        value = artifact.get(key)
+        if isinstance(value, str) and value:
+            sources.append(_local_asset_uri(value, locks_dir))
+
+    for candidate in _offline_asset_candidates(artifact, sha256, locks_dir):
+        sources.append(candidate.as_uri())
+
+    for key in ("mirror_urls", "mirrors"):
+        values = artifact.get(key, [])
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, str):
+                    sources.append(value)
+                elif isinstance(value, dict) and isinstance(value.get("url"), str):
+                    sources.append(value["url"])
+
+    if isinstance(artifact.get("url"), str):
+        sources.append(artifact["url"])
+
+    deduped = []
+    seen = set()
+    for source in sources:
+        if source in seen:
+            continue
+        seen.add(source)
+        if not str(source).startswith(("https://", "file://")):
+            raise _ApplyError("E_COMPONENT_SOURCE", "mihomo source is not installable")
+        deduped.append(source)
+    if not deduped:
+        raise _ApplyError("E_COMPONENT_SOURCE", "mihomo source is not installable")
+    return deduped
+
+
+def _local_asset_uri(value, locks_dir):
+    path = Path(value)
+    if not path.is_absolute():
+        path = locks_dir / path
+    return path.as_uri()
+
+
+def _offline_asset_candidates(artifact, sha256, locks_dir):
+    names = [sha256]
+    url = artifact.get("url")
+    if isinstance(url, str):
+        parsed = parse.urlparse(url)
+        if parsed.path:
+            names.append(Path(parsed.path).name)
+    roots = [
+        locks_dir / "assets",
+        locks_dir / "offline-assets",
+        Path("/var/cache/proxyfleet/assets"),
+    ]
+    candidates = []
+    for root in roots:
+        for name in names:
+            if not name:
+                continue
+            path = root / name
+            if path.exists() and path.is_file():
+                candidates.append(path)
+    return candidates
+
+
+def _download_first_available(sources, target):
+    errors = []
+    for source in sources:
+        try:
+            _download(source, target)
+            return source
+        except _ApplyError as exc:
+            errors.append(f"{source}: {exc.error_code}")
+        except Exception as exc:
+            errors.append(f"{source}: {type(exc).__name__}")
+    raise _ApplyError("E_COMPONENT_SOURCE", "all mihomo artifact sources failed: " + "; ".join(errors[-3:]))
+
+
 def _download(source, target):
     if source.startswith("file://"):
         shutil.copyfile(source.removeprefix("file://"), target)
         return
-    with urllib.request.urlopen(source, timeout=30) as resp:
-        with target.open("wb") as fh:
-            shutil.copyfileobj(resp, fh)
+    try:
+        with urllib.request.urlopen(source, timeout=30) as resp:
+            with target.open("wb") as fh:
+                shutil.copyfileobj(resp, fh)
+    except (error.HTTPError, error.URLError, TimeoutError, socket.timeout) as exc:
+        raise _ApplyError("E_COMPONENT_SOURCE", "mihomo artifact download failed") from exc
 
 
 def _unpack_artifact(source, target, compression):

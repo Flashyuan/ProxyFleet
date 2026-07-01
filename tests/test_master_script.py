@@ -83,6 +83,15 @@ class MasterScriptTuiTests(unittest.TestCase):
 
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertIn("检测并更新 ProxyFleet Master", result.stdout)
+            self.assertIn("一键部署 Salt/Mihomo 固定组件镜像", result.stdout)
+
+    def test_master_script_exposes_asset_mirror_commands(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('ASSET_MIRROR_PORT="${ASSET_MIRROR_PORT:-48080}"', text)
+        self.assertIn("asset_mirror_deploy()", text)
+        self.assertIn("asset-mirror-deploy) asset_mirror_deploy", text)
+        self.assertIn("bootstrap-manifest.json", text)
 
     def test_no_tty_master_fallback_shows_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -203,6 +212,13 @@ class MasterScriptTuiTests(unittest.TestCase):
         self.assertIn("manual_switch_notify()", text)
         self.assertIn('manual_switch_notify "${selected_node_id}" "${selected_name}" "${target}"', text)
         self.assertIn("monitor notify-manual-switch", text)
+
+    def test_select_sync_defaults_to_tproxy_mode(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('local proxy_mode="tproxy"', text)
+        self.assertIn('--proxy-mode "${proxy_mode}"', text)
+        self.assertIn('"proxy_mode": "tproxy"', text)
 
     def test_monitor_exposes_candidate_validation_command(self):
         text = SCRIPT.read_text(encoding="utf-8")

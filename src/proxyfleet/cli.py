@@ -124,6 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--component-locks", default="component-locks.json", help="组件锁定清单")
     publish.add_argument("--port-policy", default=None, help="可选：Master managed 端口白名单文件")
     publish.add_argument("--port-policy-mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
+    publish.add_argument("--proxy-mode", default="tproxy", choices=["tproxy", "explicit-proxy"], help="Minion Mihomo 运行模式")
 
     sync = subparsers.add_parser("sync", help="通过 Salt 同步 release 并应用节点选择")
     sync.add_argument("release_dir", help="release 目录")
@@ -133,6 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--salt-bin", default="salt", help="salt 命令路径")
     sync.add_argument("--port-policy-enabled", action="store_true", help="同步时应用已发布的 managed 端口白名单")
     sync.add_argument("--port-policy-mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
+    sync.add_argument("--proxy-mode", default="tproxy", choices=["tproxy", "explicit-proxy"], help="Minion Mihomo 运行模式")
     sync.add_argument("--dry-run", action="store_true", help="只输出同步计划，不执行 Salt")
 
     apply_parser = subparsers.add_parser("apply", help="最少步骤：构建、可选选择、发布并同步")
@@ -151,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--salt-bin", default="salt", help="salt 命令路径")
     apply_parser.add_argument("--port-policy", default=None, help="可选：Master managed 端口白名单文件")
     apply_parser.add_argument("--port-policy-mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
+    apply_parser.add_argument("--proxy-mode", default="tproxy", choices=["tproxy", "explicit-proxy"], help="Minion Mihomo 运行模式")
     apply_parser.add_argument("--dry-run", action="store_true", help="只输出计划，不写 runtime/Salt、不执行 Salt")
 
     port_policy = subparsers.add_parser("port-policy", help="端口白名单分层配置")
@@ -472,6 +475,7 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.component_locks),
                 Path(args.port_policy) if args.port_policy else None,
                 args.port_policy_mode,
+                args.proxy_mode,
             )
         except FleetError as exc:
             print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
@@ -488,6 +492,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.target,
                 port_policy_enabled=args.port_policy_enabled,
                 port_policy_mode=args.port_policy_mode,
+                proxy_mode=args.proxy_mode,
             )
             if args.dry_run:
                 payload = {"dry_run": True, "plan": plan.to_dict()}
@@ -542,6 +547,7 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.component_locks),
                 Path(args.port_policy) if args.port_policy else None,
                 args.port_policy_mode,
+                args.proxy_mode,
             )
             sync_plan = build_sync_plan(
                 release_dir,
@@ -550,6 +556,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.target,
                 port_policy_enabled=args.port_policy is not None,
                 port_policy_mode=args.port_policy_mode,
+                proxy_mode=args.proxy_mode,
             )
             rc = run_salt_sync(sync_plan, args.salt_bin)
         except (ComponentLockError, ConfigBuildError) as exc:

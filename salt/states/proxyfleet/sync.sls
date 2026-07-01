@@ -76,6 +76,18 @@ proxyfleet-component-locks:
     - require:
       - file: proxyfleet-install-root
 
+proxyfleet-component-assets:
+  file.recurse:
+    - name: /etc/proxyfleet/assets
+    - source: salt://proxyfleet/assets
+    - user: root
+    - group: root
+    - dir_mode: '0750'
+    - file_mode: '0640'
+    - clean: false
+    - require:
+      - file: proxyfleet-install-root
+
 proxyfleet-managed-releases:
   file.recurse:
     - name: /etc/proxyfleet/managed/releases
@@ -109,6 +121,7 @@ proxyfleet-install-mihomo:
     - fail_on_error: true
     - require:
       - file: proxyfleet-component-locks
+      - file: proxyfleet-component-assets
 
 proxyfleet-apply-desired:
   module.run:
