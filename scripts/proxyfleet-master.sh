@@ -12,7 +12,7 @@ MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
 MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
 SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
 SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.3}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.4}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://raw.githubusercontent.com/Flashyuan/ProxyFleet/main/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
 MONITOR_POLICY_PATH="${MONITOR_POLICY_PATH:-${PROJECT_ROOT}/runtime/health-monitor-policy.json}"
@@ -139,16 +139,30 @@ asset_mirror_prepare() {
   local mihomo_dir="${public_root}/mihomo"
   install -d -m 0755 "${salt_dir}" "${mihomo_dir}"
 
+  echo "[1/4] 准备 Salt ${SALT_VERSION} apt 源..."
   install_salt_repo
   apt-get update
+  echo "[2/4] 下载 Salt ${SALT_VERSION} Minion 安装包和依赖到 ${salt_dir}..."
   rm -rf "${salt_dir:?}/"*
   install -d -m 0755 "${salt_dir}/partial"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --download-only \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --download-only --reinstall \
     -o "Dir::Cache::archives=${salt_dir}" \
     "salt-common=${SALT_VERSION}*" \
-    "salt-minion=${SALT_VERSION}*"
+    "salt-minion=${SALT_VERSION}*" \
+    debconf-utils || true
+  (
+    cd "${salt_dir}"
+    apt-get download \
+      "salt-common=${SALT_VERSION}*" \
+      "salt-minion=${SALT_VERSION}*" \
+      debconf-utils
+  )
   rm -rf "${salt_dir}/partial" "${salt_dir}/lock"
+  find "${salt_dir}" -maxdepth 1 -type f -name '*.deb' -print | sort
+  find "${salt_dir}" -maxdepth 1 -type f -name 'salt-common_*.deb' | grep -q . || die "Salt 镜像缺少 salt-common deb"
+  find "${salt_dir}" -maxdepth 1 -type f -name 'salt-minion_*.deb' | grep -q . || die "Salt 镜像缺少 salt-minion deb"
 
+  echo "[3/4] 下载 Mihomo 固定版本资产到 ${mihomo_dir}..."
   python3 - "${PROJECT_ROOT}/component-locks.json" "${mihomo_dir}" <<'PY'
 import gzip
 import hashlib
@@ -188,6 +202,7 @@ for component in locks.get("components", []):
         destination = target / filename(url, digest)
         if not destination.exists() or sha256(destination) != digest:
             parsed = urlparse(url)
+            print(f"download mihomo {arch}: {url}", file=sys.stderr, flush=True)
             if parsed.scheme == "file":
                 shutil.copyfile(Path(parsed.path), destination)
             elif parsed.scheme == "https":
@@ -195,6 +210,8 @@ for component in locks.get("components", []):
                     shutil.copyfileobj(response, fh)
             else:
                 raise SystemExit(f"unsupported mihomo url: {url}")
+        else:
+            print(f"reuse mihomo {arch}: {destination.name}", file=sys.stderr, flush=True)
         if sha256(destination) != digest:
             raise SystemExit(f"mihomo sha256 mismatch: {destination.name}")
         digest_path = target / digest
@@ -202,6 +219,7 @@ for component in locks.get("components", []):
             shutil.copyfile(destination, digest_path)
 PY
 
+  echo "[4/4] 生成 bootstrap-manifest.json..."
   cp -f "${PROJECT_ROOT}/component-locks.json" "${public_root}/component-locks.json"
   python3 - "${public_root}" "${SALT_VERSION}" <<'PY'
 import hashlib
