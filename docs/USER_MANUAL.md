@@ -263,6 +263,15 @@ q             退出
 sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id>'
 ```
 
+资源优化行为：
+
+- TUI 进入后先显示节点列表，优先测速当前选择、当前页和搜索结果；
+- 日常切换节点时只发布 changed desired 和必要元数据，不重复发布不变的 Mihomo
+  固定资产；
+- 所有 Minion 仍最终同步成同一个节点，但 Salt 会支持分批执行，降低 Master
+  瞬时 CPU、内存和输出压力；
+- 终端默认显示精简进度和结果，完整 Salt 输出写入日志文件，方便排障。
+
 ## 9. Master 命令速查
 
 ```text
@@ -355,10 +364,13 @@ TUI 入口：
 --health-cache PATH      测速缓存，默认 runtime/health.json
 --mihomo-api URL         Mihomo API，默认 http://127.0.0.1:9090
 --health-timeout-ms N    单节点测速超时，默认 2000
---health-concurrency N   测速并发，默认 16
+--health-concurrency N   测速并发，默认 8
 --port-policy PATH       Master managed 端口白名单，默认 config-src/port-policy.yaml
 --port-policy-mode MODE  merge/master-only/local-only/disabled
 --proxy-mode MODE        Mihomo 运行模式，默认 tproxy；可选 explicit-proxy
+--full-converge          完整发布 release、组件资产和 Salt module
+--batch 10|20%           Salt batch，默认 20%
+--log-dir PATH           完整 Salt 输出日志目录，默认 runtime/logs/salt
 ```
 
 普通使用不需要传 `--proxy-mode`。默认 `tproxy` 会让 Minion 上的命令行程序优先
@@ -463,6 +475,9 @@ offline-assets/
 把锁定版本的 `.gz` 包放到以上任一目录，或在 `component-locks.json` 的 artifact
 中配置 `local_path` / `mirror_urls`。同步时 Master 会发布到 Salt assets，Minion
 安装时仍按 SHA-256 校验后才使用。
+
+说明：这些资产主要服务于新 Minion、离线安装、组件升级和接管修复。日常切换
+默认不会重复发布不变的大文件；缺少安全基线时会提示执行 `--full-converge`。
 
 ## 12. 卸载
 

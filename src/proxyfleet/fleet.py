@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import socket
 import shutil
 import subprocess
@@ -104,6 +105,26 @@ class SyncPlan:
             "port_policy_enabled": self.port_policy_enabled,
             "port_policy_mode": self.port_policy_mode,
             "proxy_mode": self.proxy_mode,
+        }
+
+
+@dataclass(frozen=True)
+class SaltSyncResult:
+    returncode: int
+    log_path: Path | None
+    failed_minions: list[str]
+    error_summary: str
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "returncode": self.returncode,
+            "log_path": str(self.log_path) if self.log_path else None,
+            "failed_minions": self.failed_minions,
+            "error_summary": self.error_summary,
         }
 
 
@@ -252,6 +273,7 @@ def prepare_salt_publish(
     port_policy_path: Path | None = None,
     port_policy_mode: str = "merge",
     proxy_mode: str = "tproxy",
+    full_converge: bool = True,
 ) -> SyncPlan:
     """准备 Salt file_roots 中的 release 和 desired state。"""
 
@@ -268,25 +290,24 @@ def prepare_salt_publish(
     locks_target = salt_root / "proxyfleet" / "component-locks.json"
     assets_target = salt_root / "proxyfleet" / "assets"
     release_target.parent.mkdir(parents=True, exist_ok=True)
-    if release_target.exists():
-        shutil.rmtree(release_target)
-    shutil.copytree(release.release_dir, release_target)
-    _chmod_tree(release_target, dir_mode=0o755, file_mode=0o644)
+    if full_converge:
+        _copytree_if_changed(release.release_dir, release_target)
+    else:
+        _assert_lightweight_publish_ready(release.release_dir, release_target, component_locks_path, locks_target, assets_target)
     desired_target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(desired_path, desired_target)
-    desired_target.chmod(0o644)
-    if component_locks_path is not None:
+    _copyfile_if_changed(desired_path, desired_target, mode=0o644)
+    if full_converge and component_locks_path is not None:
         try:
-            shutil.copyfile(component_locks_path, locks_target)
-            locks_target.chmod(0o644)
-            _publish_component_assets(component_locks_path, assets_target)
+            _copyfile_if_changed(component_locks_path, locks_target, mode=0o644)
+            _publish_component_assets_if_changed(component_locks_path, assets_target)
         except OSError as exc:
             raise FleetError("E_COMPONENT_INTEGRITY_MISSING", f"组件锁定清单不可用: {component_locks_path}") from exc
+    elif not locks_target.exists():
+        raise FleetError("E_SYNC_NEEDS_FULL_CONVERGE", "Salt file_roots 缺少 component-locks.json，请先执行 --full-converge")
     if port_policy_path is not None:
         try:
             port_policy_target = salt_root / "proxyfleet" / "port-policy.yaml"
-            shutil.copyfile(port_policy_path, port_policy_target)
-            port_policy_target.chmod(0o644)
+            _copyfile_if_changed(port_policy_path, port_policy_target, mode=0o644)
         except OSError as exc:
             raise FleetError("E_CONFIG_VALIDATE", f"端口白名单不可用: {port_policy_path}") from exc
     return _sync_plan(
@@ -335,18 +356,30 @@ def build_sync_plan(
     )
 
 
-def run_salt_sync(plan: SyncPlan, salt_bin: str = "salt") -> int:
+def run_salt_sync_result(plan: SyncPlan, salt_bin: str = "salt", *, batch: str | None = None, log_dir: Path | None = None) -> SaltSyncResult:
     """调用 Salt state.apply，同步 release 并应用节点选择。"""
 
-    cmd = [
-        salt_bin,
+    _validate_batch(batch)
+    cmd = [salt_bin, "--state-output=terse", "--state-verbose=False", "--summary"]
+    if batch:
+        cmd.extend(["--batch", batch])
+    cmd.extend([
         plan.target,
         "state.apply",
         "proxyfleet.sync",
         f"pillar={json.dumps({'proxyfleet_operation_id': plan.operation_id, 'proxyfleet_release_root': str(plan.salt_release_dir.parent), 'proxyfleet_desired_path': str(plan.salt_desired_path), 'proxyfleet_component_locks_path': str(plan.salt_desired_path.parent / 'component-locks.json'), 'proxyfleet_port_policy_enabled': plan.port_policy_enabled, 'proxyfleet_port_policy_mode': plan.port_policy_mode, 'proxyfleet_proxy_mode': plan.proxy_mode}, separators=(',', ':'))}",
-    ]
-    completed = subprocess.run(cmd, check=False)
-    return int(completed.returncode)
+    ])
+    completed = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    stdout = completed.stdout if isinstance(getattr(completed, "stdout", None), str) else ""
+    stderr = completed.stderr if isinstance(getattr(completed, "stderr", None), str) else ""
+    output = stdout + (("\n" + stderr) if stderr else "")
+    log_path = _write_salt_log(plan, cmd, output, log_dir) if log_dir is not None else None
+    failed_minions, error_summary = _summarize_salt_output(output, int(completed.returncode))
+    return SaltSyncResult(int(completed.returncode), log_path, failed_minions, error_summary)
+
+
+def run_salt_sync(plan: SyncPlan, salt_bin: str = "salt", *, batch: str | None = None, log_dir: Path | None = None) -> int:
+    return run_salt_sync_result(plan, salt_bin, batch=batch, log_dir=log_dir).returncode
 
 
 class MihomoClient:
@@ -511,6 +544,51 @@ def _chmod_tree(root: Path, *, dir_mode: int, file_mode: int) -> None:
             path.chmod(file_mode)
 
 
+def _copyfile_if_changed(source: Path, target: Path, *, mode: int | None = None) -> bool:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and target.is_file() and _sha256_file(source) == _sha256_file(target):
+        if mode is not None:
+            target.chmod(mode)
+        return False
+    shutil.copy2(source, target)
+    if mode is not None:
+        target.chmod(mode)
+    return True
+
+
+def _copytree_if_changed(source: Path, target: Path) -> bool:
+    digest = _tree_digest(source)
+    marker = target.parent / f".{target.name}.sha256"
+    if target.exists() and marker.exists() and marker.read_text(encoding="utf-8").strip() == digest:
+        _chmod_tree(target, dir_mode=0o755, file_mode=0o644)
+        return False
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target)
+    _chmod_tree(target, dir_mode=0o755, file_mode=0o644)
+    marker.write_text(digest + "\n", encoding="utf-8")
+    return True
+
+
+def _tree_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(_sha256_file(path).encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _publish_component_assets(component_locks_path: Path, assets_target: Path) -> None:
     """把 Master 本地离线组件资产发布到 Salt file_roots，供 Minion 无外网安装。"""
 
@@ -556,6 +634,122 @@ def _publish_component_assets(component_locks_path: Path, assets_target: Path) -
             if isinstance(sha256, str) and len(sha256) == 64:
                 shutil.copy2(source, assets_target / sha256)
     _chmod_tree(assets_target, dir_mode=0o755, file_mode=0o644)
+
+
+def _publish_component_assets_if_changed(component_locks_path: Path, assets_target: Path) -> bool:
+    digest = _component_assets_digest(component_locks_path)
+    marker = assets_target.parent / ".assets.sha256"
+    if assets_target.exists() and marker.exists() and marker.read_text(encoding="utf-8").strip() == digest:
+        _chmod_tree(assets_target, dir_mode=0o755, file_mode=0o644)
+        return False
+    _publish_component_assets(component_locks_path, assets_target)
+    marker.write_text(digest + "\n", encoding="utf-8")
+    return True
+
+
+def _assert_lightweight_publish_ready(
+    release_source: Path,
+    release_target: Path,
+    component_locks_path: Path | None,
+    locks_target: Path,
+    assets_target: Path,
+) -> None:
+    """轻量发布前校验 Salt file_roots 已有完整、安全的组件基线。"""
+
+    if not release_target.exists():
+        raise FleetError("E_SYNC_NEEDS_FULL_CONVERGE", "Salt file_roots 缺少 release，请先执行 --full-converge")
+    try:
+        verify_release(release_target)
+    except ConfigBuildError as exc:
+        raise FleetError("E_SYNC_NEEDS_FULL_CONVERGE", "Salt file_roots release 校验失败，请先执行 --full-converge") from exc
+    if _tree_digest(release_source) != _tree_digest(release_target):
+        raise FleetError("E_SYNC_NEEDS_FULL_CONVERGE", "Salt file_roots release 与当前 release 不一致，请先执行 --full-converge")
+    if not locks_target.exists():
+        raise FleetError("E_SYNC_NEEDS_FULL_CONVERGE", "Salt file_roots 缺少 component-locks.json，请先执行 --full-converge")
+    if component_locks_path is not None and _sha256_file(component_locks_path) != _sha256_file(locks_target):
+        raise FleetError("E_SYNC_NEEDS_FULL_CONVERGE", "Salt file_roots component-locks.json 与当前组件锁不一致，请先执行 --full-converge")
+    if component_locks_path is not None:
+        marker = assets_target.parent / ".assets.sha256"
+        if not assets_target.exists() or not marker.exists() or marker.read_text(encoding="utf-8").strip() != _component_assets_digest(component_locks_path):
+            raise FleetError("E_SYNC_NEEDS_FULL_CONVERGE", "Salt file_roots 组件资产缺失或过期，请先执行 --full-converge")
+
+
+def _component_assets_digest(component_locks_path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(_sha256_file(component_locks_path).encode("ascii"))
+    root = component_locks_path.resolve().parent
+    try:
+        locks = _read_json(component_locks_path)
+    except FleetError:
+        return digest.hexdigest()
+    for component in locks.get("components", []):
+        artifacts = component.get("artifacts", {}) if isinstance(component, dict) else {}
+        if not isinstance(artifacts, dict):
+            continue
+        for artifact in artifacts.values():
+            if not isinstance(artifact, dict):
+                continue
+            local_path = artifact.get("local_path") or artifact.get("file")
+            if not isinstance(local_path, str) or not local_path:
+                continue
+            source = Path(local_path)
+            if not source.is_absolute():
+                source = root / source
+            if source.is_file():
+                digest.update(str(source).encode("utf-8"))
+                digest.update(_sha256_file(source).encode("ascii"))
+    return digest.hexdigest()
+
+
+def _validate_batch(batch: str | None) -> None:
+    if batch is None or batch == "":
+        return
+    raw = str(batch)
+    if raw.endswith("%"):
+        number = raw[:-1]
+        if number.isdigit() and 1 <= int(number) <= 100:
+            return
+    elif raw.isdigit() and int(raw) > 0:
+        return
+    raise FleetError("E_SCHEMA_UNSUPPORTED", "Salt batch 必须是正整数或 1..100%")
+
+
+def _write_salt_log(plan: SyncPlan, cmd: list[str], output: str, log_dir: Path) -> Path:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.chmod(0o700)
+    log_path = log_dir / f"{plan.operation_id}.salt.log"
+    payload = [
+        "# ProxyFleet Salt sync log",
+        "operation_id=" + plan.operation_id,
+        "target=" + plan.target,
+        "command=" + " ".join(_redact(item) for item in cmd),
+        "",
+        _redact(output),
+    ]
+    log_path.write_text("\n".join(payload), encoding="utf-8")
+    log_path.chmod(0o600)
+    return log_path
+
+
+def _summarize_salt_output(output: str, returncode: int) -> tuple[list[str], str]:
+    failed: list[str] = []
+    current_minion: str | None = None
+    summary: list[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not line.startswith((" ", "\t", "-", "{", "[", '"')) and stripped.endswith(":"):
+            current_minion = stripped[:-1]
+        lowered = stripped.lower()
+        if "result: false" in lowered or '"result": false' in lowered or "failed" in lowered or "error" in lowered or "e_" in lowered:
+            if current_minion and current_minion not in failed:
+                failed.append(current_minion)
+            if len(summary) < 5:
+                summary.append(_redact(stripped))
+    if returncode != 0 and not summary:
+        summary.append(f"salt exited with {returncode}")
+    return failed[:20], "; ".join(summary[:5])
 
 
 def _node_entry(provider_id: str, proxy: dict[str, Any]) -> NodeEntry:
@@ -692,9 +886,31 @@ def _now_utc() -> str:
 
 def _redact(message: str) -> str:
     redacted = str(message)
-    for marker in ("secret=", "password=", "uuid=", "token=", "url="):
-        if marker in redacted.lower():
+    lowered = redacted.lower()
+    if re.search(r'["\']?(password|passwd|secret|api_secret|token|uuid)["\']?\s*[:=]\s*["\']?[^"\'\s,;}]+', lowered):
+        return "redacted"
+    for marker in (
+        "secret=",
+        "password=",
+        "passwd=",
+        "uuid=",
+        "token=",
+        "url=",
+        "http://",
+        "https://",
+        "vmess://",
+        "vless://",
+        "trojan://",
+        "ss://",
+        "ssr://",
+        "hysteria2://",
+        "tuic://",
+        "socks5://",
+    ):
+        if marker in lowered:
             return "redacted"
+    if re.search(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", lowered):
+        return "redacted"
     return redacted
 
 

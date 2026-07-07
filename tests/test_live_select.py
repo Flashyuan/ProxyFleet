@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from proxyfleet.fleet import FleetError
-from proxyfleet.live_select import LiveNode, LiveSelectModel, _current_selection_summary, load_catalog
+from proxyfleet.live_select import DEFAULT_CONCURRENCY, MAX_CONCURRENCY, LiveNode, LiveSelectModel, _LiveSelectRunner, _current_selection_summary, load_catalog
 from proxyfleet.cli import main
 
 
@@ -118,6 +118,103 @@ class LiveSelectModelTests(unittest.TestCase):
         self.assertNotIn('read -r -p "请输入要同步到所有 Minion 的节点序号', script)
         self.assertIn("config-src/port-policy.yaml", script)
 
+    def test_default_concurrency_is_resource_bounded(self):
+        self.assertLessEqual(DEFAULT_CONCURRENCY, 8)
+        self.assertLessEqual(MAX_CONCURRENCY, 8)
+        runner = _LiveSelectRunner(
+            LiveSelectModel(self._nodes()),
+            object(),
+            300,
+            64,
+            "https://www.gstatic.com/generate_204",
+            current_selection="当前选择：无",
+            release_label="1",
+            target_label="*",
+            port_policy_status="端口白名单：未配置",
+        )
+
+        self.assertLessEqual(runner.concurrency, MAX_CONCURRENCY)
+        self.assertEqual(len(self._nodes()), runner.concurrency)
+
+    def test_initial_probe_order_prioritizes_selected_then_viewport_then_background(self):
+        nodes = [
+            LiveNode(1, "node-a", "Alpha"),
+            LiveNode(2, "node-b", "Beta", selected=True),
+            LiveNode(3, "node-c", "Gamma"),
+            LiveNode(4, "node-d", "Delta"),
+        ]
+        runner = _LiveSelectRunner(
+            LiveSelectModel(nodes),
+            object(),
+            300,
+            2,
+            "https://www.gstatic.com/generate_204",
+            current_selection="当前选择：Beta",
+            release_label="1",
+            target_label="*",
+            port_policy_status="端口白名单：未配置",
+        )
+
+        runner._reset_nodes_for_probe(current_page_first=False, viewport_height=2)
+        runner._enqueue_initial_probe_order(viewport_height=2)
+        ordered = [runner.tasks.get_nowait()[3].node_id for _ in range(4)]
+
+        self.assertEqual("node-b", ordered[0])
+        self.assertEqual("node-a", ordered[1])
+        self.assertEqual("node-c", ordered[2])
+        self.assertEqual("node-d", ordered[3])
+
+    def test_fresh_cache_nodes_are_not_immediately_reprobed_on_entry(self):
+        nodes = [
+            LiveNode(1, "node-a", "Alpha", "ok", 12, freshness="fresh"),
+            LiveNode(2, "node-b", "Beta"),
+        ]
+        runner = _LiveSelectRunner(
+            LiveSelectModel(nodes),
+            object(),
+            300,
+            2,
+            "https://www.gstatic.com/generate_204",
+            current_selection="当前选择：无",
+            release_label="1",
+            target_label="*",
+            port_policy_status="端口白名单：未配置",
+        )
+
+        runner._reset_nodes_for_probe(current_page_first=False, viewport_height=1)
+        runner._enqueue_initial_probe_order(viewport_height=1)
+        queued = []
+        while not runner.tasks.empty():
+            queued.append(runner.tasks.get_nowait()[3].node_id)
+
+        self.assertIn("node-a", runner.completed)
+        self.assertEqual(1, runner.counts["ok"])
+        self.assertNotIn("node-a", queued)
+
+    def test_refresh_requeues_current_page_even_when_cached(self):
+        nodes = [
+            LiveNode(1, "node-a", "Alpha", "ok", 12, freshness="fresh"),
+            LiveNode(2, "node-b", "Beta", "ok", 15, freshness="fresh"),
+            LiveNode(3, "node-c", "Gamma", "ok", 20, freshness="fresh"),
+        ]
+        runner = _LiveSelectRunner(
+            LiveSelectModel(nodes),
+            object(),
+            300,
+            2,
+            "https://www.gstatic.com/generate_204",
+            current_selection="当前选择：无",
+            release_label="1",
+            target_label="*",
+            port_policy_status="端口白名单：未配置",
+        )
+
+        runner._reset_nodes_for_probe(current_page_first=True, viewport_height=2)
+        runner._enqueue_initial_probe_order(viewport_height=2)
+        queued = [runner.tasks.get_nowait()[3].node_id for _ in range(2)]
+
+        self.assertEqual(["node-a", "node-b"], queued)
+
 
 class LiveSelectPtyTests(unittest.TestCase):
     def _catalog(self, tmp: str, count: int = 20) -> Path:
@@ -186,6 +283,14 @@ class LiveSelectPtyTests(unittest.TestCase):
     def test_tui_enter_selects_highlighted_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             status, output = self._run_pty(self._catalog(tmp), b"\n")
+
+        self.assertTrue(os.WIFEXITED(status), output)
+        self.assertEqual(0, os.WEXITSTATUS(status), output)
+        self.assertIn("1\tnode-1\tNode 01", output)
+
+    def test_tui_180_nodes_can_select_without_waiting_for_full_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status, output = self._run_pty(self._catalog(tmp, count=180), b"\n")
 
         self.assertTrue(os.WIFEXITED(status), output)
         self.assertEqual(0, os.WEXITSTATUS(status), output)

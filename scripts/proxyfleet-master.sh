@@ -12,7 +12,7 @@ MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
 MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
 SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
 SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.5}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.6}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://raw.githubusercontent.com/Flashyuan/ProxyFleet/main/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
 MONITOR_POLICY_PATH="${MONITOR_POLICY_PATH:-${PROJECT_ROOT}/runtime/health-monitor-policy.json}"
@@ -130,6 +130,53 @@ sync_assets() {
   echo "ProxyFleet Salt assets 已同步到 ${SALT_STATES_ROOT}"
 }
 
+file_sha256() {
+  sha256sum "$1" | awk '{print $1}'
+}
+
+salt_remote_module_hash_matches() {
+  local expected_hash="$1"
+  local target="$2"
+  local batch="$3"
+  local output
+  output="$(mktemp)"
+  local cmd=(salt)
+  if [[ -n "${batch}" ]]; then
+    cmd+=(--batch "${batch}")
+  fi
+  cmd+=("${target}" proxyfleet_mihomo.module_sha256 --out=json --static)
+  if ! "${cmd[@]}" >"${output}" 2>/dev/null; then
+    rm -f "${output}"
+    return 1
+  fi
+  python3 - "${output}" "${expected_hash}" <<'PY'
+import json
+import sys
+
+path, expected = sys.argv[1], sys.argv[2]
+try:
+    data = json.loads(open(path, encoding="utf-8").read())
+except Exception:
+    sys.exit(1)
+if not isinstance(data, dict) or not data:
+    sys.exit(1)
+for value in data.values():
+    if not isinstance(value, dict) or value.get("sha256") != expected:
+        sys.exit(1)
+sys.exit(0)
+PY
+  local rc=$?
+  rm -f "${output}"
+  return "${rc}"
+}
+
+salt_assets_missing() {
+  [[ -f "${SALT_STATES_ROOT}/_modules/proxyfleet_mihomo.py" ]] || return 0
+  [[ -f "${SALT_STATES_ROOT}/proxyfleet/sync.sls" ]] || return 0
+  [[ -d "${SALT_STATES_ROOT}/proxyfleet" ]] || return 0
+  return 1
+}
+
 asset_mirror_prepare() {
   need_root
   check_os
@@ -168,6 +215,7 @@ import gzip
 import hashlib
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -189,6 +237,63 @@ def filename(url, digest):
     name = Path(parsed.path).name if parsed.path else ""
     return name or f"{digest}.gz"
 
+def candidate_urls(artifact):
+    urls = []
+    for key in ("mirror_urls", "mirrors"):
+        values = artifact.get(key, [])
+        if isinstance(values, list):
+            for value in values:
+                if isinstance(value, str):
+                    urls.append(value)
+                elif isinstance(value, dict) and isinstance(value.get("url"), str):
+                    urls.append(value["url"])
+    url = artifact.get("url")
+    if isinstance(url, str):
+        urls.append(url)
+    deduped = []
+    seen = set()
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            deduped.append(url)
+    return deduped
+
+def download_url(url, destination):
+    parsed = urlparse(url)
+    if parsed.scheme == "file":
+        shutil.copyfile(Path(parsed.path), destination)
+        return
+    if parsed.scheme != "https":
+        raise RuntimeError(f"unsupported mihomo url: {url}")
+    tmp = destination.with_suffix(destination.suffix + ".download")
+    tmp.unlink(missing_ok=True)
+    curl = shutil.which("curl")
+    if curl:
+        subprocess.run(
+            [
+                curl,
+                "-fL",
+                "--connect-timeout",
+                "15",
+                "--max-time",
+                "240",
+                "--retry",
+                "2",
+                "--retry-delay",
+                "2",
+                "--progress-bar",
+                "-o",
+                str(tmp),
+                url,
+            ],
+            check=True,
+        )
+        tmp.replace(destination)
+        return
+    with urlopen(url, timeout=60) as response, tmp.open("wb") as fh:
+        shutil.copyfileobj(response, fh)
+    tmp.replace(destination)
+
 for component in locks.get("components", []):
     if component.get("name") != "mihomo":
         continue
@@ -196,20 +301,25 @@ for component in locks.get("components", []):
         if not isinstance(artifact, dict):
             continue
         digest = artifact.get("sha256")
-        url = artifact.get("url")
-        if not isinstance(digest, str) or len(digest) != 64 or not isinstance(url, str):
+        urls = candidate_urls(artifact)
+        if not isinstance(digest, str) or len(digest) != 64 or not urls:
             raise SystemExit(f"mihomo artifact invalid: {arch}")
-        destination = target / filename(url, digest)
+        destination = target / filename(urls[-1], digest)
         if not destination.exists() or sha256(destination) != digest:
-            parsed = urlparse(url)
-            print(f"download mihomo {arch}: {url}", file=sys.stderr, flush=True)
-            if parsed.scheme == "file":
-                shutil.copyfile(Path(parsed.path), destination)
-            elif parsed.scheme == "https":
-                with urlopen(url, timeout=60) as response, destination.open("wb") as fh:
-                    shutil.copyfileobj(response, fh)
+            errors = []
+            for index, url in enumerate(urls, start=1):
+                print(f"download mihomo {arch} [{index}/{len(urls)}]: {url}", file=sys.stderr, flush=True)
+                try:
+                    download_url(url, destination)
+                    if sha256(destination) == digest:
+                        break
+                    errors.append(f"{url}: sha256 mismatch")
+                    destination.unlink(missing_ok=True)
+                except Exception as exc:
+                    errors.append(f"{url}: {type(exc).__name__}")
+                    destination.unlink(missing_ok=True)
             else:
-                raise SystemExit(f"unsupported mihomo url: {url}")
+                raise SystemExit(f"mihomo download failed: {arch}: {'; '.join(errors[-3:])}")
         else:
             print(f"reuse mihomo {arch}: {destination.name}", file=sys.stderr, flush=True)
         if sha256(destination) != digest:
@@ -1225,7 +1335,10 @@ select_sync() {
   local use_health_cache="true"
   local mihomo_api="http://127.0.0.1:9090"
   local health_timeout_ms="2000"
-  local health_concurrency="16"
+  local health_concurrency="8"
+  local full_converge="false"
+  local batch="20%"
+  local log_dir="${PROJECT_ROOT}/runtime/logs/salt"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1244,6 +1357,9 @@ select_sync() {
       --port-policy) port_policy="$2"; port_policy_explicit="true"; shift 2 ;;
       --port-policy-mode) port_policy_mode="$2"; shift 2 ;;
       --proxy-mode) proxy_mode="$2"; shift 2 ;;
+      --full-converge) full_converge="true"; shift ;;
+      --batch) batch="$2"; shift 2 ;;
+      --log-dir) log_dir="$2"; shift 2 ;;
       *) die "未知 select-sync 参数：$1" ;;
     esac
   done
@@ -1322,13 +1438,34 @@ select_sync() {
     --port-policy-mode "${port_policy_mode}"
     --proxy-mode "${proxy_mode}"
   )
+  if [[ "${full_converge}" != "true" ]]; then
+    publish_args+=(--lightweight)
+  fi
   if [[ -n "${port_policy}" ]]; then
     publish_args+=(--port-policy "${port_policy}")
   fi
   proxyfleet_python "${publish_args[@]}" >/dev/null
 
-  sync_assets
-  salt "${target}" saltutil.sync_modules
+  local source_module="${PROJECT_ROOT}/salt/modules/proxyfleet_mihomo.py"
+  local expected_module_hash
+  expected_module_hash="$(file_sha256 "${source_module}")"
+  local sync_modules_required="true"
+  if [[ "${full_converge}" != "true" ]] && salt_remote_module_hash_matches "${expected_module_hash}" "${target}" "${batch}"; then
+    sync_modules_required="false"
+  fi
+  if [[ "${full_converge}" == "true" || "${sync_modules_required}" == "true" ]] || salt_assets_missing; then
+    sync_assets
+  fi
+  if [[ "${full_converge}" == "true" || "${sync_modules_required}" == "true" ]]; then
+    echo "同步 Salt execution module..."
+    if [[ -n "${batch}" ]]; then
+      salt --batch "${batch}" "${target}" saltutil.sync_modules >/dev/null
+    else
+      salt "${target}" saltutil.sync_modules >/dev/null
+    fi
+  else
+    echo "远端 Salt module hash 已验证一致，跳过 saltutil.sync_modules"
+  fi
 
   local sync_args=(
     sync
@@ -1339,6 +1476,8 @@ select_sync() {
     --salt-bin salt
     --port-policy-mode "${port_policy_mode}"
     --proxy-mode "${proxy_mode}"
+    --batch "${batch}"
+    --log-dir "${log_dir}"
   )
   if [[ -n "${port_policy}" ]]; then
     sync_args+=(--port-policy-enabled)
@@ -1426,8 +1565,11 @@ select-sync 常用参数：
   --live-health            兼容别名：行为与默认入口一致
   --mihomo-api URL         默认 http://127.0.0.1:9090
   --health-timeout-ms N    默认 2000
-  --health-concurrency N   默认 16
+  --health-concurrency N   默认 8
   --port-policy PATH       可选：同步 Master managed 端口白名单；默认检测 config-src/port-policy.yaml
+  --full-converge          完整发布 release、组件资产和 Salt module
+  --batch 10|20%           Salt batch，默认 20%
+  --log-dir PATH           完整 Salt 输出日志目录
   --refresh-health         deprecated：进入 TUI 前先刷新测速缓存
   --no-health-cache        deprecated：不读取测速缓存，只显示 unknown
 

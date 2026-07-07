@@ -15,6 +15,8 @@ from .fleet import FleetError, MihomoClient
 
 
 DEFAULT_TEST_URL = "https://www.gstatic.com/generate_204"
+DEFAULT_CONCURRENCY = 8
+MAX_CONCURRENCY = 8
 _QUIT = object()
 
 
@@ -30,6 +32,7 @@ class LiveNode:
     last_error_code: str | None = None
     provider_id: str = ""
     selected: bool = False
+    freshness: str = "unknown"
 
     @classmethod
     def from_catalog_item(cls, index: int, item: dict[str, Any]) -> "LiveNode":
@@ -42,7 +45,13 @@ class LiveNode:
             last_error_code=item.get("last_error_code") if isinstance(item.get("last_error_code"), str) else None,
             provider_id=str(item.get("provider_id") or ""),
             selected=bool(item.get("selected") is True),
+            freshness=str(item.get("freshness") or "unknown"),
         )
+
+    def has_fresh_health(self) -> bool:
+        """fresh 缓存不在进入 TUI 时立刻重复探测，包含成功和失败状态。"""
+
+        return self.freshness == "fresh" and self.health_status in {"ok", "timeout", "failed"}
 
     def status_text(self) -> str:
         delay = f"{self.last_delay_ms}ms" if isinstance(self.last_delay_ms, int) else "-"
@@ -134,7 +143,7 @@ def run_live_select(
     mihomo_api: str,
     mihomo_secret: str | None = None,
     timeout_ms: int = 2000,
-    concurrency: int = 16,
+    concurrency: int = DEFAULT_CONCURRENCY,
     test_url: str = DEFAULT_TEST_URL,
     desired_path: Path | None = None,
     release_label: str = "-",
@@ -155,7 +164,7 @@ def run_live_select(
         model,
         client,
         timeout_ms,
-        concurrency,
+        min(concurrency, MAX_CONCURRENCY),
         test_url,
         current_selection=current_selection,
         release_label=release_label,
@@ -182,46 +191,99 @@ class _LiveSelectRunner:
         self.model = model
         self.client = client
         self.timeout_ms = timeout_ms
-        self.concurrency = min(concurrency, len(model.nodes))
+        self.concurrency = min(max(1, concurrency), MAX_CONCURRENCY, len(model.nodes))
         self.test_url = test_url
         self.current_selection = current_selection
         self.release_label = release_label
         self.target_label = target_label
         self.port_policy_status = port_policy_status
         self.updates: queue.Queue[tuple[str, str, int | None, str | None]] = queue.Queue()
-        self.tasks: queue.Queue[LiveNode] = queue.Queue()
+        self.tasks: queue.PriorityQueue[tuple[int, int, str, LiveNode]] = queue.PriorityQueue()
         self.stop_event = threading.Event()
         self.started = time.monotonic()
         self.counts = {"ok": 0, "timeout": 0, "failed": 0}
         self.completed: set[str] = set()
+        self.inflight: set[str] = set()
+        self.scheduled_priority: dict[str, int] = {}
+        self.sequence = 0
         self.search_mode = False
 
     def run(self) -> LiveNode | None:
-        self._start_probe_round()
         return curses.wrapper(self._main)
 
-    def _start_probe_round(self) -> None:
+    def _start_probe_round(self, viewport_height: int, *, current_page_first: bool = False) -> None:
         self.stop_event.set()
         self.stop_event = threading.Event()
-        self.tasks = queue.Queue()
+        self.tasks = queue.PriorityQueue()
         self.updates = queue.Queue()
         self.completed = set()
+        self.inflight = set()
+        self.scheduled_priority = {}
+        self.sequence = 0
         self.counts = {"ok": 0, "timeout": 0, "failed": 0}
         self.started = time.monotonic()
+        self._reset_nodes_for_probe(current_page_first=current_page_first, viewport_height=viewport_height)
+        self._enqueue_initial_probe_order(viewport_height)
+        round_stop_event = self.stop_event
+        for _ in range(self.concurrency):
+            threading.Thread(target=self._worker, args=(round_stop_event,), daemon=True).start()
+
+    def _reset_nodes_for_probe(self, *, current_page_first: bool, viewport_height: int) -> None:
+        page_ids = {node.node_id for node in self.model.page(viewport_height)} if current_page_first else set()
         for node in self.model.nodes:
+            if node.has_fresh_health() and node.node_id not in page_ids:
+                self.completed.add(node.node_id)
+                self.counts[node.health_status if node.health_status in self.counts else "failed"] += 1
+                continue
             node.health_status = "pending"
             node.last_delay_ms = None
             node.last_error_code = None
-            self.tasks.put(node)
-        for _ in range(max(1, self.concurrency)):
-            threading.Thread(target=self._worker, daemon=True).start()
+            node.freshness = "unknown"
 
-    def _worker(self) -> None:
-        while not self.stop_event.is_set():
+    def _enqueue_initial_probe_order(self, viewport_height: int) -> None:
+        page = self.model.page(viewport_height)
+        visible = self.model.visible_nodes()
+        selected = [node for node in self.model.nodes if node.selected]
+        self._enqueue_nodes(selected, priority=0)
+        self._enqueue_nodes(page, priority=1)
+        self._enqueue_nodes(visible, priority=2)
+        self._enqueue_nodes(self.model.nodes, priority=5)
+
+    def _enqueue_current_page(self, viewport_height: int, *, force: bool = False) -> None:
+        if force:
+            for node in self.model.page(viewport_height):
+                self.completed.discard(node.node_id)
+                node.health_status = "pending"
+                node.last_delay_ms = None
+                node.last_error_code = None
+                node.freshness = "unknown"
+        self._enqueue_nodes(self.model.page(viewport_height), priority=0, force=force)
+
+    def _enqueue_nodes(self, nodes: list[LiveNode], *, priority: int, force: bool = False) -> None:
+        for node in nodes:
+            if not force and (node.node_id in self.completed or node.node_id in self.inflight):
+                continue
+            previous = self.scheduled_priority.get(node.node_id)
+            if not force and previous is not None and previous <= priority:
+                continue
+            self.scheduled_priority[node.node_id] = priority
+            self.sequence += 1
+            self.tasks.put((priority, self.sequence, node.node_id, node))
+
+    def _worker(self, stop_event: threading.Event) -> None:
+        while not stop_event.is_set():
             try:
-                node = self.tasks.get_nowait()
+                priority, _, node_id, node = self.tasks.get_nowait()
             except queue.Empty:
                 return
+            if self.scheduled_priority.get(node_id) != priority:
+                self.tasks.task_done()
+                continue
+            if node.node_id in self.completed or node.node_id in self.inflight:
+                self.tasks.task_done()
+                continue
+            self.inflight.add(node.node_id)
+            self.scheduled_priority.pop(node.node_id, None)
             try:
                 health = self.client.health_check(node.mihomo_name, self.test_url, self.timeout_ms)
                 self.updates.put((node.node_id, "ok", int(health["last_delay_ms"]), None))
@@ -229,6 +291,7 @@ class _LiveSelectRunner:
                 status = "timeout" if exc.error_code == "E_HEALTHCHECK_TIMEOUT" else "failed"
                 self.updates.put((node.node_id, status, None, exc.error_code))
             finally:
+                self.inflight.discard(node.node_id)
                 self.tasks.task_done()
 
     def _main(self, screen) -> LiveNode | None:
@@ -237,6 +300,8 @@ class _LiveSelectRunner:
         screen.keypad(True)
         selected: LiveNode | None = None
         try:
+            self._draw(screen)
+            self._start_probe_round(max(1, screen.getmaxyx()[0] - 7))
             while selected is None:
                 self._drain_updates()
                 self._draw(screen)
@@ -314,29 +379,36 @@ class _LiveSelectRunner:
                 self.search_mode = False
             elif key in (curses.KEY_BACKSPACE, 127, 8):
                 self.model.set_search(self.model.search[:-1], viewport_height)
+                self._enqueue_current_page(viewport_height)
             elif key in (10, 13):
                 self.search_mode = False
             elif 32 <= key <= 126:
                 self.model.set_search(self.model.search + chr(key), viewport_height)
+                self._enqueue_current_page(viewport_height)
             return None
 
         if key in (ord("q"), 27):
             return _QUIT
         if key in (curses.KEY_DOWN, ord("j")):
             self.model.move(1, viewport_height)
+            self._enqueue_current_page(viewport_height)
         elif key in (curses.KEY_UP, ord("k")):
             self.model.move(-1, viewport_height)
+            self._enqueue_current_page(viewport_height)
         elif key == curses.KEY_NPAGE:
             self.model.move(viewport_height, viewport_height)
+            self._enqueue_current_page(viewport_height)
         elif key == curses.KEY_PPAGE:
             self.model.move(-viewport_height, viewport_height)
+            self._enqueue_current_page(viewport_height)
         elif key in (10, 13):
             return self.model.current()
         elif key == ord("/"):
             self.search_mode = True
             self.model.set_search("", viewport_height)
+            self._enqueue_current_page(viewport_height)
         elif key == ord("r"):
-            self._start_probe_round()
+            self._start_probe_round(viewport_height, current_page_first=True)
         elif key == ord("s"):
             self.model.sort_by_delay = True
             self.model.cursor = 0

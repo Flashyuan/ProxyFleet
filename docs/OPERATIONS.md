@@ -255,14 +255,30 @@ sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id>'
 --health-cache PATH      测速缓存，默认 runtime/health.json
 --mihomo-api URL         Mihomo API，默认 http://127.0.0.1:9090
 --health-timeout-ms N    单节点测速超时，默认 2000
---health-concurrency N   测速并发，默认 16
+--health-concurrency N   测速并发，默认 8
 --port-policy PATH       Master managed 端口白名单，默认 config-src/port-policy.yaml
 --port-policy-mode MODE  merge/master-only/local-only/disabled
 --proxy-mode MODE        Mihomo 运行模式，默认 tproxy；可选 explicit-proxy
+--full-converge          完整发布 release、组件资产和 Salt module
+--batch 10|20%           Salt batch，默认 20%
+--log-dir PATH           完整 Salt 输出日志目录，默认 runtime/logs/salt
 ```
 
 默认 `tproxy` 会把透明代理运行参数写入新构建的 release，并在同步切换时作为
 Salt plan 记录。只有排障时建议临时切到 `explicit-proxy`。
+
+资源占用优化行为：
+
+- TUI 先显示节点列表，再按当前选择、当前页和搜索结果优先后台测速；
+- 默认测速并发为 8，避免进入 TUI 时压高 Master 本机 Mihomo；
+- 日常切换默认走轻量发布：Salt file_roots 已有完整安全基线时只更新 desired；
+- 如果 Salt file_roots 缺 release、组件锁、组件资产 marker 或 hash 不一致，会
+  fail-closed 并提示使用 `--full-converge`；
+- 所有 Minion 仍最终同步成同一个节点，但默认使用 Salt batch 分批执行；
+- Salt 输出默认精简，完整输出写入 `--log-dir`，日志目录权限为 `0700`，文件为
+  `0600`，并做敏感信息脱敏；
+- 仅当远端 Minion 回报的 `proxyfleet_mihomo` module SHA-256 与 Master 当前模块
+  一致时，才跳过 `saltutil.sync_modules`；旧模块或不一致会自动同步。
 
 废弃但兼容的参数：
 
@@ -366,6 +382,11 @@ Master 会在 `publish-salt` 时把 `component-locks.json` 同目录下的
 中的离线包，再尝试 artifact 的 `mirror_urls`，最后才访问原始 `url`。
 
 所有来源都必须匹配 `component-locks.json` 中对应架构的 SHA-256。
+
+设计说明：组件资产发布最初用于保证新 Minion 第一次同步时即使没有外网，也能
+安装固定版本 Mihomo。日常切换节点通常只改变 `desired.yaml`，当前版本默认避免
+每次 `select-sync` 都重新发布不变的 Mihomo 离线包。完整资产发布保留给新 Minion、
+组件版本变化、接管修复、漂移恢复和显式 `--full-converge` 场景。
 
 ## 9.2 接管已有 ShellCrash/Mihomo
 

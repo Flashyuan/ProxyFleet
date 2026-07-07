@@ -40,6 +40,18 @@ def __virtual__():
     return "proxyfleet_mihomo"
 
 
+def module_sha256():
+    """回报当前 Minion 已加载执行模块的 SHA-256，供 Master 安全判断是否需要 sync_modules。"""
+
+    path = Path(__file__).resolve()
+    return {
+        "schema_version": "1.0",
+        "module": "proxyfleet_mihomo",
+        "path": str(path),
+        "sha256": _sha256(path),
+    }
+
+
 def install_mihomo(
     component_locks_path="/etc/proxyfleet/component-locks.json",
     binary_path="/usr/local/bin/mihomo",
