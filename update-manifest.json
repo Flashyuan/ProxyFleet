@@ -4,139 +4,147 @@
       "mode": "0700",
       "path": "scripts/proxyfleet-master.sh",
       "role": "master",
-      "sha256": "de452ca0c99593b94c12be5dbb9f3a472c7ca56c5818523d41ac557a663c1295",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/scripts/proxyfleet-master.sh"
+      "sha256": "3256cdcbdf9a4d4ce2531990040549304dbb870fdd8fa6b00e13c37e797efc79",
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/scripts/proxyfleet-master.sh"
     },
     {
       "mode": "0700",
       "path": "scripts/proxyfleet-minion.sh",
       "role": "common",
       "sha256": "df609d9bb2cd29edaacd166942ac91e2100b1fe774cd929438f462855ebf9ce3",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/scripts/proxyfleet-minion.sh"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/scripts/proxyfleet-minion.sh"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/__init__.py",
       "role": "master",
       "sha256": "0deaae841e6df0b85e7e95696d3cb9a22333244540a22ab6799f37193fe2346b",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/src/proxyfleet/__init__.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/src/proxyfleet/__init__.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/cli.py",
       "role": "master",
-      "sha256": "3932a079d5d29c5d699802f3709325820f5ebd925172933974a842f821ae71f2",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/src/proxyfleet/cli.py"
+      "sha256": "907285c228bff404381c8f69572a0cebe388de11cec94bc8fe2e8cad4db8cb02",
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/src/proxyfleet/cli.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/component_locks.py",
       "role": "master",
       "sha256": "c9c8bc197b734c59b0f96deb6b9a63d73c373e67d68b528835d792c4d03a3d32",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/src/proxyfleet/component_locks.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/src/proxyfleet/component_locks.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/config_build.py",
       "role": "master",
       "sha256": "1e1fe63a51b96bb7b9670731ad7689da08b3807e709fe9bfc96a229dd214f553",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/src/proxyfleet/config_build.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/src/proxyfleet/config_build.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/fleet.py",
       "role": "master",
-      "sha256": "4b4d018f1e2f3dc3a78b9faee890dced577fcda98e7b86dde5ddb0dbf608dd01",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/src/proxyfleet/fleet.py"
+      "sha256": "4ae6d37c6ac6529536b34b875a29a8521381e399c3d8d6e13005566ac7523d62",
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/src/proxyfleet/fleet.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/health_monitor.py",
       "role": "master",
       "sha256": "d1ff81d7ea947d86f523bbd36b61b080933f4c8e483895d832e8b6385a90b13e",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/src/proxyfleet/health_monitor.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/src/proxyfleet/health_monitor.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/live_select.py",
       "role": "master",
-      "sha256": "181b2430f0520bad6cb5cc5a2583f8a65d98ca64c869944a0e15fb87305bef6a",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/src/proxyfleet/live_select.py"
+      "sha256": "7c036aa92c28b45ef7b71a0290cd573f9453377749dfa5534d3702773d9e71ab",
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/src/proxyfleet/live_select.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/port_policy.py",
       "role": "master",
       "sha256": "00bdf8cfef882346f973b5d8fca37bbe0e281deed20740e36544493c30ac0dfa",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/src/proxyfleet/port_policy.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/src/proxyfleet/port_policy.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/self_update.py",
       "role": "master",
       "sha256": "c6f6b352108f06ebcac793334d95241ab9026893a127a6067ef1f9e3829e9457",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/src/proxyfleet/self_update.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/src/proxyfleet/self_update.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/subscription.py",
       "role": "master",
       "sha256": "b420fdf2e360e75ab6e502bbafc4cc6e1e5b75671ed77aeafe852987fab3279b",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/src/proxyfleet/subscription.py"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/src/proxyfleet/subscription.py"
     },
     {
       "mode": "0600",
       "path": "salt/modules/proxyfleet_mihomo.py",
       "role": "master",
-      "sha256": "6d5a7a60b74b25be4f91a1b844c97504c8a2ba45be52a2992d5baeee4f08e8c7",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/salt/modules/proxyfleet_mihomo.py"
+      "sha256": "e6b540dbff652c497088f5f549dca42ee21f4c888cb0ec30b1c025b7c7667782",
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/salt/modules/proxyfleet_mihomo.py"
     },
     {
       "mode": "0600",
       "path": "salt/states/proxyfleet/sync.sls",
       "role": "master",
       "sha256": "9700240d9c9d0a0b1710d8d0905c0d770757f276eccd1b1bf6ec6f4a3eaa5fcf",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/salt/states/proxyfleet/sync.sls"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/salt/states/proxyfleet/sync.sls"
     },
     {
       "mode": "0600",
       "path": "docs/INSTALL_MASTER.md",
       "role": "master",
-      "sha256": "664f9f195bea9f682358b3f68533d5bdcbaa80284fc38ff747bebe491506eb83",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/docs/INSTALL_MASTER.md"
+      "sha256": "a68410d42f6491b372ed939f656c1dd346ebfacc44e099429d2c4a8f579fb095",
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/docs/INSTALL_MASTER.md"
     },
     {
       "mode": "0600",
       "path": "docs/INSTALL_MINION.md",
       "role": "master",
       "sha256": "77e148cdab95e18cd89d23108b293fb50933747ea12a0ea158efaca8cb26a651",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/docs/INSTALL_MINION.md"
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/docs/INSTALL_MINION.md"
+    },
+    {
+      "mode": "0600",
+      "path": "docs/MASTER_TUI_GUIDE.md",
+      "role": "master",
+      "sha256": "02c3fda48e9dc1e0a99ce0105ac5b179b6ae352ae57838da93e4466e97e7f56c",
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/docs/MASTER_TUI_GUIDE.md"
     },
     {
       "mode": "0600",
       "path": "docs/OPERATIONS.md",
       "role": "master",
-      "sha256": "4fd7f098d8670c28e9ff56d63e55d52b1073727957c0e7177d863bf3dca4ac52",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/docs/OPERATIONS.md"
+      "sha256": "c4e080e95353d27b31274a5acdcef28626e07f4c3d0985e8ac9ee3c26598ffbb",
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/docs/OPERATIONS.md"
     },
     {
       "mode": "0600",
       "path": "docs/USER_MANUAL.md",
       "role": "master",
-      "sha256": "48481f2e1df1fe0b1d098cb86871b882d1677137bdcf6ecbafa49da7ca466167",
-      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/202269e6396d5905f8150c57d7aa5d78e56357e1/docs/USER_MANUAL.md"
+      "sha256": "7803180e1a388837051ce26662f07aa1fa099e149de35aab6b6a75fdb71b3f08",
+      "url": "https://raw.githubusercontent.com/Flashyuan/ProxyFleet/b1c5a55ff1cf678171593b87a2705bcc365e3e61/docs/USER_MANUAL.md"
     }
   ],
   "channel": "stable",
-  "commit": "202269e6396d5905f8150c57d7aa5d78e56357e1",
+  "commit": "b1c5a55ff1cf678171593b87a2705bcc365e3e61",
   "minimum_supported_version": "v0.0.0",
   "product": "proxyfleet",
-  "published_at": "2026-07-01T12:25:13Z",
+  "published_at": "2026-07-07T08:45:56Z",
   "schema_version": "1.0",
   "summary": [
-    "修复 v0.1.4 更新清单遗漏 health_monitor.py 导致 Master TUI 更新入口导入失败的问题",
-    "Master 更新清单改为包含 src/proxyfleet 下所有运行时 Python 模块，避免模块版本不一致",
-    "保留 v0.1.4 的组件镜像进度输出和 Salt deb 强制缓存修复"
+    "优化 select-sync TUI 测速资源占用，默认并发降为 8 并优先刷新当前选择和可见节点",
+    "默认启用轻量 Salt 同步，避免每次切换节点重复发布完整组件资产",
+    "新增远端 Salt module 哈希校验、分批同步、terse 输出和脱敏日志，降低同步 CPU/内存与终端输出压力",
+    "该更新主要作用于 Master，Minion 不需要单独更新脚本；Master 同步时会按需刷新 Minion 的 Salt module"
   ],
-  "version": "v0.1.5"
+  "version": "v0.1.6"
 }
