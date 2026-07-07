@@ -22,6 +22,7 @@ from .fleet import (
     load_desired_state,
     prepare_salt_publish,
     run_salt_sync,
+    run_salt_sync_result,
     select_node,
     write_desired_state,
     write_node_catalog,
@@ -38,7 +39,7 @@ from .health_monitor import (
     write_default_policy,
     write_smtp_password,
 )
-from .live_select import DEFAULT_TEST_URL, run_live_select
+from .live_select import DEFAULT_CONCURRENCY, DEFAULT_TEST_URL, run_live_select
 from .port_policy import PortPolicyError, build_effective_policy, status as port_policy_status
 from .self_update import (
     UpdateContext,
@@ -89,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     health.add_argument("--all", action="store_true", help="测速 release 内全部节点")
     health.add_argument("--url", default="https://www.gstatic.com/generate_204", help="健康检查 URL")
     health.add_argument("--timeout-ms", type=int, default=3000, help="单节点测速超时")
-    health.add_argument("--concurrency", type=int, default=16, help="并发测速数量")
+    health.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="并发测速数量")
     health.add_argument("--progress", action="store_true", help="在 stderr 显示动态测速进度")
 
     live_select = subparsers.add_parser("live-select", help="进入 curses 实时测速选择 TUI")
@@ -97,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     live_select.add_argument("--mihomo-api", required=True, help="本机 Mihomo API，例如 http://127.0.0.1:9090")
     live_select.add_argument("--mihomo-secret", default=None, help="Mihomo API secret")
     live_select.add_argument("--timeout-ms", type=int, default=2000, help="单节点测速超时")
-    live_select.add_argument("--concurrency", type=int, default=16, help="并发测速数量")
+    live_select.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="并发测速数量")
     live_select.add_argument("--url", default=DEFAULT_TEST_URL, help="健康检查 URL")
     live_select.add_argument("--selection-output", default=None, help="可选：把选中节点 TSV 写入文件")
     live_select.add_argument("--desired-path", default=None, help="可选：读取 desired state 用于显示当前选择")
@@ -125,6 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--port-policy", default=None, help="可选：Master managed 端口白名单文件")
     publish.add_argument("--port-policy-mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
     publish.add_argument("--proxy-mode", default="tproxy", choices=["tproxy", "explicit-proxy"], help="Minion Mihomo 运行模式")
+    publish.add_argument("--lightweight", action="store_true", help="日常轻量发布：只更新 desired 和轻量元数据")
 
     sync = subparsers.add_parser("sync", help="通过 Salt 同步 release 并应用节点选择")
     sync.add_argument("release_dir", help="release 目录")
@@ -135,6 +137,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--port-policy-enabled", action="store_true", help="同步时应用已发布的 managed 端口白名单")
     sync.add_argument("--port-policy-mode", default="merge", choices=["merge", "master-only", "local-only", "disabled"])
     sync.add_argument("--proxy-mode", default="tproxy", choices=["tproxy", "explicit-proxy"], help="Minion Mihomo 运行模式")
+    sync.add_argument("--batch", default=None, help="Salt batch 大小，例如 10 或 20%")
+    sync.add_argument("--log-dir", default=None, help="完整 Salt 输出落盘目录")
     sync.add_argument("--dry-run", action="store_true", help="只输出同步计划，不执行 Salt")
 
     apply_parser = subparsers.add_parser("apply", help="最少步骤：构建、可选选择、发布并同步")
@@ -476,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.port_policy) if args.port_policy else None,
                 args.port_policy_mode,
                 args.proxy_mode,
+                full_converge=not args.lightweight,
             )
         except FleetError as exc:
             print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
@@ -498,14 +503,21 @@ def main(argv: list[str] | None = None) -> int:
                 payload = {"dry_run": True, "plan": plan.to_dict()}
                 print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
                 return 0
-            rc = run_salt_sync(plan, args.salt_bin)
+            result = run_salt_sync_result(plan, args.salt_bin, batch=args.batch, log_dir=Path(args.log_dir) if args.log_dir else None)
+            rc = result.returncode
         except FleetError as exc:
             print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
             return 2
         if rc != 0:
             print(f"Salt 同步失败，退出码: {rc}", file=sys.stderr)
+            if result.failed_minions:
+                print("失败 Minion: " + ", ".join(result.failed_minions), file=sys.stderr)
+            if result.error_summary:
+                print("错误摘要: " + result.error_summary, file=sys.stderr)
+            if result.log_path:
+                print(f"完整日志: {result.log_path}", file=sys.stderr)
             return rc
-        print(json.dumps({"status": "success", "plan": plan.to_dict()}, ensure_ascii=False, indent=2, sort_keys=True))
+        print(json.dumps({"status": "success", "plan": plan.to_dict(), "salt": result.to_dict()}, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
     if args.command == "apply":

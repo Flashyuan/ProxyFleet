@@ -39,9 +39,10 @@ q             退出，不切换
 
 ```text
 写入 runtime/desired.yaml
-同步 Salt assets 到 /srv/proxyfleet/salt/states
-发布 release、desired state、组件锁和端口白名单
-执行 salt '*' state.apply proxyfleet.sync
+校验 Salt file_roots 中已有 release、组件锁和组件资产基线
+轻量发布 desired state 和端口白名单
+必要时同步 Salt assets 和 execution module
+执行带 batch 的 salt '*' state.apply proxyfleet.sync
 Minion 安装/校验 Mihomo
 Minion 应用 config.yaml
 Minion 切换 FLEET_PROXY
@@ -51,6 +52,14 @@ Minion 切换 FLEET_PROXY
 第一次同步新 Minion 时会安装 Mihomo，耗时会比普通切换更长。节点列表里显示
 `failed` 不一定代表订阅节点坏了；如果 Master 本机还没有 Mihomo，Master 本机测速
 会失败，但仍可以选择节点并由 Minion 执行同步。
+
+性能优化行为：
+
+- TUI 测速优先当前已选节点、当前页和搜索结果，非可见节点低优先级后台刷新；
+- 默认测速并发为 8，避免进入 TUI 时压高 Master 本机 Mihomo 资源；
+- 日常切换节点与完整组件收敛拆开，普通切换不重复发布不变的 Mihomo 离线资产；
+- 同步所有 Minion 时默认 batch 分批，最终仍保证目标 Minion 都收敛到同一个节点；
+- Salt 输出摘要优先，完整 highstate 输出写入权限受限日志文件。
 
 如果同步失败并提示：
 

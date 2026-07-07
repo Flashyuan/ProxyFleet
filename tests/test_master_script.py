@@ -218,6 +218,35 @@ class MasterScriptTuiTests(unittest.TestCase):
 
         self.assertIn('local proxy_mode="tproxy"', text)
         self.assertIn('--proxy-mode "${proxy_mode}"', text)
+
+    def test_select_sync_resource_optimization_flags(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('local full_converge="false"', text)
+        self.assertIn('local batch="20%"', text)
+        self.assertIn('local log_dir="${PROJECT_ROOT}/runtime/logs/salt"', text)
+        self.assertIn("--full-converge) full_converge=\"true\"", text)
+        self.assertIn("--batch) batch=\"$2\"", text)
+        self.assertIn("--log-dir) log_dir=\"$2\"", text)
+        self.assertIn("publish_args+=(--lightweight)", text)
+        self.assertIn('--batch "${batch}"', text)
+        self.assertIn('--log-dir "${log_dir}"', text)
+
+    def test_select_sync_skips_sync_modules_only_after_remote_hash_match(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("salt_remote_module_hash_matches() {", text)
+        self.assertIn("proxyfleet_mihomo.module_sha256", text)
+        self.assertIn("salt_assets_missing()", text)
+        self.assertIn('远端 Salt module hash 已验证一致，跳过 saltutil.sync_modules', text)
+        self.assertIn('salt --batch "${batch}" "${target}" saltutil.sync_modules >/dev/null', text)
+        self.assertIn('salt "${target}" saltutil.sync_modules >/dev/null', text)
+
+    def test_select_sync_health_concurrency_default_is_eight(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('local health_concurrency="8"', text)
+        self.assertIn("--health-concurrency N   默认 8", text)
         self.assertIn('"proxy_mode": "tproxy"', text)
 
     def test_monitor_exposes_candidate_validation_command(self):

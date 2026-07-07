@@ -296,6 +296,10 @@ Minion 安装 Mihomo 时会按顺序尝试：
 无论来自镜像还是离线包，最终都会校验 artifact 的 `sha256`。校验失败会
 fail-closed，不会安装。
 
+说明：组件资产发布用于新 Minion 首次安装、离线安装、组件版本升级和接管修复。
+日常节点切换通常只需要更新 `desired.yaml`；当前版本已将日常切换与完整组件收敛
+拆开，避免每次切换都重新发布不变的 Mihomo 离线资产。
+
 ## 8. 接受 Minion Key
 
 Minion 安装后，回到 Master 节点执行：
@@ -462,6 +466,10 @@ sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id>'
 `select-sync` 会把选择写入 `runtime/desired.yaml`，发布 release 到 Salt
 file_roots，然后执行 Salt 同步。
 
+性能优化行为：`select-sync` 默认走轻量切换路径，TUI 优先测速当前选择、当前页
+和搜索结果；所有 Minion 仍同步成同一个节点，但 Salt 默认按 batch 分批执行。
+终端默认只显示进度和摘要，完整 Salt 输出写入日志。
+
 ## 14. `select-sync` 参数
 
 ```text
@@ -473,10 +481,13 @@ file_roots，然后执行 Salt 同步。
 --health-cache PATH      测速缓存，默认 runtime/health.json
 --mihomo-api URL         Mihomo API，默认 http://127.0.0.1:9090
 --health-timeout-ms N    单节点测速超时，默认 2000
---health-concurrency N   测速并发，默认 16
+--health-concurrency N   测速并发，默认 8
 --port-policy PATH       Master managed 端口白名单，默认 config-src/port-policy.yaml
 --port-policy-mode MODE  merge/master-only/local-only/disabled
 --proxy-mode MODE        Mihomo 运行模式，默认 tproxy；可选 explicit-proxy
+--full-converge          完整发布 release、组件资产和 Salt module
+--batch 10|20%           Salt batch，默认 20%
+--log-dir PATH           完整 Salt 输出日志目录，默认 runtime/logs/salt
 ```
 
 默认 `tproxy` 会在 release 的 `config.yaml` 中启用 Mihomo TUN 自动路由和

@@ -24,6 +24,7 @@ from proxyfleet.fleet import (
     load_desired_state,
     prepare_salt_publish,
     run_salt_sync,
+    run_salt_sync_result,
     salt_envelope,
     select_node,
 )
@@ -208,6 +209,57 @@ proxies:
             self.assertTrue(plan.port_policy_enabled)
             self.assertEqual("tproxy", plan.proxy_mode)
 
+    def test_lightweight_publish_only_updates_desired_and_keeps_assets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(
+                release,
+                root / "runtime" / "desired.yaml",
+                salt_root,
+                LOCKS,
+                None,
+                full_converge=True,
+            )
+            asset_marker = salt_root / "proxyfleet" / "assets" / "marker.txt"
+            asset_marker.write_text("keep-assets\n", encoding="utf-8")
+            select_node(release, root / "runtime", node.node_id, "production")
+
+            prepare_salt_publish(
+                release,
+                root / "runtime" / "desired.yaml",
+                salt_root,
+                LOCKS,
+                None,
+                full_converge=False,
+            )
+
+            self.assertEqual("keep-assets\n", asset_marker.read_text(encoding="utf-8"))
+            desired = json.loads((salt_root / "proxyfleet" / "desired.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(2, desired["desired_revision"])
+
+    def test_lightweight_publish_requires_existing_release_and_locks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+
+            with self.assertRaises(FleetError) as ctx:
+                prepare_salt_publish(
+                    release,
+                    root / "runtime" / "desired.yaml",
+                    root / "empty-salt",
+                    LOCKS,
+                    None,
+                    full_converge=False,
+                )
+
+            self.assertEqual("E_SYNC_NEEDS_FULL_CONVERGE", ctx.exception.error_code)
+
     def test_sync_plan_rejects_provider_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -247,6 +299,83 @@ proxies:
             self.assertIn('"proxyfleet_port_policy_enabled":true', pillar)
             self.assertIn('"proxyfleet_port_policy_mode":"merge"', pillar)
             self.assertIn('"proxyfleet_proxy_mode":"tproxy"', pillar)
+
+    def test_run_salt_sync_supports_batch_and_log_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", root / "srv-salt", "*")
+            salt_output = "minion-a:\n  Result: False\n  Comment: E_LOCAL_API failed\nminion-b:\n  Result: True\n"
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.return_value = mock.Mock(returncode=2, stdout=salt_output, stderr="")
+                result = run_salt_sync_result(plan, "salt", batch="20%", log_dir=root / "logs")
+
+            cmd = run.call_args.args[0]
+            self.assertIn("--batch", cmd)
+            self.assertIn("20%", cmd)
+            self.assertIn("--state-output=terse", cmd)
+            self.assertEqual(2, result.returncode)
+            self.assertIn("minion-a", result.failed_minions)
+            self.assertIn("E_LOCAL_API", result.error_summary)
+            self.assertIsNotNone(result.log_path)
+            self.assertTrue(result.log_path.exists())
+            self.assertIn("E_LOCAL_API failed", result.log_path.read_text(encoding="utf-8"))
+            self.assertEqual(0o700, (root / "logs").stat().st_mode & 0o777)
+            self.assertEqual(0o600, result.log_path.stat().st_mode & 0o777)
+
+    def test_salt_log_redacts_proxy_uri_and_secret_like_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", root / "srv-salt", "*")
+            salt_output = "minion-a:\n  Comment: password=abc vless://00000000-0000-0000-0000-000000000000@example\n"
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.return_value = mock.Mock(returncode=1, stdout=salt_output, stderr="")
+                result = run_salt_sync_result(plan, "salt", log_dir=root / "logs")
+
+            log_text = result.log_path.read_text(encoding="utf-8")
+            self.assertIn("redacted", log_text)
+            self.assertNotIn("password=abc", log_text)
+            self.assertNotIn("vless://", log_text)
+
+    def test_salt_log_redacts_yaml_and_json_secret_shapes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", root / "srv-salt", "*")
+            salt_output = (
+                "minion-a:\n"
+                "  Result: False\n"
+                "  Comment: password: abc\n"
+                "  Error: {\"api_secret\": \"def\", \"token\": \"ghi\"}\n"
+            )
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.return_value = mock.Mock(returncode=1, stdout=salt_output, stderr="")
+                result = run_salt_sync_result(plan, "salt", log_dir=root / "logs")
+
+            log_text = result.log_path.read_text(encoding="utf-8")
+            self.assertIn("redacted", log_text)
+            self.assertIn("redacted", result.error_summary)
+            for leaked in ("password: abc", '"api_secret": "def"', '"token": "ghi"', "def", "ghi"):
+                self.assertNotIn(leaked, log_text)
+                self.assertNotIn(leaked, result.error_summary)
+
+    def test_run_salt_sync_rejects_invalid_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", root / "srv-salt", "*")
+
+            with self.assertRaises(FleetError):
+                run_salt_sync_result(plan, "salt", batch="0%")
 
     def test_salt_envelope_redacts_secret_fields(self):
         envelope = salt_envelope(
@@ -501,6 +630,15 @@ class SaltModuleTests(unittest.TestCase):
         assert spec.loader is not None
         spec.loader.exec_module(module)
         return module
+
+    def test_module_sha256_reports_current_execution_module_hash(self):
+        module = self._module()
+
+        payload = module.module_sha256()
+
+        self.assertEqual("1.0", payload["schema_version"])
+        self.assertEqual("proxyfleet_mihomo", payload["module"])
+        self.assertEqual(hashlib.sha256(SALT_MODULE.read_bytes()).hexdigest(), payload["sha256"])
 
     def test_verify_release_detects_hash_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
