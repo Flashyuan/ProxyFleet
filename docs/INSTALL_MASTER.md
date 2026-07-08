@@ -498,6 +498,10 @@ Salt 输出写入日志。
 `--plan` 只读取当前选择并输出 Minion 分类与执行计划。它使用临时 Salt root，
 不会修改生产 `/srv/proxyfleet/salt/states`，也不会执行真实同步。
 
+普通 `select-sync` 如果发现生产 Salt file_roots 缺少 release、组件锁或资产基线，
+会自动升级为一次 `full-converge` 发布和同步；用户不需要每次手动追加
+`--full-converge`。基线补齐后，后续日常切换会回到智能分流轻量路径。
+
 默认 `tproxy` 会在 release 的 `config.yaml` 中启用 Mihomo TUN 自动路由和
 `tproxy-port`，让 Minion 本机进程不显式设置 `HTTP_PROXY` 时也可以走当前选中节点。
 如需排查透明代理导致的路由问题，可临时使用 `--proxy-mode explicit-proxy`。

@@ -269,6 +269,10 @@ sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id>'
 `--plan` 只读取当前选择并输出 Minion 分类与执行计划。它使用临时 Salt root，
 不会修改生产 `/srv/proxyfleet/salt/states`，也不会执行真实同步。
 
+普通 `select-sync` 如果发现生产 Salt file_roots 缺少 release、组件锁或资产基线，
+会自动升级为一次 `full-converge` 发布和同步；用户不需要每次手动追加
+`--full-converge`。基线补齐后，后续日常切换会回到智能分流轻量路径。
+
 默认 `tproxy` 会把透明代理运行参数写入新构建的 release，并在同步切换时作为
 Salt plan 记录。只有排障时建议临时切到 `explicit-proxy`。
 
@@ -279,7 +283,7 @@ Salt plan 记录。只有排障时建议临时切到 `explicit-proxy`。
 - 日常切换默认走智能分流：旧 Minion 只通过 Mihomo API 切换节点，新 Minion
   或组件漂移 Minion 才走完整 `state.apply`；
 - 如果 Salt file_roots 缺 release、组件锁、组件资产 marker 或 hash 不一致，会
-  fail-closed 并提示使用 `--full-converge`；
+  自动执行一次 `full-converge` 发布和同步；
 - 所有 Minion 仍最终同步成同一个节点；默认不启用 Salt batch，而是由
   ProxyFleet 按 `--concurrency` 做应用层小批量同步；
 - Salt 输出默认精简，完整输出写入 `--log-dir`，日志目录权限为 `0700`，文件为

@@ -12,7 +12,7 @@ MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
 MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
 SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
 SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v.0.2.0}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v.0.2.1}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://github.com/Flashyuan/ProxyFleet/releases/latest/download/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
 MONITOR_POLICY_PATH="${MONITOR_POLICY_PATH:-${PROJECT_ROOT}/runtime/health-monitor-policy.json}"
@@ -1505,13 +1505,30 @@ select_sync() {
     trap '[[ -n "${plan_salt_root:-}" ]] && rm -rf "${plan_salt_root}"' RETURN
     publish_args[3]="${effective_salt_root}"
   fi
-  if [[ "${full_converge}" != "true" ]]; then
+  if [[ "${full_converge}" != "true" && "${plan_only}" != "true" ]]; then
     publish_args+=(--lightweight)
   fi
   if [[ -n "${port_policy}" ]]; then
     publish_args+=(--port-policy "${port_policy}")
   fi
-  proxyfleet_python "${publish_args[@]}" >/dev/null
+  local publish_output
+  if ! publish_output="$(proxyfleet_python "${publish_args[@]}" 2>&1 >/dev/null)"; then
+    if [[ "${plan_only}" != "true" && "${full_converge}" != "true" && "${publish_output}" == *"E_SYNC_NEEDS_FULL_CONVERGE"* ]]; then
+      echo "Salt file_roots 基线缺失或过期，自动执行一次 full-converge 发布..."
+      full_converge="true"
+      local retry_publish_args=()
+      local arg
+      for arg in "${publish_args[@]}"; do
+        [[ "${arg}" == "--lightweight" ]] && continue
+        retry_publish_args+=("${arg}")
+      done
+      if ! publish_output="$(proxyfleet_python "${retry_publish_args[@]}" 2>&1 >/dev/null)"; then
+        die "${publish_output}"
+      fi
+    else
+      die "${publish_output}"
+    fi
+  fi
 
   local source_module="${PROJECT_ROOT}/salt/modules/proxyfleet_mihomo.py"
   local expected_module_hash
