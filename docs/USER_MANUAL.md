@@ -479,7 +479,8 @@ offline-assets/
 安装时仍按 SHA-256 校验后才使用。
 
 说明：这些资产主要服务于新 Minion、离线安装、组件升级和接管修复。日常切换
-默认不会重复发布不变的大文件；缺少安全基线时会提示执行 `--full-converge`。
+默认不会重复发布不变的大文件；缺少安全基线时会自动执行一次 `full-converge`
+发布和同步。
 
 日常切换时，Master 会先让 Minion 自检当前状态：
 
@@ -498,6 +499,14 @@ sudo scripts/proxyfleet-master.sh select-sync --plan
 `--plan` 会使用临时 Salt root 生成计划输入，不会修改生产
 `/srv/proxyfleet/salt/states`，也不会执行 `saltutil.sync_modules` 或
 `state.apply`。
+
+如果普通 `select-sync` 发现生产 Salt file_roots 缺少 release、组件锁或资产基线，
+会自动升级为一次 `full-converge`。基线补齐后，后续日常切换会回到智能分流
+轻量路径，不需要用户每次手动追加 `--full-converge`。
+
+Master 更新后，如果脚本发现远端 Salt execution module 版本刚刷新，本轮也会主动
+走一次完整 `state.apply`。这是正常保护动作，用来避免 Minion 尚未加载新函数时
+智能分类失败；下一轮 module hash 一致后会自动回到轻量智能分流。
 
 ## 12. 卸载
 

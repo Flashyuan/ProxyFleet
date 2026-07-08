@@ -12,7 +12,7 @@ MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
 MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
 SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
 SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v.0.2.0}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v.0.2.1}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://github.com/Flashyuan/ProxyFleet/releases/latest/download/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
 MONITOR_POLICY_PATH="${MONITOR_POLICY_PATH:-${PROJECT_ROOT}/runtime/health-monitor-policy.json}"
@@ -1505,13 +1505,30 @@ select_sync() {
     trap '[[ -n "${plan_salt_root:-}" ]] && rm -rf "${plan_salt_root}"' RETURN
     publish_args[3]="${effective_salt_root}"
   fi
-  if [[ "${full_converge}" != "true" ]]; then
+  if [[ "${full_converge}" != "true" && "${plan_only}" != "true" ]]; then
     publish_args+=(--lightweight)
   fi
   if [[ -n "${port_policy}" ]]; then
     publish_args+=(--port-policy "${port_policy}")
   fi
-  proxyfleet_python "${publish_args[@]}" >/dev/null
+  local publish_output
+  if ! publish_output="$(proxyfleet_python "${publish_args[@]}" 2>&1 >/dev/null)"; then
+    if [[ "${plan_only}" != "true" && "${full_converge}" != "true" && "${publish_output}" == *"E_SYNC_NEEDS_FULL_CONVERGE"* ]]; then
+      echo "Salt file_roots 基线缺失或过期，自动执行一次 full-converge 发布..."
+      full_converge="true"
+      local retry_publish_args=()
+      local arg
+      for arg in "${publish_args[@]}"; do
+        [[ "${arg}" == "--lightweight" ]] && continue
+        retry_publish_args+=("${arg}")
+      done
+      if ! publish_output="$(proxyfleet_python "${retry_publish_args[@]}" 2>&1 >/dev/null)"; then
+        die "${publish_output}"
+      fi
+    else
+      die "${publish_output}"
+    fi
+  fi
 
   local source_module="${PROJECT_ROOT}/salt/modules/proxyfleet_mihomo.py"
   local expected_module_hash
@@ -1522,6 +1539,7 @@ select_sync() {
   elif [[ "${full_converge}" != "true" ]] && salt_remote_module_hash_matches "${expected_module_hash}" "${target}" "${batch}"; then
     sync_modules_required="false"
   fi
+  local modules_synced="false"
   if [[ "${plan_only}" != "true" ]] && { [[ "${full_converge}" == "true" || "${sync_modules_required}" == "true" ]] || salt_assets_missing; }; then
     sync_assets
   fi
@@ -1531,8 +1549,13 @@ select_sync() {
     # "Some exception handling minion payload"。该操作本身很轻量，保持非 batch
     # 发布，batch 仅用于后续 state.apply。
     salt "${target}" saltutil.sync_modules >/dev/null
+    modules_synced="true"
   else
     echo "远端 Salt module hash 已验证一致，跳过 saltutil.sync_modules"
+  fi
+  if [[ "${modules_synced}" == "true" && "${plan_only}" != "true" ]]; then
+    echo "远端 Salt module 刚刷新，本轮使用 full-converge 同步；下一轮将进入智能分流"
+    full_converge="true"
   fi
 
   local sync_args=(
