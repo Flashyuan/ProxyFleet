@@ -360,22 +360,57 @@ def run_salt_sync_result(plan: SyncPlan, salt_bin: str = "salt", *, batch: str |
     """调用 Salt state.apply，同步 release 并应用节点选择。"""
 
     _validate_batch(batch)
+    pillar = f"pillar={json.dumps({'proxyfleet_operation_id': plan.operation_id, 'proxyfleet_release_root': str(plan.salt_release_dir.parent), 'proxyfleet_desired_path': str(plan.salt_desired_path), 'proxyfleet_component_locks_path': str(plan.salt_desired_path.parent / 'component-locks.json'), 'proxyfleet_port_policy_enabled': plan.port_policy_enabled, 'proxyfleet_port_policy_mode': plan.port_policy_mode, 'proxyfleet_proxy_mode': plan.proxy_mode}, separators=(',', ':'))}"
+    cmd = _salt_sync_cmd(plan, salt_bin, batch, pillar)
+    completed = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    output = _completed_output(completed)
+    final_cmd = cmd
+    final_returncode = int(completed.returncode)
+
+    if batch and final_returncode != 0 and _is_salt_batch_publish_error(output):
+        fallback_cmd = _salt_sync_cmd(plan, salt_bin, None, pillar)
+        fallback = subprocess.run(fallback_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        fallback_output = _completed_output(fallback)
+        output = (
+            output
+            + "\n\n# ProxyFleet fallback: Salt batch publish failed; retried without --batch.\n"
+            + fallback_output
+        )
+        final_cmd = fallback_cmd
+        final_returncode = int(fallback.returncode)
+
+    log_path = _write_salt_log(plan, final_cmd, output, log_dir) if log_dir is not None else None
+    failed_minions, error_summary = _summarize_salt_output(output, final_returncode)
+    return SaltSyncResult(final_returncode, log_path, failed_minions, error_summary)
+
+
+def _salt_sync_cmd(plan: SyncPlan, salt_bin: str, batch: str | None, pillar: str) -> list[str]:
     cmd = [salt_bin, "--state-output=terse", "--state-verbose=False", "--summary"]
     if batch:
         cmd.extend(["--batch", batch])
-    cmd.extend([
-        plan.target,
-        "state.apply",
-        "proxyfleet.sync",
-        f"pillar={json.dumps({'proxyfleet_operation_id': plan.operation_id, 'proxyfleet_release_root': str(plan.salt_release_dir.parent), 'proxyfleet_desired_path': str(plan.salt_desired_path), 'proxyfleet_component_locks_path': str(plan.salt_desired_path.parent / 'component-locks.json'), 'proxyfleet_port_policy_enabled': plan.port_policy_enabled, 'proxyfleet_port_policy_mode': plan.port_policy_mode, 'proxyfleet_proxy_mode': plan.proxy_mode}, separators=(',', ':'))}",
-    ])
-    completed = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    cmd.extend(
+        [
+            plan.target,
+            "state.apply",
+            "proxyfleet.sync",
+            pillar,
+        ]
+    )
+    return cmd
+
+
+def _completed_output(completed: subprocess.CompletedProcess[str] | Any) -> str:
     stdout = completed.stdout if isinstance(getattr(completed, "stdout", None), str) else ""
     stderr = completed.stderr if isinstance(getattr(completed, "stderr", None), str) else ""
-    output = stdout + (("\n" + stderr) if stderr else "")
-    log_path = _write_salt_log(plan, cmd, output, log_dir) if log_dir is not None else None
-    failed_minions, error_summary = _summarize_salt_output(output, int(completed.returncode))
-    return SaltSyncResult(int(completed.returncode), log_path, failed_minions, error_summary)
+    return stdout + (("\n" + stderr) if stderr else "")
+
+
+def _is_salt_batch_publish_error(output: str) -> bool:
+    return (
+        "Some exception handling minion payload" in output
+        or "salt.exceptions.PublishError" in output
+        or "salt.exceptions.SaltClientError" in output
+    )
 
 
 def run_salt_sync(plan: SyncPlan, salt_bin: str = "salt", *, batch: str | None = None, log_dir: Path | None = None) -> int:

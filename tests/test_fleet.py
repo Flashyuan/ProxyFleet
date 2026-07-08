@@ -325,6 +325,30 @@ proxies:
             self.assertEqual(0o700, (root / "logs").stat().st_mode & 0o777)
             self.assertEqual(0o600, result.log_path.stat().st_mode & 0o777)
 
+    def test_run_salt_sync_falls_back_when_batch_publish_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", root / "srv-salt", "*")
+            batch_error = "salt.exceptions.SaltClientError: Some exception handling minion payload\n"
+            success = "minion-a:\n  Result: True\n"
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=1, stdout="", stderr=batch_error),
+                    mock.Mock(returncode=0, stdout=success, stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", batch="20%", log_dir=root / "logs")
+
+            first_cmd = run.call_args_list[0].args[0]
+            second_cmd = run.call_args_list[1].args[0]
+            self.assertIn("--batch", first_cmd)
+            self.assertNotIn("--batch", second_cmd)
+            self.assertEqual(0, result.returncode)
+            log_text = result.log_path.read_text(encoding="utf-8")
+            self.assertIn("retried without --batch", log_text)
+
     def test_salt_log_redacts_proxy_uri_and_secret_like_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
