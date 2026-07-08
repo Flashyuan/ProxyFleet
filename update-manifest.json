@@ -4,146 +4,147 @@
       "mode": "0700",
       "path": "scripts/proxyfleet-master.sh",
       "role": "master",
-      "sha256": "118bf82ac215f2a57a1022605c3506d2a364d3de572085d447348c5a1cf4acb6",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/scripts/proxyfleet-master.sh"
+      "sha256": "2b60ebc9d94b54978830ee189bb85284e50fa45aa5ffa90423c73f29ec1de16f",
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/scripts/proxyfleet-master.sh"
     },
     {
       "mode": "0700",
       "path": "scripts/proxyfleet-minion.sh",
       "role": "common",
       "sha256": "df609d9bb2cd29edaacd166942ac91e2100b1fe774cd929438f462855ebf9ce3",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/scripts/proxyfleet-minion.sh"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/scripts/proxyfleet-minion.sh"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/__init__.py",
       "role": "master",
       "sha256": "0deaae841e6df0b85e7e95696d3cb9a22333244540a22ab6799f37193fe2346b",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/src/proxyfleet/__init__.py"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/src/proxyfleet/__init__.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/cli.py",
       "role": "master",
       "sha256": "907285c228bff404381c8f69572a0cebe388de11cec94bc8fe2e8cad4db8cb02",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/src/proxyfleet/cli.py"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/src/proxyfleet/cli.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/component_locks.py",
       "role": "master",
       "sha256": "c9c8bc197b734c59b0f96deb6b9a63d73c373e67d68b528835d792c4d03a3d32",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/src/proxyfleet/component_locks.py"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/src/proxyfleet/component_locks.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/config_build.py",
       "role": "master",
       "sha256": "1e1fe63a51b96bb7b9670731ad7689da08b3807e709fe9bfc96a229dd214f553",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/src/proxyfleet/config_build.py"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/src/proxyfleet/config_build.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/fleet.py",
       "role": "master",
       "sha256": "4ae6d37c6ac6529536b34b875a29a8521381e399c3d8d6e13005566ac7523d62",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/src/proxyfleet/fleet.py"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/src/proxyfleet/fleet.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/health_monitor.py",
       "role": "master",
       "sha256": "d1ff81d7ea947d86f523bbd36b61b080933f4c8e483895d832e8b6385a90b13e",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/src/proxyfleet/health_monitor.py"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/src/proxyfleet/health_monitor.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/live_select.py",
       "role": "master",
       "sha256": "7c036aa92c28b45ef7b71a0290cd573f9453377749dfa5534d3702773d9e71ab",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/src/proxyfleet/live_select.py"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/src/proxyfleet/live_select.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/port_policy.py",
       "role": "master",
       "sha256": "00bdf8cfef882346f973b5d8fca37bbe0e281deed20740e36544493c30ac0dfa",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/src/proxyfleet/port_policy.py"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/src/proxyfleet/port_policy.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/self_update.py",
       "role": "master",
       "sha256": "c6f6b352108f06ebcac793334d95241ab9026893a127a6067ef1f9e3829e9457",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/src/proxyfleet/self_update.py"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/src/proxyfleet/self_update.py"
     },
     {
       "mode": "0600",
       "path": "src/proxyfleet/subscription.py",
       "role": "master",
       "sha256": "b420fdf2e360e75ab6e502bbafc4cc6e1e5b75671ed77aeafe852987fab3279b",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/src/proxyfleet/subscription.py"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/src/proxyfleet/subscription.py"
     },
     {
       "mode": "0600",
       "path": "salt/modules/proxyfleet_mihomo.py",
       "role": "master",
       "sha256": "e6b540dbff652c497088f5f549dca42ee21f4c888cb0ec30b1c025b7c7667782",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/salt/modules/proxyfleet_mihomo.py"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/salt/modules/proxyfleet_mihomo.py"
     },
     {
       "mode": "0600",
       "path": "salt/states/proxyfleet/sync.sls",
       "role": "master",
       "sha256": "9700240d9c9d0a0b1710d8d0905c0d770757f276eccd1b1bf6ec6f4a3eaa5fcf",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/salt/states/proxyfleet/sync.sls"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/salt/states/proxyfleet/sync.sls"
     },
     {
       "mode": "0600",
       "path": "docs/INSTALL_MASTER.md",
       "role": "master",
       "sha256": "a68410d42f6491b372ed939f656c1dd346ebfacc44e099429d2c4a8f579fb095",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/docs/INSTALL_MASTER.md"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/docs/INSTALL_MASTER.md"
     },
     {
       "mode": "0600",
       "path": "docs/INSTALL_MINION.md",
       "role": "master",
       "sha256": "77e148cdab95e18cd89d23108b293fb50933747ea12a0ea158efaca8cb26a651",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/docs/INSTALL_MINION.md"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/docs/INSTALL_MINION.md"
     },
     {
       "mode": "0600",
       "path": "docs/MASTER_TUI_GUIDE.md",
       "role": "master",
       "sha256": "02c3fda48e9dc1e0a99ce0105ac5b179b6ae352ae57838da93e4466e97e7f56c",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/docs/MASTER_TUI_GUIDE.md"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/docs/MASTER_TUI_GUIDE.md"
     },
     {
       "mode": "0600",
       "path": "docs/OPERATIONS.md",
       "role": "master",
       "sha256": "c4e080e95353d27b31274a5acdcef28626e07f4c3d0985e8ac9ee3c26598ffbb",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/docs/OPERATIONS.md"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/docs/OPERATIONS.md"
     },
     {
       "mode": "0600",
       "path": "docs/USER_MANUAL.md",
       "role": "master",
       "sha256": "7803180e1a388837051ce26662f07aa1fa099e149de35aab6b6a75fdb71b3f08",
-      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@148b29378dba871ec6506bdf09b7125f026c5667/docs/USER_MANUAL.md"
+      "url": "https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@7d6ce1e9450429da99e5ed5f00d45cce69de3f68/docs/USER_MANUAL.md"
     }
   ],
   "channel": "stable",
-  "commit": "148b29378dba871ec6506bdf09b7125f026c5667",
+  "commit": "7d6ce1e9450429da99e5ed5f00d45cce69de3f68",
   "minimum_supported_version": "v0.0.0",
   "product": "proxyfleet",
-  "published_at": "2026-07-08T04:53:33Z",
+  "published_at": "2026-07-08T05:04:07Z",
   "schema_version": "1.0",
   "summary": [
-    "修复 select-sync 在同步 Salt execution module 时使用 batch 导致 SaltClientError 的问题",
-    "saltutil.sync_modules 改为非 batch 执行，batch 仅保留给后续 state.apply 同步阶段",
-    "保留 v0.1.7 的 CDN 更新源和 v0.1.6 的 select-sync 资源占用优化能力"
+    "Master 默认更新判定入口切换为 GitHub Release latest/download/update-manifest.json",
+    "避免 jsDelivr @main 分支缓存陈旧导致自动更新一直检测到旧版本",
+    "更新资产仍使用固定 commit URL 和 SHA-256 校验，保持 fail-closed 安全语义",
+    "包含 v0.1.8 的 saltutil.sync_modules 非 batch 修复以及 v0.1.6 的同步性能优化"
   ],
-  "version": "v0.1.8"
+  "version": "v0.1.9"
 }
