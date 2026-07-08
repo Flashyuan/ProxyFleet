@@ -28,6 +28,7 @@ from proxyfleet.fleet import (
     salt_envelope,
     select_node,
     SaltSyncResult,
+    _summarize_salt_output,
 )
 
 
@@ -514,6 +515,38 @@ proxies:
             fallback_cmd = run.call_args_list[2].args[0]
             self.assertIn("state.apply", fallback_cmd)
             self.assertNotIn("-L", fallback_cmd)
+
+    def test_smart_sync_status_failure_fallback_success_does_not_report_failed_minions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", salt_root, "*")
+            fallback_output = "minion-a:\n----------\nSummary for minion-a\n------------\nFailed:     0\n"
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout=json.dumps({"minions": ["minion-a"]}), stderr=""),
+                    mock.Mock(returncode=1, stdout="", stderr="sync_status unavailable"),
+                    mock.Mock(returncode=0, stdout=fallback_output, stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", concurrency=2)
+
+            self.assertEqual(0, result.returncode)
+            self.assertTrue(result.fallback_used)
+            self.assertTrue(result.route_plan["classification_unavailable"])
+            self.assertEqual([], result.failed_minions)
+            self.assertEqual("", result.error_summary)
+
+    def test_salt_summary_failed_zero_is_not_a_failure(self):
+        output = "minion-a:\n----------\nSummary for minion-a\n------------\nFailed:     0\n"
+
+        failed, summary = _summarize_salt_output(output, 0)
+
+        self.assertEqual([], failed)
+        self.assertEqual("", summary)
 
     def test_smart_sync_plan_only_only_classifies_minions(self):
         with tempfile.TemporaryDirectory() as tmp:

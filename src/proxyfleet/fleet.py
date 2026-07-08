@@ -516,6 +516,15 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, A
     completed = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     output = _completed_output(completed)
     minions: list[dict[str, Any]] = []
+    if int(completed.returncode) != 0:
+        return {
+            "mode": "smart",
+            "target": plan.target,
+            "classification_unavailable": True,
+            "summary": {"ready-old": 0, "new-minion": 0, "drifted": 0, "offline": 0, "unknown": 0},
+            "minions": [],
+            "reason": "sync_status command failed",
+        }, output, int(completed.returncode)
     try:
         data = json.loads(completed.stdout if isinstance(completed.stdout, str) else "{}")
     except Exception:
@@ -1013,6 +1022,8 @@ def _summarize_salt_output(output: str, returncode: int) -> tuple[list[str], str
         if not line.startswith((" ", "\t", "-", "{", "[", '"')) and stripped.endswith(":"):
             current_minion = stripped[:-1]
         lowered = stripped.lower()
+        if re.fullmatch(r"failed:\s+0", lowered):
+            continue
         if "result: false" in lowered or '"result": false' in lowered or "failed" in lowered or "error" in lowered or "e_" in lowered:
             if current_minion and current_minion not in failed:
                 failed.append(current_minion)
