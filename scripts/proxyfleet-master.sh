@@ -1539,6 +1539,7 @@ select_sync() {
   elif [[ "${full_converge}" != "true" ]] && salt_remote_module_hash_matches "${expected_module_hash}" "${target}" "${batch}"; then
     sync_modules_required="false"
   fi
+  local modules_synced="false"
   if [[ "${plan_only}" != "true" ]] && { [[ "${full_converge}" == "true" || "${sync_modules_required}" == "true" ]] || salt_assets_missing; }; then
     sync_assets
   fi
@@ -1548,8 +1549,13 @@ select_sync() {
     # "Some exception handling minion payload"。该操作本身很轻量，保持非 batch
     # 发布，batch 仅用于后续 state.apply。
     salt "${target}" saltutil.sync_modules >/dev/null
+    modules_synced="true"
   else
     echo "远端 Salt module hash 已验证一致，跳过 saltutil.sync_modules"
+  fi
+  if [[ "${modules_synced}" == "true" && "${plan_only}" != "true" ]]; then
+    echo "远端 Salt module 刚刷新，本轮使用 full-converge 同步；下一轮将进入智能分流"
+    full_converge="true"
   fi
 
   local sync_args=(

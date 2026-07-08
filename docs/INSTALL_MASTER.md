@@ -502,6 +502,10 @@ Salt 输出写入日志。
 会自动升级为一次 `full-converge` 发布和同步；用户不需要每次手动追加
 `--full-converge`。基线补齐后，后续日常切换会回到智能分流轻量路径。
 
+Master 更新后，如果远端 Salt execution module 刚刷新，本轮也会主动走一次
+`full-converge`。这是为了避免 Minion 尚未加载新分类函数时误判失败；下一轮
+module hash 一致后会自动回到智能分流轻量路径。
+
 默认 `tproxy` 会在 release 的 `config.yaml` 中启用 Mihomo TUN 自动路由和
 `tproxy-port`，让 Minion 本机进程不显式设置 `HTTP_PROXY` 时也可以走当前选中节点。
 如需排查透明代理导致的路由问题，可临时使用 `--proxy-mode explicit-proxy`。

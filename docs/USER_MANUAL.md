@@ -504,6 +504,10 @@ sudo scripts/proxyfleet-master.sh select-sync --plan
 会自动升级为一次 `full-converge`。基线补齐后，后续日常切换会回到智能分流
 轻量路径，不需要用户每次手动追加 `--full-converge`。
 
+Master 更新后，如果脚本发现远端 Salt execution module 版本刚刷新，本轮也会主动
+走一次完整 `state.apply`。这是正常保护动作，用来避免 Minion 尚未加载新函数时
+智能分类失败；下一轮 module hash 一致后会自动回到轻量智能分流。
+
 ## 12. 卸载
 
 Master 节点：
