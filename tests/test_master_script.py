@@ -93,6 +93,15 @@ class MasterScriptTuiTests(unittest.TestCase):
         self.assertIn("asset-mirror-deploy) asset_mirror_deploy", text)
         self.assertIn("bootstrap-manifest.json", text)
 
+    def test_master_update_manifest_defaults_to_release_latest(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://github.com/Flashyuan/ProxyFleet/releases/latest/download/update-manifest.json}"',
+            text,
+        )
+        self.assertNotIn("cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@main/update-manifest.json", text)
+
     def test_no_tty_master_fallback_shows_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = self._run(Path(tmp), [], allow_tui=False)
