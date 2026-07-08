@@ -531,7 +531,8 @@ def main(argv: list[str] | None = None) -> int:
             if result.log_path:
                 print(f"完整日志: {result.log_path}", file=sys.stderr)
             return rc
-        print(json.dumps({"status": "success", "plan": plan.to_dict(), "salt": result.to_dict()}, ensure_ascii=False, indent=2, sort_keys=True))
+        status = "partial" if result.warning else "success"
+        print(json.dumps({"status": status, "plan": plan.to_dict(), "salt": result.to_dict()}, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
     if args.command == "apply":
