@@ -12,7 +12,7 @@ MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
 MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
 SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
 SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.10}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.11}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://github.com/Flashyuan/ProxyFleet/releases/latest/download/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
 MONITOR_POLICY_PATH="${MONITOR_POLICY_PATH:-${PROJECT_ROOT}/runtime/health-monitor-policy.json}"
@@ -1337,7 +1337,7 @@ select_sync() {
   local health_timeout_ms="2000"
   local health_concurrency="8"
   local full_converge="false"
-  local batch="20%"
+  local batch=""
   local log_dir="${PROJECT_ROOT}/runtime/logs/salt"
 
   while [[ $# -gt 0 ]]; do
@@ -1567,7 +1567,7 @@ select-sync 常用参数：
   --health-concurrency N   默认 8
   --port-policy PATH       可选：同步 Master managed 端口白名单；默认检测 config-src/port-policy.yaml
   --full-converge          完整发布 release、组件资产和 Salt module
-  --batch 10|20%           Salt batch，默认 20%
+  --batch 10|20%           Salt batch，默认关闭；大规模 Minion 时可显式启用
   --log-dir PATH           完整 Salt 输出日志目录
   --refresh-health         deprecated：进入 TUI 前先刷新测速缓存
   --no-health-cache        deprecated：不读取测速缓存，只显示 unknown

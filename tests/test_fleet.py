@@ -346,6 +346,11 @@ proxies:
             self.assertIn("--batch", first_cmd)
             self.assertNotIn("--batch", second_cmd)
             self.assertEqual(0, result.returncode)
+            self.assertTrue(result.fallback_used)
+            self.assertEqual("Salt batch publish failed; retried without --batch", result.fallback_message)
+            self.assertEqual([], result.failed_minions)
+            self.assertEqual("", result.error_summary)
+            self.assertTrue(result.to_dict()["fallback_used"])
             log_text = result.log_path.read_text(encoding="utf-8")
             self.assertIn("retried without --batch", log_text)
 

@@ -232,13 +232,14 @@ class MasterScriptTuiTests(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn('local full_converge="false"', text)
-        self.assertIn('local batch="20%"', text)
+        self.assertIn('local batch=""', text)
         self.assertIn('local log_dir="${PROJECT_ROOT}/runtime/logs/salt"', text)
         self.assertIn("--full-converge) full_converge=\"true\"", text)
         self.assertIn("--batch) batch=\"$2\"", text)
         self.assertIn("--log-dir) log_dir=\"$2\"", text)
         self.assertIn("publish_args+=(--lightweight)", text)
         self.assertIn('--batch "${batch}"', text)
+        self.assertIn("--batch 10|20%           Salt batch，默认关闭；大规模 Minion 时可显式启用", text)
         self.assertIn('--log-dir "${log_dir}"', text)
 
     def test_select_sync_skips_sync_modules_only_after_remote_hash_match(self):

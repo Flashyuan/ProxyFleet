@@ -114,6 +114,8 @@ class SaltSyncResult:
     log_path: Path | None
     failed_minions: list[str]
     error_summary: str
+    fallback_used: bool = False
+    fallback_message: str = ""
 
     @property
     def ok(self) -> bool:
@@ -125,6 +127,8 @@ class SaltSyncResult:
             "log_path": str(self.log_path) if self.log_path else None,
             "failed_minions": self.failed_minions,
             "error_summary": self.error_summary,
+            "fallback_used": self.fallback_used,
+            "fallback_message": self.fallback_message,
         }
 
 
@@ -366,22 +370,27 @@ def run_salt_sync_result(plan: SyncPlan, salt_bin: str = "salt", *, batch: str |
     output = _completed_output(completed)
     final_cmd = cmd
     final_returncode = int(completed.returncode)
+    fallback_used = False
+    fallback_message = ""
 
     if batch and final_returncode != 0 and _is_salt_batch_publish_error(output):
         fallback_cmd = _salt_sync_cmd(plan, salt_bin, None, pillar)
         fallback = subprocess.run(fallback_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         fallback_output = _completed_output(fallback)
+        fallback_used = True
+        fallback_message = "Salt batch publish failed; retried without --batch"
         output = (
             output
-            + "\n\n# ProxyFleet fallback: Salt batch publish failed; retried without --batch.\n"
+            + f"\n\n# ProxyFleet fallback: {fallback_message}.\n"
             + fallback_output
         )
         final_cmd = fallback_cmd
         final_returncode = int(fallback.returncode)
 
     log_path = _write_salt_log(plan, final_cmd, output, log_dir) if log_dir is not None else None
-    failed_minions, error_summary = _summarize_salt_output(output, final_returncode)
-    return SaltSyncResult(final_returncode, log_path, failed_minions, error_summary)
+    summary_output = fallback_output if fallback_used and final_returncode == 0 else output
+    failed_minions, error_summary = _summarize_salt_output(summary_output, final_returncode)
+    return SaltSyncResult(final_returncode, log_path, failed_minions, error_summary, fallback_used, fallback_message)
 
 
 def _salt_sync_cmd(plan: SyncPlan, salt_bin: str, batch: str | None, pillar: str) -> list[str]:
