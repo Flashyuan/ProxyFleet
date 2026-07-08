@@ -114,18 +114,28 @@ class SaltSyncResult:
     log_path: Path | None
     failed_minions: list[str]
     error_summary: str
+    route_plan: dict[str, Any] | None = None
+    fallback_used: bool = False
+    warning: str | None = None
 
     @property
     def ok(self) -> bool:
         return self.returncode == 0
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "returncode": self.returncode,
             "log_path": str(self.log_path) if self.log_path else None,
             "failed_minions": self.failed_minions,
             "error_summary": self.error_summary,
         }
+        if self.route_plan is not None:
+            payload["route_plan"] = self.route_plan
+        if self.fallback_used:
+            payload["fallback_used"] = True
+        if self.warning:
+            payload["warning"] = self.warning
+        return payload
 
 
 def load_release_info(release_dir: Path) -> ReleaseInfo:
@@ -356,47 +366,273 @@ def build_sync_plan(
     )
 
 
-def run_salt_sync_result(plan: SyncPlan, salt_bin: str = "salt", *, batch: str | None = None, log_dir: Path | None = None) -> SaltSyncResult:
-    """调用 Salt state.apply，同步 release 并应用节点选择。"""
+def run_salt_sync_result(
+    plan: SyncPlan,
+    salt_bin: str = "salt",
+    *,
+    batch: str | None = None,
+    log_dir: Path | None = None,
+    full_converge: bool = False,
+    concurrency: int = 5,
+    plan_only: bool = False,
+) -> SaltSyncResult:
+    """同步 release 并应用节点选择。
+
+    默认路径先对 Minion 做轻量分类，已收敛旧节点只执行 Mihomo API 切换；
+    新节点或漂移节点才走完整 state.apply。显式 batch/full_converge 保留旧
+    state.apply 路径，用于修复和兼容。
+    """
 
     _validate_batch(batch)
+    if concurrency < 1:
+        raise FleetError("E_CONFIG_VALIDATE", "concurrency 必须大于 0")
+    if not full_converge and not batch:
+        return _run_smart_sync_result(plan, salt_bin, log_dir=log_dir, concurrency=concurrency, plan_only=plan_only)
+    if plan_only:
+        return SaltSyncResult(
+            0,
+            None,
+            [],
+            "",
+            route_plan={
+                "mode": "full-converge" if full_converge else "state-apply",
+                "target": plan.target,
+                "batch": batch,
+            },
+        )
+    return _run_state_apply_result(plan, salt_bin, batch=batch, log_dir=log_dir)
+
+
+def _run_state_apply_result(plan: SyncPlan, salt_bin: str, *, batch: str | None = None, log_dir: Path | None = None) -> SaltSyncResult:
+    """调用 Salt state.apply，同步 release 并应用节点选择。"""
+
     pillar = f"pillar={json.dumps({'proxyfleet_operation_id': plan.operation_id, 'proxyfleet_release_root': str(plan.salt_release_dir.parent), 'proxyfleet_desired_path': str(plan.salt_desired_path), 'proxyfleet_component_locks_path': str(plan.salt_desired_path.parent / 'component-locks.json'), 'proxyfleet_port_policy_enabled': plan.port_policy_enabled, 'proxyfleet_port_policy_mode': plan.port_policy_mode, 'proxyfleet_proxy_mode': plan.proxy_mode}, separators=(',', ':'))}"
     cmd = _salt_sync_cmd(plan, salt_bin, batch, pillar)
     completed = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     output = _completed_output(completed)
     final_cmd = cmd
     final_returncode = int(completed.returncode)
+    fallback_used = False
+    fallback_warning = None
 
     if batch and final_returncode != 0 and _is_salt_batch_publish_error(output):
         fallback_cmd = _salt_sync_cmd(plan, salt_bin, None, pillar)
         fallback = subprocess.run(fallback_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         fallback_output = _completed_output(fallback)
-        output = (
-            output
-            + "\n\n# ProxyFleet fallback: Salt batch publish failed; retried without --batch.\n"
-            + fallback_output
-        )
+        fallback_used = True
+        fallback_warning = "Salt batch publish failed; retried without --batch"
+        if int(fallback.returncode) == 0:
+            output = "# ProxyFleet fallback: Salt batch publish failed; retried without --batch.\n" + fallback_output
+        else:
+            output = output + "\n\n# ProxyFleet fallback: Salt batch publish failed; retried without --batch.\n" + fallback_output
         final_cmd = fallback_cmd
         final_returncode = int(fallback.returncode)
 
     log_path = _write_salt_log(plan, final_cmd, output, log_dir) if log_dir is not None else None
     failed_minions, error_summary = _summarize_salt_output(output, final_returncode)
-    return SaltSyncResult(final_returncode, log_path, failed_minions, error_summary)
+    return SaltSyncResult(final_returncode, log_path, failed_minions, error_summary, fallback_used=fallback_used, warning=fallback_warning)
 
 
-def _salt_sync_cmd(plan: SyncPlan, salt_bin: str, batch: str | None, pillar: str) -> list[str]:
+def _run_smart_sync_result(
+    plan: SyncPlan,
+    salt_bin: str,
+    *,
+    log_dir: Path | None,
+    concurrency: int,
+    plan_only: bool,
+) -> SaltSyncResult:
+    if not plan.salt_desired_path.exists() or not (plan.salt_desired_path.parent / "component-locks.json").exists():
+        return _run_state_apply_result(plan, salt_bin, batch=None, log_dir=log_dir)
+    desired = _read_json(plan.salt_desired_path)
+    route_plan, status_output, status_rc = _build_minion_route_plan(plan, salt_bin)
+    if plan_only:
+        log_path = _write_salt_log(plan, [salt_bin, plan.target, "proxyfleet_mihomo.sync_status"], status_output, log_dir) if log_dir is not None else None
+        failed = [item["minion_id"] for item in route_plan["minions"] if item["classification"] == "offline"]
+        return SaltSyncResult(0, log_path, failed, "", route_plan=route_plan)
+    if status_rc != 0 or route_plan.get("classification_unavailable"):
+        fallback = _run_state_apply_result(plan, salt_bin, batch=None, log_dir=log_dir)
+        warning = "Minion classification failed; fell back to state.apply"
+        if route_plan.get("classification_unavailable"):
+            warning = "Minion classification unavailable; fell back to state.apply"
+        return SaltSyncResult(
+            fallback.returncode,
+            fallback.log_path,
+            fallback.failed_minions,
+            fallback.error_summary,
+            route_plan=route_plan,
+            fallback_used=True,
+            warning=warning,
+        )
+
+    outputs = [status_output] if status_output else []
+    returncode = 0
+    failed_minions: list[str] = []
+    switch_minions = [item["minion_id"] for item in route_plan["minions"] if item["action"] == "switch-only"]
+    converge_minions = [item["minion_id"] for item in route_plan["minions"] if item["action"] == "full-converge"]
+    offline_minions = [item["minion_id"] for item in route_plan["minions"] if item["classification"] == "offline"]
+    failed_minions.extend(offline_minions)
+
+    for chunk in _chunks(switch_minions, concurrency):
+        cmd = _salt_apply_switch_cmd(plan, salt_bin, chunk, desired)
+        completed = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        output = _completed_output(completed)
+        outputs.append(output)
+        if int(completed.returncode) != 0:
+            returncode = int(completed.returncode)
+            failed_minions.extend(chunk)
+
+    for chunk in _chunks(converge_minions, concurrency):
+        chunk_plan = _replace_plan_target(plan, ",".join(chunk))
+        pillar = f"pillar={json.dumps({'proxyfleet_operation_id': plan.operation_id, 'proxyfleet_release_root': str(plan.salt_release_dir.parent), 'proxyfleet_desired_path': str(plan.salt_desired_path), 'proxyfleet_component_locks_path': str(plan.salt_desired_path.parent / 'component-locks.json'), 'proxyfleet_port_policy_enabled': plan.port_policy_enabled, 'proxyfleet_port_policy_mode': plan.port_policy_mode, 'proxyfleet_proxy_mode': plan.proxy_mode}, separators=(',', ':'))}"
+        cmd = _salt_sync_cmd(chunk_plan, salt_bin, None, pillar, target_type="list")
+        completed = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        output = _completed_output(completed)
+        outputs.append(output)
+        if int(completed.returncode) != 0:
+            returncode = int(completed.returncode)
+            failed_minions.extend(chunk)
+
+    combined = "\n".join(item for item in outputs if item)
+    log_path = _write_salt_log(plan, [salt_bin, plan.target, "proxyfleet smart sync"], combined, log_dir) if log_dir is not None else None
+    parsed_failed, error_summary = _summarize_salt_output(combined, returncode)
+    merged_failed = sorted(set(failed_minions + parsed_failed))
+    return SaltSyncResult(returncode, log_path, merged_failed, error_summary, route_plan=route_plan)
+
+
+def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, Any], str, int]:
+    expected_locks = _sha256_file(plan.salt_desired_path.parent / "component-locks.json")
+    desired = _read_json(plan.salt_desired_path)
+    expected_targets = _expected_target_ids(plan.target, salt_bin)
+    cmd = [
+        salt_bin,
+        plan.target,
+        "proxyfleet_mihomo.sync_status",
+        f"expected_release_revision={plan.release_revision}",
+        f"expected_component_locks_sha256={expected_locks}",
+        f"expected_selected_node_id={desired['selected_node_id']}",
+        "--out=json",
+        "--static",
+    ]
+    completed = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    output = _completed_output(completed)
+    minions: list[dict[str, Any]] = []
+    try:
+        data = json.loads(completed.stdout if isinstance(completed.stdout, str) else "{}")
+    except Exception:
+        data = {}
+    if expected_targets is None:
+        data = {}
+    if isinstance(data, dict):
+        for minion_id, value in sorted(data.items()):
+            if not isinstance(value, dict):
+                classification = "offline"
+                reason = "invalid status payload"
+            else:
+                classification = str(value.get("classification", "drifted"))
+                reason = str(value.get("reason", ""))
+            if classification == "ready-old":
+                action = "switch-only"
+                if plan.port_policy_enabled:
+                    action = "full-converge"
+                    reason = "port policy enabled requires converge"
+            elif classification in {"new-minion", "drifted"}:
+                action = "full-converge"
+            else:
+                classification = "offline"
+                action = "defer"
+            minions.append({"minion_id": str(minion_id), "classification": classification, "action": action, "reason": reason})
+    if expected_targets is not None:
+        returned = {item["minion_id"] for item in minions}
+        for minion_id in sorted(set(expected_targets) - returned):
+            minions.append({"minion_id": minion_id, "classification": "offline", "action": "defer", "reason": "missing status return"})
+    if not minions:
+        minions.append({"minion_id": plan.target, "classification": "drifted", "action": "full-converge", "reason": "classification unavailable"})
+    return {
+        "mode": "smart",
+        "target": plan.target,
+        "classification_unavailable": len(minions) == 1 and minions[0]["reason"] == "classification unavailable",
+        "summary": _route_summary(minions),
+        "minions": minions,
+    }, output, int(completed.returncode)
+
+
+def _expected_target_ids(target: str, salt_bin: str) -> list[str] | None:
+    if target == "*":
+        salt_key = str(Path(salt_bin).with_name("salt-key")) if "/" in salt_bin else "salt-key"
+        completed = subprocess.run([salt_key, "--out=json", "-l", "acc"], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if int(completed.returncode) != 0:
+            return None
+        try:
+            data = json.loads(completed.stdout if isinstance(completed.stdout, str) else "{}")
+        except Exception:
+            return None
+        if isinstance(data, dict):
+            for field in ("minions", "accepted", "Accepted Keys"):
+                value = data.get(field)
+                if isinstance(value, list) and value:
+                    return sorted(set(str(item) for item in value))
+        return None
+    if not any(char in target for char in "*?[]{},"):
+        return [target]
+    return None
+
+
+def _route_summary(minions: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {"ready-old": 0, "new-minion": 0, "drifted": 0, "offline": 0}
+    for item in minions:
+        key = str(item.get("classification", "offline"))
+        summary[key] = summary.get(key, 0) + 1
+    return summary
+
+
+def _chunks(items: list[str], size: int) -> list[list[str]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _replace_plan_target(plan: SyncPlan, target: str) -> SyncPlan:
+    return SyncPlan(
+        operation_id=plan.operation_id,
+        target=target,
+        release_revision=plan.release_revision,
+        desired_revision=plan.desired_revision,
+        release_source=plan.release_source,
+        salt_release_dir=plan.salt_release_dir,
+        salt_desired_path=plan.salt_desired_path,
+        port_policy_enabled=plan.port_policy_enabled,
+        port_policy_mode=plan.port_policy_mode,
+        proxy_mode=plan.proxy_mode,
+    )
+
+
+def _salt_sync_cmd(plan: SyncPlan, salt_bin: str, batch: str | None, pillar: str, *, target_type: str = "glob") -> list[str]:
     cmd = [salt_bin, "--state-output=terse", "--state-verbose=False", "--summary"]
     if batch:
         cmd.extend(["--batch", batch])
+    if target_type == "list":
+        cmd.extend(["-L", plan.target])
+    else:
+        cmd.append(plan.target)
     cmd.extend(
         [
-            plan.target,
             "state.apply",
             "proxyfleet.sync",
             pillar,
         ]
     )
     return cmd
+
+
+def _salt_apply_switch_cmd(plan: SyncPlan, salt_bin: str, minions: list[str], desired: dict[str, Any]) -> list[str]:
+    return [
+        salt_bin,
+        "-L",
+        ",".join(minions),
+        "proxyfleet_mihomo.apply_switch",
+        f"desired_json={json.dumps(desired, ensure_ascii=False, separators=(',', ':'))}",
+        f"operation_id={plan.operation_id}",
+        "--out=json",
+        "--static",
+    ]
 
 
 def _completed_output(completed: subprocess.CompletedProcess[str] | Any) -> str:

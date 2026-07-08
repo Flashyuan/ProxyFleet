@@ -42,10 +42,9 @@ q             退出，不切换
 校验 Salt file_roots 中已有 release、组件锁和组件资产基线
 轻量发布 desired state 和端口白名单
 必要时同步 Salt assets 和 execution module
-执行带 batch 的 salt '*' state.apply proxyfleet.sync
-Minion 安装/校验 Mihomo
-Minion 应用 config.yaml
-Minion 切换 FLEET_PROXY
+读取各 Minion 的当前受管状态并分类
+旧 Minion 只调用 Mihomo API 切换 FLEET_PROXY
+新 Minion 或漂移 Minion 才执行 state.apply proxyfleet.sync
 如已配置邮件告警，向管理员发送手动切换成功通知
 ```
 
@@ -58,6 +57,8 @@ Minion 切换 FLEET_PROXY
 - TUI 测速优先当前已选节点、当前页和搜索结果，非可见节点低优先级后台刷新；
 - 默认测速并发为 8，避免进入 TUI 时压高 Master 本机 Mihomo 资源；
 - 日常切换节点与完整组件收敛拆开，普通切换不重复发布不变的 Mihomo 离线资产；
+- 默认不启用 Salt batch，改由 ProxyFleet 按较小并发分组，避免 Master 瞬时
+  fork 和事件处理压力过高；
 - 同步所有 Minion 时默认 batch 分批，最终仍保证目标 Minion 都收敛到同一个节点；
 - Salt 输出摘要优先，完整 highstate 输出写入权限受限日志文件。
 

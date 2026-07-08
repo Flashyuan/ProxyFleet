@@ -466,9 +466,12 @@ sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id>'
 `select-sync` 会把选择写入 `runtime/desired.yaml`，发布 release 到 Salt
 file_roots，然后执行 Salt 同步。
 
-性能优化行为：`select-sync` 默认走轻量切换路径，TUI 优先测速当前选择、当前页
-和搜索结果；所有 Minion 仍同步成同一个节点，但 Salt 默认按 batch 分批执行。
-终端默认只显示进度和摘要，完整 Salt 输出写入日志。
+性能优化行为：`select-sync` 默认走智能分流路径，TUI 优先测速当前选择、当前页
+和搜索结果；所有 Minion 仍同步成同一个节点，但已完成基线安装的旧 Minion
+只执行 Mihomo API 轻量切换，新 Minion 或组件漂移 Minion 才执行完整
+`state.apply`。默认不启用 Salt batch，而是由 ProxyFleet 按较小并发分组执行，
+降低 Master 瞬时 CPU、内存和终端输出压力。终端默认只显示进度和摘要，完整
+Salt 输出写入日志。
 
 ## 14. `select-sync` 参数
 
@@ -486,9 +489,14 @@ file_roots，然后执行 Salt 同步。
 --port-policy-mode MODE  merge/master-only/local-only/disabled
 --proxy-mode MODE        Mihomo 运行模式，默认 tproxy；可选 explicit-proxy
 --full-converge          完整发布 release、组件资产和 Salt module
---batch 10|20%           Salt batch，默认 20%
+--concurrency N          ProxyFleet 应用层同步并发，默认 5
+--plan                   只输出 Minion 分类和执行计划，不执行同步
+--batch 10|20%           显式启用 Salt batch；默认不使用 Salt batch
 --log-dir PATH           完整 Salt 输出日志目录，默认 runtime/logs/salt
 ```
+
+`--plan` 只读取当前选择并输出 Minion 分类与执行计划。它使用临时 Salt root，
+不会修改生产 `/srv/proxyfleet/salt/states`，也不会执行真实同步。
 
 默认 `tproxy` 会在 release 的 `config.yaml` 中启用 Mihomo TUN 自动路由和
 `tproxy-port`，让 Minion 本机进程不显式设置 `HTTP_PROXY` 时也可以走当前选中节点。

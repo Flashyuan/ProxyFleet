@@ -369,7 +369,9 @@ TUI 入口：
 --port-policy-mode MODE  merge/master-only/local-only/disabled
 --proxy-mode MODE        Mihomo 运行模式，默认 tproxy；可选 explicit-proxy
 --full-converge          完整发布 release、组件资产和 Salt module
---batch 10|20%           Salt batch，默认 20%
+--concurrency N          ProxyFleet 应用层同步并发，默认 5
+--plan                   只输出 Minion 分类和执行计划，不执行同步
+--batch 10|20%           显式启用 Salt batch；默认不使用 Salt batch
 --log-dir PATH           完整 Salt 输出日志目录，默认 runtime/logs/salt
 ```
 
@@ -478,6 +480,24 @@ offline-assets/
 
 说明：这些资产主要服务于新 Minion、离线安装、组件升级和接管修复。日常切换
 默认不会重复发布不变的大文件；缺少安全基线时会提示执行 `--full-converge`。
+
+日常切换时，Master 会先让 Minion 自检当前状态：
+
+- 旧 Minion：组件锁、release、systemd 和 Mihomo 均正常时，只调用 Mihomo API
+  切换当前节点，不重装组件；
+- 新 Minion 或漂移 Minion：缺少组件、release、锁文件或受管服务时，自动走
+  完整 `state.apply`；
+- 离线 Minion：本轮跳过并记录到结果里，不阻断其他在线 Minion。
+
+如需提前查看这次会怎么分流，可执行：
+
+```bash
+sudo scripts/proxyfleet-master.sh select-sync --plan
+```
+
+`--plan` 会使用临时 Salt root 生成计划输入，不会修改生产
+`/srv/proxyfleet/salt/states`，也不会执行 `saltutil.sync_modules` 或
+`state.apply`。
 
 ## 12. 卸载
 
