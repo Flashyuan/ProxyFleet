@@ -239,8 +239,8 @@ class MasterScriptTuiTests(unittest.TestCase):
         self.assertIn("proxyfleet_mihomo.module_sha256", text)
         self.assertIn("salt_assets_missing()", text)
         self.assertIn('远端 Salt module hash 已验证一致，跳过 saltutil.sync_modules', text)
-        self.assertIn('salt --batch "${batch}" "${target}" saltutil.sync_modules >/dev/null', text)
         self.assertIn('salt "${target}" saltutil.sync_modules >/dev/null', text)
+        self.assertNotIn('salt --batch "${batch}" "${target}" saltutil.sync_modules', text)
 
     def test_select_sync_health_concurrency_default_is_eight(self):
         text = SCRIPT.read_text(encoding="utf-8")

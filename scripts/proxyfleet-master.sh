@@ -12,7 +12,7 @@ MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
 MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
 SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
 SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.7}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.8}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://cdn.jsdelivr.net/gh/Flashyuan/ProxyFleet@main/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
 MONITOR_POLICY_PATH="${MONITOR_POLICY_PATH:-${PROJECT_ROOT}/runtime/health-monitor-policy.json}"
@@ -1458,11 +1458,10 @@ select_sync() {
   fi
   if [[ "${full_converge}" == "true" || "${sync_modules_required}" == "true" ]]; then
     echo "同步 Salt execution module..."
-    if [[ -n "${batch}" ]]; then
-      salt --batch "${batch}" "${target}" saltutil.sync_modules >/dev/null
-    else
-      salt "${target}" saltutil.sync_modules >/dev/null
-    fi
+    # Salt 3008.1 的 batch 模式在 saltutil.sync_modules 上可能触发
+    # "Some exception handling minion payload"。该操作本身很轻量，保持非 batch
+    # 发布，batch 仅用于后续 state.apply。
+    salt "${target}" saltutil.sync_modules >/dev/null
   else
     echo "远端 Salt module hash 已验证一致，跳过 saltutil.sync_modules"
   fi
