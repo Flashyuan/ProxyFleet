@@ -27,6 +27,7 @@ from proxyfleet.fleet import (
     run_salt_sync_result,
     salt_envelope,
     select_node,
+    SaltSyncResult,
 )
 
 
@@ -38,6 +39,54 @@ SALT_MODULE = ROOT / "salt" / "modules" / "proxyfleet_mihomo.py"
 
 def _release(tmp: Path):
     return build_release(BuildOptions(FIXTURE, tmp, 1, "abc123", LOCKS))
+
+
+def _installed_mihomo_fixture(root: Path):
+    binary = root / "mihomo"
+    binary.write_text("#!/bin/sh\necho mihomo\n", encoding="utf-8")
+    binary.chmod(0o755)
+    binary_sha = hashlib.sha256(binary.read_bytes()).hexdigest()
+    artifact_sha = "1" * 64
+    receipt = binary.with_name(binary.name + ".proxyfleet-install.json")
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "component": "mihomo",
+                "version": "v1.19.27",
+                "arch": "linux-amd64-compatible",
+                "source": "file:///fixture",
+                "artifact_sha256": artifact_sha,
+                "compression": "gzip",
+                "binary_sha256": binary_sha,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    locks = root / "component-locks.json"
+    locks.write_text(
+        json.dumps(
+            {
+                "components": [
+                    {
+                        "name": "mihomo",
+                        "version": "v1.19.27",
+                        "artifacts": {
+                            "linux-amd64-compatible": {
+                                "url": "file:///fixture",
+                                "sha256": artifact_sha,
+                                "compression": "gzip",
+                            }
+                        },
+                    }
+                ]
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return locks, binary
 
 
 class FleetTests(unittest.TestCase):
@@ -400,6 +449,148 @@ proxies:
 
             with self.assertRaises(FleetError):
                 run_salt_sync_result(plan, "salt", batch="0%")
+
+    def test_smart_sync_routes_old_minions_to_switch_and_new_to_converge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", salt_root, "*")
+            status = json.dumps(
+                {
+                    "drift": {"classification": "drifted", "reason": "component locks hash mismatch"},
+                    "old": {"classification": "ready-old", "reason": "ready"},
+                    "new": {"classification": "new-minion", "reason": "missing receipt"},
+                    "off": {"classification": "offline", "reason": "not returned"},
+                }
+            )
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout=json.dumps({"minions": ["drift", "old", "new", "off"]}), stderr=""),
+                    mock.Mock(returncode=0, stdout=status, stderr=""),
+                    mock.Mock(returncode=0, stdout=json.dumps({"old": {"status": "success"}}), stderr=""),
+                    mock.Mock(returncode=0, stdout="new:\n  Result: True\n", stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", concurrency=2, log_dir=root / "logs")
+
+            self.assertEqual(0, result.returncode)
+            self.assertIn("off", result.failed_minions)
+            self.assertEqual(1, result.route_plan["summary"]["ready-old"])
+            self.assertEqual(1, result.route_plan["summary"]["new-minion"])
+            self.assertEqual(1, result.route_plan["summary"]["drifted"])
+            switch_cmd = run.call_args_list[2].args[0]
+            converge_cmd = run.call_args_list[3].args[0]
+            self.assertIn("proxyfleet_mihomo.apply_switch", switch_cmd)
+            self.assertIn("-L", switch_cmd)
+            self.assertIn("old", switch_cmd)
+            self.assertIn("state.apply", converge_cmd)
+            self.assertIn("-L", converge_cmd)
+            self.assertIn("new", ",".join(converge_cmd))
+            self.assertIn("drift", ",".join(converge_cmd))
+
+    def test_smart_sync_empty_classification_falls_back_to_state_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", salt_root, "*")
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=1, stdout="", stderr="salt-key failed"),
+                    mock.Mock(returncode=0, stdout="{}", stderr=""),
+                    mock.Mock(returncode=0, stdout="minion:\n  Result: True\n", stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", concurrency=2)
+
+            self.assertEqual(0, result.returncode)
+            self.assertTrue(result.fallback_used)
+            self.assertTrue(result.route_plan["classification_unavailable"])
+            fallback_cmd = run.call_args_list[2].args[0]
+            self.assertIn("state.apply", fallback_cmd)
+            self.assertNotIn("-L", fallback_cmd)
+
+    def test_smart_sync_plan_only_only_classifies_minions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", salt_root, "*")
+            status = json.dumps({"old": {"classification": "ready-old", "reason": "ready"}})
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout=json.dumps({"minions": ["old"]}), stderr=""),
+                    mock.Mock(returncode=0, stdout=status, stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", plan_only=True)
+
+            self.assertEqual(0, result.returncode)
+            self.assertEqual(2, run.call_count)
+            self.assertEqual("switch-only", result.route_plan["minions"][0]["action"])
+            self.assertIn("route_plan", result.to_dict())
+
+    def test_smart_sync_port_policy_forces_ready_old_to_converge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            plan = build_sync_plan(
+                release,
+                root / "runtime" / "desired.yaml",
+                salt_root,
+                "old",
+                port_policy_enabled=True,
+            )
+            status = json.dumps({"old": {"classification": "ready-old", "reason": "ready"}})
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout=status, stderr=""),
+                    mock.Mock(returncode=0, stdout="old:\n  Result: True\n", stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", concurrency=2)
+
+            self.assertEqual(0, result.returncode)
+            self.assertEqual("full-converge", result.route_plan["minions"][0]["action"])
+            converge_cmd = run.call_args_list[1].args[0]
+            self.assertIn("state.apply", converge_cmd)
+            self.assertIn("-L", converge_cmd)
+
+    def test_cli_sync_plan_only_outputs_route_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            route_plan = {"summary": {"ready-old": 1}, "minions": [{"minion_id": "old", "action": "switch-only"}]}
+            stdout = io.StringIO()
+
+            with mock.patch("proxyfleet.cli.run_salt_sync_result", return_value=SaltSyncResult(0, None, [], "", route_plan=route_plan)), mock.patch("sys.stdout", new=stdout):
+                rc = main(
+                    [
+                        "sync",
+                        str(release),
+                        str(root / "runtime" / "desired.yaml"),
+                        str(salt_root),
+                        "--plan-only",
+                    ]
+                )
+
+            self.assertEqual(0, rc)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual("planned", payload["status"])
+            self.assertEqual({"ready-old": 1}, payload["salt"]["route_plan"]["summary"])
 
     def test_salt_envelope_redacts_secret_fields(self):
         envelope = salt_envelope(
@@ -778,6 +969,180 @@ class SaltModuleTests(unittest.TestCase):
             self.assertEqual(previous_release, current.resolve())
             self.assertFalse((install_root / "desired.yaml").exists())
 
+    def test_apply_desired_already_applied_does_not_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "salt" / "releases")
+            node = build_node_catalog(release)[0]
+            desired = select_node(release, root / "runtime", node.node_id, "production")
+            install_root = root / "install"
+            target_release = install_root / "releases" / "000001"
+            shutil.copytree(release, target_release)
+            (install_root / "current").symlink_to(target_release)
+            (install_root / "desired.yaml").write_text(json.dumps(desired), encoding="utf-8")
+
+            module = self._module()
+            module._api = lambda api, secret, method, path, body, **kwargs: {"all": [node.mihomo_name], "now": node.mihomo_name}
+            with mock.patch.object(module, "_reload_or_restart") as reload_or_restart:
+                result = module.apply_desired(
+                    release_root=str(root / "salt" / "releases"),
+                    desired_path=str(root / "runtime" / "desired.yaml"),
+                    install_root=str(install_root),
+                    operation_id="op-test",
+                )
+
+            self.assertEqual("success", result["status"])
+            self.assertEqual("already-applied", result["message"])
+            reload_or_restart.assert_not_called()
+
+    def test_apply_desired_same_release_switch_only_does_not_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "salt" / "releases")
+            node = build_node_catalog(release)[0]
+            desired = select_node(release, root / "runtime", node.node_id, "production")
+            install_root = root / "install"
+            target_release = install_root / "releases" / "000001"
+            shutil.copytree(release, target_release)
+            (install_root / "current").symlink_to(target_release)
+            (install_root / "desired.yaml").write_text('{"selected_node_id":"old"}\n', encoding="utf-8")
+            calls = []
+
+            module = self._module()
+            module._wait_mihomo_node = lambda api, secret, group, name: calls.append(("wait", name))
+            module._select_mihomo = lambda api, secret, group, name: calls.append(("select", name)) or True
+            with mock.patch.object(module, "_reload_or_restart") as reload_or_restart:
+                result = module.apply_desired(
+                    release_root=str(root / "salt" / "releases"),
+                    desired_path=str(root / "runtime" / "desired.yaml"),
+                    install_root=str(install_root),
+                    operation_id="op-test",
+                )
+
+            self.assertEqual("success", result["status"])
+            self.assertEqual("switched", result["message"])
+            self.assertTrue(result["evidence"]["switch_only"])
+            self.assertEqual([("wait", node.mihomo_name), ("select", node.mihomo_name)], calls)
+            reload_or_restart.assert_not_called()
+            self.assertEqual(desired["selected_node_id"], json.loads((install_root / "desired.yaml").read_text(encoding="utf-8"))["selected_node_id"])
+
+    def test_apply_switch_changes_selection_without_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "salt" / "releases")
+            node = build_node_catalog(release)[0]
+            desired = select_node(release, root / "runtime", node.node_id, "production")
+            install_root = root / "install"
+            managed_release = install_root / "managed" / "releases" / "000001"
+            active_release = install_root / "releases" / "000001"
+            shutil.copytree(release, managed_release)
+            shutil.copytree(release, active_release)
+            (install_root / "current").symlink_to(active_release)
+            locks, binary = _installed_mihomo_fixture(root)
+            calls = []
+
+            module = self._module()
+            module._api = lambda api, secret, method, path, body, **kwargs: {"all": [node.mihomo_name], "now": "DIRECT"}
+            module._select_mihomo = lambda api, secret, group, name: calls.append(("select", name)) or True
+            with mock.patch.object(module, "_reload_or_restart") as reload_or_restart:
+                result = module.apply_switch(
+                    desired_json=json.dumps(desired),
+                    install_root=str(install_root),
+                    component_locks_path=str(locks),
+                    binary_path=str(binary),
+                    operation_id="op-test",
+                )
+
+            self.assertEqual("success", result["status"])
+            self.assertEqual([("select", node.mihomo_name)], calls)
+            reload_or_restart.assert_not_called()
+            self.assertTrue((install_root / "managed" / "desired.yaml").exists())
+            self.assertTrue((install_root / "desired.yaml").exists())
+
+    def test_apply_switch_fails_when_component_receipt_mismatches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "salt" / "releases")
+            node = build_node_catalog(release)[0]
+            desired = select_node(release, root / "runtime", node.node_id, "production")
+            install_root = root / "install"
+            shutil.copytree(release, install_root / "managed" / "releases" / "000001")
+            shutil.copytree(release, install_root / "releases" / "000001")
+            (install_root / "current").symlink_to(install_root / "releases" / "000001")
+            locks, binary = _installed_mihomo_fixture(root)
+            binary.with_name(binary.name + ".proxyfleet-install.json").write_text("{}", encoding="utf-8")
+
+            module = self._module()
+            module._api = lambda api, secret, method, path, body, **kwargs: {"all": [node.mihomo_name], "now": "DIRECT"}
+            result = module.apply_switch(
+                desired_json=json.dumps(desired),
+                install_root=str(install_root),
+                component_locks_path=str(locks),
+                binary_path=str(binary),
+                operation_id="op-test",
+            )
+
+            self.assertEqual("failed", result["status"])
+            self.assertEqual("E_SWITCH_NEEDS_CONVERGE", result["error_code"])
+
+    def test_sync_status_classifies_ready_old_and_new_minion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "salt" / "releases")
+            install_root = root / "install"
+            install_root.mkdir()
+            locks, binary = _installed_mihomo_fixture(root)
+            service = root / "mihomo.service"
+            service.write_text("[Service]\n", encoding="utf-8")
+            shutil.copy2(locks, install_root / "component-locks.json")
+            managed_release = install_root / "managed" / "releases" / "000001"
+            active_release = install_root / "releases" / "000001"
+            shutil.copytree(release, managed_release)
+            shutil.copytree(release, active_release)
+            (install_root / "current").symlink_to(active_release)
+
+            module = self._module()
+            ready = module.sync_status(
+                expected_release_revision=1,
+                expected_component_locks_sha256=hashlib.sha256(locks.read_bytes()).hexdigest(),
+                install_root=str(install_root),
+                component_locks_path=str(locks),
+                binary_path=str(binary),
+                service_path=str(service),
+            )
+            new = module.sync_status(install_root=str(root / "missing"))
+
+            self.assertEqual("ready-old", ready["classification"])
+            self.assertEqual("new-minion", new["classification"])
+
+    def test_sync_status_rejects_bad_component_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "salt" / "releases")
+            install_root = root / "install"
+            install_root.mkdir()
+            locks, binary = _installed_mihomo_fixture(root)
+            binary.with_name(binary.name + ".proxyfleet-install.json").write_text("{}", encoding="utf-8")
+            service = root / "mihomo.service"
+            service.write_text("[Service]\n", encoding="utf-8")
+            shutil.copy2(locks, install_root / "component-locks.json")
+            shutil.copytree(release, install_root / "managed" / "releases" / "000001")
+            shutil.copytree(release, install_root / "releases" / "000001")
+            (install_root / "current").symlink_to(install_root / "releases" / "000001")
+
+            module = self._module()
+            status = module.sync_status(
+                expected_release_revision=1,
+                expected_component_locks_sha256=hashlib.sha256(locks.read_bytes()).hexdigest(),
+                install_root=str(install_root),
+                component_locks_path=str(locks),
+                binary_path=str(binary),
+                service_path=str(service),
+            )
+
+            self.assertEqual("drifted", status["classification"])
+            self.assertIn("E_COMPONENT_HASH", status["reasons"])
+
     def test_install_mihomo_missing_sha_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1074,6 +1439,56 @@ class SaltModuleTests(unittest.TestCase):
             self.assertIn("WorkingDirectory=/etc/proxyfleet/current", unit_text)
             self.assertIn(f"ExecStart={root / 'mihomo'} -d /etc/proxyfleet/current -f /etc/proxyfleet/current/config.yaml", unit_text)
 
+    def test_install_mihomo_skips_daemon_reload_when_unit_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asset = root / "mihomo.gz"
+            with gzip.open(asset, "wb") as fh:
+                fh.write(b"#!/bin/sh\necho 'Mihomo Meta v1.19.27'\n")
+            asset_sha = hashlib.sha256(asset.read_bytes()).hexdigest()
+            locks = root / "component-locks.json"
+            locks.write_text(
+                json.dumps(
+                    {
+                        "components": [
+                            {
+                                "name": "mihomo",
+                                "version": "v1.19.27",
+                                "artifacts": {
+                                    "linux-amd64": {
+                                        "url": asset.as_uri(),
+                                        "sha256": asset_sha,
+                                        "compression": "gzip",
+                                        "target_path": str(root / "mihomo"),
+                                    }
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            module = self._module()
+            with mock.patch.object(module.platform, "machine", return_value="x86_64"), mock.patch.object(module, "_systemctl") as systemctl:
+                first = module.install_mihomo(
+                    component_locks_path=str(locks),
+                    binary_path=str(root / "mihomo"),
+                    service_path=str(root / "mihomo.service"),
+                    operation_id="op-test",
+                )
+                second = module.install_mihomo(
+                    component_locks_path=str(locks),
+                    binary_path=str(root / "mihomo"),
+                    service_path=str(root / "mihomo.service"),
+                    operation_id="op-test",
+                )
+
+            self.assertEqual("success", first["status"])
+            self.assertEqual("success", second["status"])
+            self.assertTrue(first["evidence"]["unit_changed"])
+            self.assertFalse(second["evidence"]["unit_changed"])
+            systemctl.assert_called_once_with(["daemon-reload"])
+
     def test_install_mihomo_uses_offline_local_asset_before_url(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1271,6 +1686,20 @@ class SaltModuleTests(unittest.TestCase):
 
         self.assertEqual("E_SELECT_VERIFY", ctx.exception.error_code)
         self.assertEqual(("PUT", {"name": "[SELF] previous"}), calls[-2])
+
+    def test_select_mihomo_skips_put_when_already_selected(self):
+        module = self._module()
+        calls = []
+
+        def fake_api(base_url, api_secret, method, path, body, timeout_error_code="E_LOCAL_API", request_timeout=3):
+            calls.append((method, body))
+            return {"now": "[SELF] test-node", "all": ["[SELF] test-node"]}
+
+        module._api = fake_api
+        changed = module._select_mihomo("http://127.0.0.1:9090", None, "FLEET_PROXY", "[SELF] test-node")
+
+        self.assertFalse(changed)
+        self.assertEqual([("GET", None)], calls)
 
     def test_select_mihomo_reports_rollback_failure(self):
         module = self._module()

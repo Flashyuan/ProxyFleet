@@ -260,9 +260,14 @@ sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id>'
 --port-policy-mode MODE  merge/master-only/local-only/disabled
 --proxy-mode MODE        Mihomo 运行模式，默认 tproxy；可选 explicit-proxy
 --full-converge          完整发布 release、组件资产和 Salt module
---batch 10|20%           Salt batch，默认 20%
+--concurrency N          ProxyFleet 应用层同步并发，默认 5
+--plan                   只输出 Minion 分类和执行计划，不执行同步
+--batch 10|20%           显式启用 Salt batch；默认不使用 Salt batch
 --log-dir PATH           完整 Salt 输出日志目录，默认 runtime/logs/salt
 ```
+
+`--plan` 只读取当前选择并输出 Minion 分类与执行计划。它使用临时 Salt root，
+不会修改生产 `/srv/proxyfleet/salt/states`，也不会执行真实同步。
 
 默认 `tproxy` 会把透明代理运行参数写入新构建的 release，并在同步切换时作为
 Salt plan 记录。只有排障时建议临时切到 `explicit-proxy`。
@@ -271,10 +276,12 @@ Salt plan 记录。只有排障时建议临时切到 `explicit-proxy`。
 
 - TUI 先显示节点列表，再按当前选择、当前页和搜索结果优先后台测速；
 - 默认测速并发为 8，避免进入 TUI 时压高 Master 本机 Mihomo；
-- 日常切换默认走轻量发布：Salt file_roots 已有完整安全基线时只更新 desired；
+- 日常切换默认走智能分流：旧 Minion 只通过 Mihomo API 切换节点，新 Minion
+  或组件漂移 Minion 才走完整 `state.apply`；
 - 如果 Salt file_roots 缺 release、组件锁、组件资产 marker 或 hash 不一致，会
   fail-closed 并提示使用 `--full-converge`；
-- 所有 Minion 仍最终同步成同一个节点，但默认使用 Salt batch 分批执行；
+- 所有 Minion 仍最终同步成同一个节点；默认不启用 Salt batch，而是由
+  ProxyFleet 按 `--concurrency` 做应用层小批量同步；
 - Salt 输出默认精简，完整输出写入 `--log-dir`，日志目录权限为 `0700`，文件为
   `0600`，并做敏感信息脱敏；
 - 仅当远端 Minion 回报的 `proxyfleet_mihomo` module SHA-256 与 Master 当前模块

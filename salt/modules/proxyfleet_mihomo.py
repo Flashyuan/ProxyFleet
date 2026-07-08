@@ -97,8 +97,9 @@ def install_mihomo(
             _write_install_receipt(receipt, version, _arch_key(), source, sha256, compression, binary_sha256)
             changed = True
 
-        _write_systemd_unit(Path(service_path), binary, Path(config_path), user, group)
-        _systemctl(["daemon-reload"])
+        unit_changed = _write_systemd_unit(Path(service_path), binary, Path(config_path), user, group)
+        if unit_changed:
+            _systemctl(["daemon-reload"])
         return _envelope(
             operation_id,
             "prepare",
@@ -107,7 +108,13 @@ def install_mihomo(
             0,
             None,
             "mihomo installed",
-            {"mihomo_version": version, "binary_path": str(binary), "artifact_sha256": sha256, "changed": changed},
+            {
+                "mihomo_version": version,
+                "binary_path": str(binary),
+                "artifact_sha256": sha256,
+                "changed": changed,
+                "unit_changed": unit_changed,
+            },
         )
     except _ApplyError as exc:
         return _failure(operation_id, "prepare", 0, 0, exc.error_code, str(exc), fail_on_error)
@@ -156,6 +163,41 @@ def apply_desired(
 
         current = Path(install_root) / "current"
         previous_current = _current_target(current)
+        if previous_current == target_release.resolve() and _desired_matches(Path(install_root) / "desired.yaml", desired):
+            try:
+                state = _api(mihomo_api, api_secret, "GET", "/proxies/" + parse.quote(group, safe=""), None)
+                if state.get("now") == selected_name:
+                    return _envelope(
+                        operation_id,
+                        "apply",
+                        "success",
+                        release_revision,
+                        desired_revision,
+                        None,
+                        "already-applied",
+                        {"selected_node_id": desired["selected_node_id"], "selected_mihomo_name": selected_name, "already_applied": True},
+                    )
+            except _ApplyError:
+                pass
+        if previous_current == target_release.resolve():
+            _wait_mihomo_node(mihomo_api, api_secret, group, selected_name)
+            changed = _select_mihomo(mihomo_api, api_secret, group, selected_name)
+            _atomic_copy(Path(desired_path), Path(install_root) / "desired.yaml")
+            return _envelope(
+                operation_id,
+                "apply",
+                "success",
+                release_revision,
+                desired_revision,
+                None,
+                "switched" if changed else "already-applied",
+                {
+                    "selected_node_id": desired["selected_node_id"],
+                    "selected_mihomo_name": selected_name,
+                    "switch_only": True,
+                    "already_applied": not changed,
+                },
+            )
         _point_current(current, target_release)
         try:
             _reload_or_restart(service_name)
@@ -188,12 +230,156 @@ def apply_desired(
         return _failure(operation_id, "apply", 0, 0, "E_LOCAL_API", str(exc), fail_on_error)
 
 
+def sync_status(
+    expected_release_revision=None,
+    expected_component_locks_sha256=None,
+    expected_selected_node_id=None,
+    install_root="/etc/proxyfleet",
+    component_locks_path="/etc/proxyfleet/component-locks.json",
+    binary_path="/usr/local/bin/mihomo",
+    service_path="/etc/systemd/system/mihomo.service",
+):
+    """只读检查 Minion 当前状态，用于 Master 决定轻量切换或完整收敛。"""
+
+    install = Path(install_root)
+    locks = Path(component_locks_path)
+    binary = Path(binary_path)
+    service = Path(service_path)
+    receipt = binary.with_name(binary.name + ".proxyfleet-install.json")
+    release_revision = int(expected_release_revision) if expected_release_revision is not None else None
+    reasons = []
+
+    if not install.exists():
+        return _status_payload("new-minion", "install root missing", reasons)
+    for path, reason in (
+        (locks, "component locks missing"),
+        (binary, "mihomo binary missing"),
+        (receipt, "mihomo receipt missing"),
+        (service, "systemd unit missing"),
+    ):
+        if not path.exists():
+            reasons.append(reason)
+    if reasons:
+        return _status_payload("new-minion", reasons[0], reasons)
+
+    if expected_component_locks_sha256 and _sha256(locks) != str(expected_component_locks_sha256):
+        reasons.append("component locks hash mismatch")
+    try:
+        _verify_installed_component(locks, binary, receipt)
+    except _ApplyError as exc:
+        reasons.append(exc.error_code)
+
+    if release_revision is not None:
+        managed_release = install / "managed" / "releases" / f"{release_revision:06d}"
+        active_release = install / "releases" / f"{release_revision:06d}"
+        for release, reason in ((managed_release, "managed release missing"), (active_release, "active release missing")):
+            if not release.exists():
+                reasons.append(reason)
+            else:
+                try:
+                    _verify_release(release)
+                except _ApplyError as exc:
+                    reasons.append(exc.error_code)
+    current = install / "current"
+    if release_revision is not None and (not current.exists() and not current.is_symlink()):
+        reasons.append("current symlink missing")
+    elif release_revision is not None and _current_target(current) != (install / "releases" / f"{release_revision:06d}").resolve():
+        reasons.append("current release mismatch")
+
+    if reasons:
+        return _status_payload("drifted", reasons[0], reasons)
+    return _status_payload(
+        "ready-old",
+        "ready for switch-only",
+        [],
+        {
+            "selected_node_id": expected_selected_node_id,
+            "component_locks_sha256": _sha256(locks),
+            "release_revision": release_revision,
+        },
+    )
+
+
+def apply_switch(
+    desired_json=None,
+    install_root="/etc/proxyfleet",
+    component_locks_path="/etc/proxyfleet/component-locks.json",
+    binary_path="/usr/local/bin/mihomo",
+    mihomo_api="http://127.0.0.1:9090",
+    api_secret=None,
+    operation_id="op-unknown",
+    fail_on_error=False,
+):
+    """轻量切换已收敛 Minion 的 FLEET_PROXY，不重载 Mihomo。"""
+
+    try:
+        if desired_json is None:
+            raise _ApplyError("E_SCHEMA_UNSUPPORTED", "desired_json is required")
+        desired = json.loads(str(desired_json)) if isinstance(desired_json, str) else desired_json
+        if not isinstance(desired, dict):
+            raise _ApplyError("E_SCHEMA_UNSUPPORTED", "desired_json must be object")
+        release_revision = int(desired["release_revision"])
+        desired_revision = int(desired["desired_revision"])
+        selected_name = str(desired["selected_mihomo_name"])
+        group = str(desired.get("managed_policy_group", MANAGED_POLICY_GROUP))
+        if group != MANAGED_POLICY_GROUP:
+            raise _ApplyError("E_SCHEMA_UNSUPPORTED", "unsupported managed group")
+        install = Path(install_root)
+        managed_release = install / "managed" / "releases" / f"{release_revision:06d}"
+        active_release = install / "releases" / f"{release_revision:06d}"
+        if not managed_release.exists() or not active_release.exists():
+            raise _ApplyError("E_SWITCH_NEEDS_CONVERGE", "release missing")
+        _verify_release(managed_release)
+        _verify_release(active_release)
+        binary = Path(binary_path)
+        receipt = binary.with_name(binary.name + ".proxyfleet-install.json")
+        try:
+            _verify_installed_component(Path(component_locks_path), binary, receipt)
+        except _ApplyError as exc:
+            raise _ApplyError("E_SWITCH_NEEDS_CONVERGE", str(exc)) from exc
+        current = install / "current"
+        if _current_target(current) != active_release.resolve():
+            raise _ApplyError("E_SWITCH_NEEDS_CONVERGE", "current release mismatch")
+
+        before = _api(mihomo_api, api_secret, "GET", "/proxies/" + parse.quote(group, safe=""), None)
+        all_names = set(before.get("all", []))
+        if selected_name not in all_names:
+            raise _ApplyError("E_NODE_NOT_FOUND", "target node is not selectable")
+        already_applied = before.get("now") == selected_name
+        if not already_applied:
+            _select_mihomo(mihomo_api, api_secret, group, selected_name)
+        _write_desired_json(desired, install / "managed" / "desired.yaml")
+        _write_desired_json(desired, install / "desired.yaml")
+        return _envelope(
+            operation_id,
+            "switch",
+            "success",
+            release_revision,
+            desired_revision,
+            None,
+            "already-applied" if already_applied else "switched",
+            {
+                "selected_node_id": desired["selected_node_id"],
+                "selected_mihomo_name": selected_name,
+                "already_applied": already_applied,
+            },
+        )
+    except _ApplyError as exc:
+        return _failure(operation_id, "switch", 0, 0, exc.error_code, str(exc), fail_on_error)
+    except CommandExecutionError:
+        raise
+    except Exception as exc:
+        return _failure(operation_id, "switch", 0, 0, "E_LOCAL_API", str(exc), fail_on_error)
+
+
 def _select_mihomo(base_url, api_secret, group, selected_name):
     before = _api(base_url, api_secret, "GET", "/proxies/" + parse.quote(group, safe=""), None)
     all_names = set(before.get("all", []))
     if selected_name not in all_names:
         raise _ApplyError("E_NODE_NOT_FOUND", "target node is not selectable")
     previous_name = before.get("now")
+    if previous_name == selected_name:
+        return False
     _api(base_url, api_secret, "PUT", "/proxies/" + parse.quote(group, safe=""), {"name": selected_name})
     after = _api(base_url, api_secret, "GET", "/proxies/" + parse.quote(group, safe=""), None)
     if after.get("now") != selected_name:
@@ -206,6 +392,7 @@ def _select_mihomo(base_url, api_secret, group, selected_name):
             except _ApplyError:
                 raise _ApplyError("E_ROLLBACK_FAILED", "select rollback failed")
         raise _ApplyError("E_SELECT_VERIFY", "select verification failed")
+    return True
 
 
 def _wait_mihomo_api(base_url, api_secret, group, timeout_seconds=20):
@@ -748,6 +935,20 @@ def _installed_receipt_matches(receipt, binary, artifact_sha256):
     return isinstance(binary_sha256, str) and _sha256(binary) == binary_sha256
 
 
+def _verify_installed_component(component_locks_path, binary, receipt):
+    component = _load_component_lock(component_locks_path, "mihomo")
+    artifact = _component_artifact(component)
+    artifact_sha256 = artifact.get("sha256")
+    if not isinstance(artifact_sha256, str) or len(artifact_sha256) != 64:
+        raise _ApplyError("E_COMPONENT_INTEGRITY_MISSING", "mihomo sha256 missing")
+    if not binary.exists():
+        raise _ApplyError("E_COMPONENT_INTEGRITY_MISSING", "mihomo binary missing")
+    if not receipt.exists():
+        raise _ApplyError("E_COMPONENT_INTEGRITY_MISSING", "mihomo receipt missing")
+    if not _installed_receipt_matches(receipt, binary, artifact_sha256):
+        raise _ApplyError("E_COMPONENT_HASH", "mihomo installed component mismatch")
+
+
 def _write_install_receipt(path, version, arch, source, artifact_sha256, compression, binary_sha256):
     path.write_text(
         json.dumps(
@@ -798,7 +999,21 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 """
+    if path.exists() and path.read_text(encoding="utf-8") == content:
+        return False
     path.write_text(content, encoding="utf-8")
+    return True
+
+
+def _status_payload(classification, reason, reasons, evidence=None):
+    return {
+        "schema_version": "1.0",
+        "minion_id": socket.gethostname(),
+        "classification": classification,
+        "reason": reason,
+        "reasons": reasons,
+        "evidence": _redact_obj(evidence or {}),
+    }
 
 
 def _sha256(path):
@@ -814,6 +1029,24 @@ def _atomic_copy(source, target):
     temp = target.parent / (target.name + ".next")
     shutil.copyfile(source, temp)
     temp.replace(target)
+
+
+def _write_desired_json(desired, target):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.parent / (target.name + ".next")
+    temp.write_text(json.dumps(desired, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp.replace(target)
+
+
+def _desired_matches(path, desired):
+    try:
+        current = _read_json(path)
+    except Exception:
+        return False
+    for key in ("release_revision", "desired_revision", "selected_node_id", "selected_mihomo_name"):
+        if current.get(key) != desired.get(key):
+            return False
+    return True
 
 
 def _envelope(operation_id, phase, status, release_revision, desired_revision, error_code, message, evidence=None):

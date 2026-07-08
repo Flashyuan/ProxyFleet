@@ -12,7 +12,7 @@ MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
 MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
 SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
 SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v0.1.10}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v.0.2.0}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://github.com/Flashyuan/ProxyFleet/releases/latest/download/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
 MONITOR_POLICY_PATH="${MONITOR_POLICY_PATH:-${PROJECT_ROOT}/runtime/health-monitor-policy.json}"
@@ -140,6 +140,51 @@ salt_remote_module_hash_matches() {
   local batch="$3"
   local output
   output="$(mktemp)"
+  local expected_targets_json=""
+  if [[ "${target}" == "*" ]]; then
+    local keys_output
+    keys_output="$(mktemp)"
+    if ! salt-key --out=json -l acc >"${keys_output}" 2>/dev/null; then
+      rm -f "${output}" "${keys_output}"
+      return 1
+    fi
+    expected_targets_json="$(python3 - "${keys_output}" <<'PY'
+import json
+import sys
+
+try:
+    data = json.loads(open(sys.argv[1], encoding="utf-8").read())
+except Exception:
+    sys.exit(1)
+keys = []
+if isinstance(data, dict):
+    for field in ("minions", "accepted", "Accepted Keys"):
+        value = data.get(field)
+        if isinstance(value, list):
+            keys = [str(item) for item in value]
+            break
+if not keys:
+    sys.exit(1)
+print(json.dumps(sorted(set(keys)), ensure_ascii=True))
+PY
+)"
+    local key_rc=$?
+    rm -f "${keys_output}"
+    if [[ "${key_rc}" -ne 0 || -z "${expected_targets_json}" ]]; then
+      rm -f "${output}"
+      return 1
+    fi
+  elif [[ "${target}" != *"*"* && "${target}" != *"?"* && "${target}" != *"["* && "${target}" != *","* ]]; then
+    expected_targets_json="$(python3 - "${target}" <<'PY'
+import json
+import sys
+print(json.dumps([sys.argv[1]], ensure_ascii=True))
+PY
+)"
+  else
+    rm -f "${output}"
+    return 1
+  fi
   local cmd=(salt)
   if [[ -n "${batch}" ]]; then
     cmd+=(--batch "${batch}")
@@ -149,16 +194,19 @@ salt_remote_module_hash_matches() {
     rm -f "${output}"
     return 1
   fi
-  python3 - "${output}" "${expected_hash}" <<'PY'
+  python3 - "${output}" "${expected_hash}" "${expected_targets_json}" <<'PY'
 import json
 import sys
 
-path, expected = sys.argv[1], sys.argv[2]
+path, expected, expected_targets_raw = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     data = json.loads(open(path, encoding="utf-8").read())
+    expected_targets = set(json.loads(expected_targets_raw))
 except Exception:
     sys.exit(1)
-if not isinstance(data, dict) or not data:
+if not isinstance(data, dict) or not data or not expected_targets:
+    sys.exit(1)
+if set(map(str, data.keys())) != expected_targets:
     sys.exit(1)
 for value in data.values():
     if not isinstance(value, dict) or value.get("sha256") != expected:
@@ -1337,7 +1385,9 @@ select_sync() {
   local health_timeout_ms="2000"
   local health_concurrency="8"
   local full_converge="false"
-  local batch="20%"
+  local batch=""
+  local concurrency="5"
+  local plan_only="false"
   local log_dir="${PROJECT_ROOT}/runtime/logs/salt"
 
   while [[ $# -gt 0 ]]; do
@@ -1358,6 +1408,8 @@ select_sync() {
       --port-policy-mode) port_policy_mode="$2"; shift 2 ;;
       --proxy-mode) proxy_mode="$2"; shift 2 ;;
       --full-converge) full_converge="true"; shift ;;
+      --concurrency) concurrency="$2"; shift 2 ;;
+      --plan) plan_only="true"; shift ;;
       --batch) batch="$2"; shift 2 ;;
       --log-dir) log_dir="$2"; shift 2 ;;
       *) die "未知 select-sync 参数：$1" ;;
@@ -1400,34 +1452,41 @@ select_sync() {
     fi
   fi
 
-  local catalog_file
-  catalog_file="$(mktemp)"
-  if [[ "${use_health_cache}" == "true" ]] && health_cache_has_useful_result "${health_cache}"; then
-    proxyfleet_python nodes "${release_dir}" --health-cache "${health_cache}" > "${catalog_file}"
-  else
-    proxyfleet_python nodes "${release_dir}" > "${catalog_file}"
-  fi
-
   local selected_line selected_node_id selected_name
-  if ! selected_line="$(live_health_menu \
-    "${catalog_file}" \
-    "${mihomo_api}" \
-    "${health_timeout_ms}" \
-    "${health_concurrency}" \
-    "${runtime_dir}/desired.yaml" \
-    "$(basename "${release_dir}")" \
-    "${target}" \
-    "${port_policy_status}")"; then
-    die "未选择有效节点序号"
-  fi
-  [[ -n "${selected_line}" ]] || die "未选择有效节点序号"
-  selected_node_id="$(printf '%s\n' "${selected_line}" | awk -F '\t' '{print $2}')"
-  selected_name="$(printf '%s\n' "${selected_line}" | awk -F '\t' '{print $3}')"
+  if [[ "${plan_only}" == "true" ]]; then
+    [[ -f "${runtime_dir}/desired.yaml" ]] || die "缺少 ${runtime_dir}/desired.yaml，无法只读规划同步路径"
+    selected_node_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("selected_node_id",""))' "${runtime_dir}/desired.yaml")"
+    selected_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("selected_mihomo_name",""))' "${runtime_dir}/desired.yaml")"
+    echo "规划当前选择：${selected_name:-无}"
+  else
+    local catalog_file
+    catalog_file="$(mktemp)"
+    if [[ "${use_health_cache}" == "true" ]] && health_cache_has_useful_result "${health_cache}"; then
+      proxyfleet_python nodes "${release_dir}" --health-cache "${health_cache}" > "${catalog_file}"
+    else
+      proxyfleet_python nodes "${release_dir}" > "${catalog_file}"
+    fi
 
-  echo "已选择：${selected_name}"
-  proxyfleet_python select-node "${release_dir}" "${runtime_dir}" \
-    --node-id "${selected_node_id}" \
-    --target-group "${target_group}" >/dev/null
+    if ! selected_line="$(live_health_menu \
+      "${catalog_file}" \
+      "${mihomo_api}" \
+      "${health_timeout_ms}" \
+      "${health_concurrency}" \
+      "${runtime_dir}/desired.yaml" \
+      "$(basename "${release_dir}")" \
+      "${target}" \
+      "${port_policy_status}")"; then
+      die "未选择有效节点序号"
+    fi
+    [[ -n "${selected_line}" ]] || die "未选择有效节点序号"
+    selected_node_id="$(printf '%s\n' "${selected_line}" | awk -F '\t' '{print $2}')"
+    selected_name="$(printf '%s\n' "${selected_line}" | awk -F '\t' '{print $3}')"
+
+    echo "已选择：${selected_name}"
+    proxyfleet_python select-node "${release_dir}" "${runtime_dir}" \
+      --node-id "${selected_node_id}" \
+      --target-group "${target_group}" >/dev/null
+  fi
 
   local publish_args=(
     publish-salt
@@ -1438,6 +1497,14 @@ select_sync() {
     --port-policy-mode "${port_policy_mode}"
     --proxy-mode "${proxy_mode}"
   )
+  local effective_salt_root="${salt_root}"
+  local plan_salt_root=""
+  if [[ "${plan_only}" == "true" ]]; then
+    plan_salt_root="$(mktemp -d)"
+    effective_salt_root="${plan_salt_root}"
+    trap '[[ -n "${plan_salt_root:-}" ]] && rm -rf "${plan_salt_root}"' RETURN
+    publish_args[3]="${effective_salt_root}"
+  fi
   if [[ "${full_converge}" != "true" ]]; then
     publish_args+=(--lightweight)
   fi
@@ -1450,13 +1517,15 @@ select_sync() {
   local expected_module_hash
   expected_module_hash="$(file_sha256 "${source_module}")"
   local sync_modules_required="true"
-  if [[ "${full_converge}" != "true" ]] && salt_remote_module_hash_matches "${expected_module_hash}" "${target}" "${batch}"; then
+  if [[ "${plan_only}" == "true" ]]; then
+    sync_modules_required="false"
+  elif [[ "${full_converge}" != "true" ]] && salt_remote_module_hash_matches "${expected_module_hash}" "${target}" "${batch}"; then
     sync_modules_required="false"
   fi
-  if [[ "${full_converge}" == "true" || "${sync_modules_required}" == "true" ]] || salt_assets_missing; then
+  if [[ "${plan_only}" != "true" ]] && { [[ "${full_converge}" == "true" || "${sync_modules_required}" == "true" ]] || salt_assets_missing; }; then
     sync_assets
   fi
-  if [[ "${full_converge}" == "true" || "${sync_modules_required}" == "true" ]]; then
+  if [[ "${plan_only}" != "true" && ( "${full_converge}" == "true" || "${sync_modules_required}" == "true" ) ]]; then
     echo "同步 Salt execution module..."
     # Salt 3008.1 的 batch 模式在 saltutil.sync_modules 上可能触发
     # "Some exception handling minion payload"。该操作本身很轻量，保持非 batch
@@ -1470,19 +1539,30 @@ select_sync() {
     sync
     "${release_dir}"
     "${runtime_dir}/desired.yaml"
-    "${salt_root}"
+    "${effective_salt_root}"
     --target "${target}"
     --salt-bin salt
     --port-policy-mode "${port_policy_mode}"
     --proxy-mode "${proxy_mode}"
-    --batch "${batch}"
+    --concurrency "${concurrency}"
     --log-dir "${log_dir}"
   )
+  if [[ "${full_converge}" == "true" ]]; then
+    sync_args+=(--full-converge)
+  fi
+  if [[ "${plan_only}" == "true" ]]; then
+    sync_args+=(--plan-only)
+  fi
+  if [[ -n "${batch}" ]]; then
+    sync_args+=(--batch "${batch}")
+  fi
   if [[ -n "${port_policy}" ]]; then
     sync_args+=(--port-policy-enabled)
   fi
   proxyfleet_python "${sync_args[@]}"
-  manual_switch_notify "${selected_node_id}" "${selected_name}" "${target}"
+  if [[ "${plan_only}" != "true" ]]; then
+    manual_switch_notify "${selected_node_id}" "${selected_name}" "${target}"
+  fi
 }
 
 uninstall_master() {
@@ -1567,7 +1647,9 @@ select-sync 常用参数：
   --health-concurrency N   默认 8
   --port-policy PATH       可选：同步 Master managed 端口白名单；默认检测 config-src/port-policy.yaml
   --full-converge          完整发布 release、组件资产和 Salt module
-  --batch 10|20%           Salt batch，默认 20%
+  --concurrency N          ProxyFleet 应用层同步并发，默认 5
+  --plan                   只输出 Minion 分类和执行计划，不执行同步
+  --batch 10|20%           显式启用 Salt batch；默认不使用 Salt batch
   --log-dir PATH           完整 Salt 输出日志目录
   --refresh-health         deprecated：进入 TUI 前先刷新测速缓存
   --no-health-cache        deprecated：不读取测速缓存，只显示 unknown
