@@ -117,6 +117,7 @@ class SaltSyncResult:
     route_plan: dict[str, Any] | None = None
     fallback_used: bool = False
     warning: str | None = None
+    minion_results: list[dict[str, Any]] | None = None
 
     @property
     def ok(self) -> bool:
@@ -135,6 +136,8 @@ class SaltSyncResult:
             payload["fallback_used"] = True
         if self.warning:
             payload["warning"] = self.warning
+        if self.minion_results is not None:
+            payload["minion_results"] = self.minion_results
         return payload
 
 
@@ -430,7 +433,15 @@ def _run_state_apply_result(plan: SyncPlan, salt_bin: str, *, batch: str | None 
 
     log_path = _write_salt_log(plan, final_cmd, output, log_dir) if log_dir is not None else None
     failed_minions, error_summary = _summarize_salt_output(output, final_returncode)
-    return SaltSyncResult(final_returncode, log_path, failed_minions, error_summary, fallback_used=fallback_used, warning=fallback_warning)
+    return SaltSyncResult(
+        final_returncode,
+        log_path,
+        failed_minions,
+        error_summary,
+        fallback_used=fallback_used,
+        warning=fallback_warning,
+        minion_results=_salt_minion_results(output, failed_minions),
+    )
 
 
 def _run_smart_sync_result(
@@ -461,6 +472,7 @@ def _run_smart_sync_result(
             route_plan=route_plan,
             fallback_used=True,
             warning=warning,
+            minion_results=fallback.minion_results,
         )
 
     outputs = [status_output] if status_output else []
@@ -493,12 +505,23 @@ def _run_smart_sync_result(
     combined = "\n".join(item for item in outputs if item)
     log_path = _write_salt_log(plan, [salt_bin, plan.target, "proxyfleet smart sync"], combined, log_dir) if log_dir is not None else None
     parsed_failed, error_summary = _summarize_salt_output(combined, returncode)
-    merged_failed = sorted(set(failed_minions + parsed_failed))
-    return SaltSyncResult(returncode, log_path, merged_failed, error_summary, route_plan=route_plan, warning=route_warning)
+    envelope_failed = _failed_envelope_minions(combined)
+    merged_failed = sorted(set(failed_minions + parsed_failed + envelope_failed))
+    final_returncode = returncode or (1 if merged_failed else 0)
+    return SaltSyncResult(
+        final_returncode,
+        log_path,
+        merged_failed,
+        error_summary,
+        route_plan=route_plan,
+        warning=route_warning,
+        minion_results=_route_minion_results(route_plan, merged_failed, combined),
+    )
 
 
 def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, Any], str, int]:
     expected_locks = _sha256_file(plan.salt_desired_path.parent / "component-locks.json")
+    expected_module_hash = _expected_salt_module_hash(plan)
     desired = _read_json(plan.salt_desired_path)
     expected_targets = _expected_target_ids(plan.target, salt_bin)
     if expected_targets is None and plan.target == "*":
@@ -513,12 +536,12 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, A
     ]
     ping = subprocess.run(ping_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     ping_output = _completed_output(ping)
-    if int(ping.returncode) != 0:
-        return _route_plan_unavailable(plan, "test.ping command failed"), ping_output, int(ping.returncode)
-
-    ping_data = _json_object(ping.stdout)
+    ping_data = _parse_salt_mapping(ping.stdout)
     if ping_data is None:
-        return _route_plan_unavailable(plan, "test.ping returned invalid JSON"), ping_output, 1
+        ping_data = _parse_salt_mapping(ping_output)
+    if ping_data is None:
+        reason = "test.ping command failed" if int(ping.returncode) != 0 else "test.ping returned invalid output"
+        return _route_plan_unavailable(plan, reason), ping_output, int(ping.returncode) or 1
 
     minions: list[dict[str, Any]] = []
     reachable = _reachable_minions(ping_data, expected_targets)
@@ -571,6 +594,42 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, A
                 }
             )
 
+    hash_output = ""
+    if module_ready and expected_module_hash is not None:
+        hash_cmd = [
+            salt_bin,
+            "-L",
+            ",".join(module_ready),
+            "proxyfleet_mihomo.module_sha256",
+            "--out=json",
+            "--static",
+        ]
+        hash_completed = subprocess.run(hash_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        hash_output = _completed_output(hash_completed)
+        hash_data = _parse_salt_mapping(hash_completed.stdout)
+        if hash_data is None:
+            hash_data = _parse_salt_mapping(hash_output)
+        if hash_data is None:
+            return _route_plan_unavailable(plan, "module_sha256 returned invalid output"), "\n".join([ping_output, functions_output, hash_output]), int(hash_completed.returncode) or 1
+        current_module_ready: list[str] = []
+        for minion_id in module_ready:
+            value = hash_data.get(minion_id)
+            remote_hash = value.get("sha256") if isinstance(value, dict) else None
+            if remote_hash == expected_module_hash:
+                current_module_ready.append(minion_id)
+            else:
+                minions.append(
+                    {
+                        "minion_id": minion_id,
+                        "classification": "new-minion",
+                        "action": "full-converge",
+                        "reason": "proxyfleet execution module hash mismatch",
+                        "reachability": "online",
+                        "module_status": "stale",
+                    }
+                )
+        module_ready = current_module_ready
+
     status_output = ""
     if module_ready:
         status_cmd = [
@@ -587,10 +646,10 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, A
         completed = subprocess.run(status_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         status_output = _completed_output(completed)
         if int(completed.returncode) != 0:
-            return _route_plan_unavailable(plan, "sync_status command failed"), "\n".join([ping_output, functions_output, status_output]), int(completed.returncode)
+            return _route_plan_unavailable(plan, "sync_status command failed"), "\n".join([ping_output, functions_output, hash_output, status_output]), int(completed.returncode)
         status_data = _json_object(completed.stdout)
         if status_data is None:
-            return _route_plan_unavailable(plan, "sync_status returned invalid JSON"), "\n".join([ping_output, functions_output, status_output]), 1
+            return _route_plan_unavailable(plan, "sync_status returned invalid JSON"), "\n".join([ping_output, functions_output, hash_output, status_output]), 1
         for minion_id in module_ready:
             value = status_data.get(minion_id)
             if not isinstance(value, dict):
@@ -630,7 +689,7 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, A
             )
 
     return _route_plan(plan, sorted(minions, key=lambda item: item["minion_id"]), classification_unavailable=False), "\n".join(
-        item for item in (ping_output, functions_output, status_output) if item
+        item for item in (ping_output, functions_output, hash_output, status_output) if item
     ), 0
 
 
@@ -655,12 +714,74 @@ def _route_plan(plan: SyncPlan, minions: list[dict[str, Any]], *, classification
     }
 
 
+def _expected_salt_module_hash(plan: SyncPlan) -> str | None:
+    module_path = plan.salt_desired_path.parent.parent / "_modules" / "proxyfleet_mihomo.py"
+    return _sha256_file(module_path) if module_path.is_file() else None
+
+
 def _json_object(raw: str | None) -> dict[str, Any] | None:
     try:
         data = json.loads(raw if isinstance(raw, str) else "{}")
     except Exception:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _parse_salt_mapping(raw: str | None) -> dict[str, Any] | None:
+    """解析 Salt JSON/YAML/text 风格的逐 Minion 返回。"""
+
+    text = raw if isinstance(raw, str) else ""
+    data = _json_object(text)
+    if data is not None:
+        return data
+    parsed: dict[str, Any] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        stripped = line.strip()
+        if stripped.startswith("{"):
+            try:
+                value = json.loads(stripped)
+            except Exception:
+                value = None
+            if isinstance(value, dict):
+                parsed.update(value)
+                continue
+        if not line.startswith((" ", "\t", "-", "{", "[", '"')) and line.rstrip().endswith(":"):
+            name = line.strip()[:-1]
+            if name and not _is_salt_noise_line(name):
+                current = name
+                parsed.setdefault(current, None)
+            continue
+        if current is None:
+            continue
+        lowered = stripped.lower()
+        if lowered in {"true", "false"}:
+            parsed[current] = lowered == "true"
+        elif stripped.startswith("{") or stripped.startswith("["):
+            try:
+                parsed[current] = json.loads(stripped)
+            except Exception:
+                pass
+        elif parsed.get(current) is None and stripped:
+            parsed[current] = stripped
+    if not parsed:
+        return None
+    return parsed
+
+
+def _is_salt_noise_line(value: str) -> bool:
+    lowered = value.strip().lower()
+    return (
+        lowered.startswith("traceback")
+        or lowered.startswith("[error")
+        or lowered.startswith("error")
+        or lowered.startswith("saltclienterror")
+        or lowered.startswith("publisherror")
+        or lowered.startswith("summary for ")
+        or lowered.startswith("# of ")
+    )
 
 
 def _reachable_minions(ping_data: dict[str, Any], expected_targets: list[str] | None) -> list[str]:
@@ -767,6 +888,7 @@ def _salt_apply_switch_cmd(plan: SyncPlan, salt_bin: str, minions: list[str], de
         "proxyfleet_mihomo.apply_switch",
         f"desired_json={json.dumps(desired, ensure_ascii=False, separators=(',', ':'))}",
         f"operation_id={plan.operation_id}",
+        "fail_on_error=true",
         "--out=json",
         "--static",
     ]
@@ -1150,7 +1272,7 @@ def _summarize_salt_output(output: str, returncode: int) -> tuple[list[str], str
         if not line.startswith((" ", "\t", "-", "{", "[", '"')) and stripped.endswith(":"):
             current_minion = stripped[:-1]
         lowered = stripped.lower()
-        if re.fullmatch(r"failed:\s+0", lowered):
+        if re.fullmatch(r"failed:\s+0(?:\s*\(.*\))?", lowered) or re.fullmatch(r"# of minions with errors:\s+0", lowered):
             continue
         if "result: false" in lowered or '"result": false' in lowered or "failed" in lowered or "error" in lowered or "e_" in lowered:
             if current_minion and current_minion not in failed:
@@ -1160,6 +1282,77 @@ def _summarize_salt_output(output: str, returncode: int) -> tuple[list[str], str
     if returncode != 0 and not summary:
         summary.append(f"salt exited with {returncode}")
     return failed[:20], "; ".join(summary[:5])
+
+
+def _salt_minion_results(output: str, failed_minions: list[str]) -> list[dict[str, Any]]:
+    failed = set(failed_minions)
+    minions: list[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not line.startswith((" ", "\t", "-", "{", "[", '"')) and stripped.endswith(":"):
+            minion_id = stripped[:-1]
+            if minion_id and not _is_salt_noise_line(minion_id) and minion_id not in minions:
+                minions.append(minion_id)
+    results = []
+    for minion_id in minions:
+        failed_current = minion_id in failed
+        results.append(
+            {
+                "minion_id": minion_id,
+                "status": "failed" if failed_current else "success",
+                "action": "state.apply",
+                "reason": "salt reported failure" if failed_current else "applied",
+            }
+        )
+    return results
+
+
+def _failed_envelope_minions(output: str) -> list[str]:
+    mapping = _parse_salt_mapping(output)
+    if mapping is None:
+        return []
+    failed = []
+    for minion_id, value in mapping.items():
+        if isinstance(value, dict) and value.get("status") == "failed":
+            failed.append(str(minion_id))
+    return sorted(set(failed))
+
+
+def _route_minion_results(route_plan: dict[str, Any], failed_minions: list[str], output: str = "") -> list[dict[str, Any]]:
+    failed = set(failed_minions)
+    output_mapping = _parse_salt_mapping(output) or {}
+    results: list[dict[str, Any]] = []
+    for item in route_plan.get("minions", []):
+        if not isinstance(item, dict):
+            continue
+        minion_id = str(item.get("minion_id", ""))
+        if not minion_id:
+            continue
+        action = str(item.get("action", "-"))
+        classification = str(item.get("classification", "unknown"))
+        actual = output_mapping.get(minion_id)
+        actual_message = str(actual.get("message", "")) if isinstance(actual, dict) else ""
+        actual_error = str(actual.get("error_code", "")) if isinstance(actual, dict) and actual.get("error_code") else ""
+        if minion_id in failed:
+            status = "failed"
+        elif isinstance(actual, dict) and actual.get("status") == "success" and actual_message == "already-applied":
+            status = "already-applied"
+        elif classification == "offline" or action == "defer":
+            status = "offline"
+        else:
+            status = "success"
+        results.append(
+            {
+                "minion_id": minion_id,
+                "status": status,
+                "action": action,
+                "classification": classification,
+                "reason": actual_error or actual_message or str(item.get("reason", "")),
+            }
+        )
+    return results
 
 
 def _node_entry(provider_id: str, proxy: dict[str, Any]) -> NodeEntry:

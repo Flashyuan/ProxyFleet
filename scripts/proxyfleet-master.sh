@@ -1388,6 +1388,7 @@ select_sync() {
   local batch=""
   local concurrency="5"
   local plan_only="false"
+  local json_output="false"
   local log_dir="${PROJECT_ROOT}/runtime/logs/salt"
 
   while [[ $# -gt 0 ]]; do
@@ -1410,6 +1411,7 @@ select_sync() {
       --full-converge) full_converge="true"; shift ;;
       --concurrency) concurrency="$2"; shift 2 ;;
       --plan) plan_only="true"; shift ;;
+      --json) json_output="true"; shift ;;
       --batch) batch="$2"; shift 2 ;;
       --log-dir) log_dir="$2"; shift 2 ;;
       *) die "未知 select-sync 参数：$1" ;;
@@ -1575,6 +1577,9 @@ select_sync() {
   fi
   if [[ "${plan_only}" == "true" ]]; then
     sync_args+=(--plan-only)
+  fi
+  if [[ "${json_output}" == "true" ]]; then
+    sync_args+=(--json)
   fi
   if [[ -n "${batch}" ]]; then
     sync_args+=(--batch "${batch}")

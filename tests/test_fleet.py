@@ -499,12 +499,73 @@ proxies:
             switch_cmd = run.call_args_list[4].args[0]
             converge_cmd = run.call_args_list[5].args[0]
             self.assertIn("proxyfleet_mihomo.apply_switch", switch_cmd)
+            self.assertIn("fail_on_error=true", switch_cmd)
             self.assertIn("-L", switch_cmd)
             self.assertIn("old", switch_cmd)
             self.assertIn("state.apply", converge_cmd)
             self.assertIn("-L", converge_cmd)
             self.assertIn("new", ",".join(converge_cmd))
             self.assertIn("drift", ",".join(converge_cmd))
+
+    def test_smart_sync_switch_failed_envelope_marks_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", salt_root, "*")
+            status = json.dumps({"old": {"classification": "ready-old", "reason": "ready"}})
+            failed = json.dumps({"old": {"status": "failed", "error_code": "E_NODE_NOT_FOUND", "message": "target node is not selectable"}})
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout=json.dumps({"minions": ["old"]}), stderr=""),
+                    mock.Mock(returncode=0, stdout=json.dumps({"old": True}), stderr=""),
+                    mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"old": ["proxyfleet_mihomo.sync_status", "proxyfleet_mihomo.apply_switch"]}),
+                        stderr="",
+                    ),
+                    mock.Mock(returncode=0, stdout=status, stderr=""),
+                    mock.Mock(returncode=0, stdout=failed, stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", concurrency=2)
+
+            self.assertEqual(1, result.returncode)
+            self.assertEqual(["old"], result.failed_minions)
+            self.assertEqual("failed", result.minion_results[0]["status"])
+            self.assertEqual("E_NODE_NOT_FOUND", result.minion_results[0]["reason"])
+
+    def test_smart_sync_switch_already_applied_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", salt_root, "*")
+            status = json.dumps({"old": {"classification": "ready-old", "reason": "ready"}})
+            applied = json.dumps({"old": {"status": "success", "message": "already-applied"}})
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout=json.dumps({"minions": ["old"]}), stderr=""),
+                    mock.Mock(returncode=0, stdout=json.dumps({"old": True}), stderr=""),
+                    mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"old": ["proxyfleet_mihomo.sync_status", "proxyfleet_mihomo.apply_switch"]}),
+                        stderr="",
+                    ),
+                    mock.Mock(returncode=0, stdout=status, stderr=""),
+                    mock.Mock(returncode=0, stdout=applied, stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", concurrency=2)
+
+            self.assertEqual(0, result.returncode)
+            self.assertEqual([], result.failed_minions)
+            self.assertEqual("already-applied", result.minion_results[0]["status"])
+            self.assertEqual("already-applied", result.minion_results[0]["reason"])
 
     def test_smart_sync_empty_classification_falls_back_to_state_apply(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -619,6 +680,38 @@ proxies:
             converge_cmd = run.call_args_list[3].args[0]
             self.assertIn("state.apply", converge_cmd)
 
+    def test_smart_sync_stale_module_hash_routes_to_full_converge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            module_path = salt_root / "_modules" / "proxyfleet_mihomo.py"
+            module_path.parent.mkdir(parents=True)
+            module_path.write_text("current module\n", encoding="utf-8")
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", salt_root, "*")
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout=json.dumps({"minions": ["stale"]}), stderr=""),
+                    mock.Mock(returncode=0, stdout=json.dumps({"stale": True}), stderr=""),
+                    mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"stale": ["proxyfleet_mihomo.sync_status", "proxyfleet_mihomo.apply_switch", "proxyfleet_mihomo.module_sha256"]}),
+                        stderr="",
+                    ),
+                    mock.Mock(returncode=0, stdout=json.dumps({"stale": {"sha256": "0" * 64}}), stderr=""),
+                    mock.Mock(returncode=0, stdout="stale:\n  Result: True\n", stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", concurrency=2)
+
+            self.assertEqual(0, result.returncode)
+            self.assertEqual("full-converge", result.route_plan["minions"][0]["action"])
+            self.assertEqual("stale", result.route_plan["minions"][0]["module_status"])
+            converge_cmd = run.call_args_list[4].args[0]
+            self.assertIn("state.apply", converge_cmd)
+
     def test_smart_sync_accepted_key_without_ping_is_deferred_not_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -646,6 +739,66 @@ proxies:
             self.assertEqual(0, result.returncode)
             self.assertEqual([], result.failed_minions)
             self.assertEqual("Some Minions were offline and deferred", result.warning)
+            self.assertEqual(1, result.route_plan["summary"]["offline"])
+
+    def test_smart_sync_ping_nonzero_with_json_result_still_classifies_reachable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", salt_root, "*")
+            status = json.dumps({"online": {"classification": "ready-old", "reason": "ready"}})
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout=json.dumps({"minions": ["online", "offline"]}), stderr=""),
+                    mock.Mock(returncode=1, stdout=json.dumps({"online": True}), stderr="one minion did not return"),
+                    mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"online": ["proxyfleet_mihomo.sync_status", "proxyfleet_mihomo.apply_switch"]}),
+                        stderr="",
+                    ),
+                    mock.Mock(returncode=0, stdout=status, stderr=""),
+                    mock.Mock(returncode=0, stdout=json.dumps({"online": {"status": "success"}}), stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", concurrency=2)
+
+            self.assertEqual(0, result.returncode)
+            self.assertFalse(result.fallback_used)
+            self.assertEqual([], result.failed_minions)
+            self.assertEqual(1, result.route_plan["summary"]["ready-old"])
+            self.assertEqual(1, result.route_plan["summary"]["offline"])
+
+    def test_smart_sync_ping_nonzero_with_text_result_still_classifies_reachable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", salt_root, "*")
+            status = json.dumps({"online": {"classification": "ready-old", "reason": "ready"}})
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout=json.dumps({"minions": ["online", "offline"]}), stderr=""),
+                    mock.Mock(returncode=1, stdout="online:\n    True\n", stderr="offline did not return"),
+                    mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps({"online": ["proxyfleet_mihomo.sync_status", "proxyfleet_mihomo.apply_switch"]}),
+                        stderr="",
+                    ),
+                    mock.Mock(returncode=0, stdout=status, stderr=""),
+                    mock.Mock(returncode=0, stdout=json.dumps({"online": {"status": "success"}}), stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", concurrency=2)
+
+            self.assertEqual(0, result.returncode)
+            self.assertFalse(result.fallback_used)
+            self.assertEqual([], result.failed_minions)
+            self.assertEqual(1, result.route_plan["summary"]["ready-old"])
             self.assertEqual(1, result.route_plan["summary"]["offline"])
 
     def test_smart_sync_port_policy_forces_ready_old_to_converge(self):
@@ -683,7 +836,7 @@ proxies:
             self.assertIn("state.apply", converge_cmd)
             self.assertIn("-L", converge_cmd)
 
-    def test_cli_sync_plan_only_outputs_route_plan(self):
+    def test_cli_sync_plan_only_json_outputs_route_plan(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             release = _release(root / "releases")
@@ -701,6 +854,7 @@ proxies:
                         str(root / "runtime" / "desired.yaml"),
                         str(salt_root),
                         "--plan-only",
+                        "--json",
                     ]
                 )
 
@@ -733,9 +887,56 @@ proxies:
                 )
 
             self.assertEqual(0, rc)
+            output = stdout.getvalue()
+            self.assertIn("同步目标：*", output)
+            self.assertIn("提示：No reachable Minions; sync deferred", output)
+            self.assertIn("off", output)
+            self.assertIn("离线", output)
+            self.assertIn("结果：部分成功", output)
+            self.assertNotIn('"route_plan"', output)
+
+    def test_cli_sync_json_preserves_machine_readable_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            route_plan = {"summary": {"offline": 1}, "minions": [{"minion_id": "off", "action": "defer", "classification": "offline"}]}
+            stdout = io.StringIO()
+
+            with mock.patch(
+                "proxyfleet.cli.run_salt_sync_result",
+                return_value=SaltSyncResult(0, None, [], "", route_plan=route_plan, warning="No reachable Minions; sync deferred"),
+            ), mock.patch("sys.stdout", new=stdout):
+                rc = main(
+                    [
+                        "sync",
+                        str(release),
+                        str(root / "runtime" / "desired.yaml"),
+                        str(salt_root),
+                        "--json",
+                    ]
+                )
+
+            self.assertEqual(0, rc)
             payload = json.loads(stdout.getvalue())
             self.assertEqual("partial", payload["status"])
             self.assertEqual("No reachable Minions; sync deferred", payload["salt"]["warning"])
+            self.assertIn("route_plan", payload["salt"])
+
+    def test_salt_summary_zero_failure_variants_are_not_failures(self):
+        variants = [
+            "minion-a:\n----------\nSummary for minion-a\n------------\nFailed: 0\n",
+            "minion-a:\n----------\nSummary for minion-a\n------------\nFailed:     0\n",
+            "minion-a:\n----------\n# of minions with errors: 0\n",
+            "minion-a:\n----------\nSummary for minion-a\n------------\nFailed: 0 (changed=1)\n",
+        ]
+        for output in variants:
+            with self.subTest(output=output):
+                failed, summary = _summarize_salt_output(output, 0)
+                self.assertEqual([], failed)
+                self.assertEqual("", summary)
 
     def test_salt_envelope_redacts_secret_fields(self):
         envelope = salt_envelope(
