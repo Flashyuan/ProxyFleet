@@ -196,6 +196,12 @@ exit 0
         self.assertIn('local base_url="http://${master}:${ASSET_MIRROR_PORT}/proxyfleet"', text)
         self.assertIn('if install_salt_from_master_assets "${MASTER}"; then', text)
         self.assertIn("bootstrap-manifest.json", text)
+        self.assertIn('name.startswith("salt-common_")', text)
+        self.assertIn('name.startswith("salt-minion_")', text)
+        self.assertIn("verify_salt_minion_install", text)
+        self.assertIn("systemctl is-active --quiet salt-minion", text)
+        self.assertIn("/etc/apt/sources.list.d", text)
+        self.assertIn("/etc/apt/preferences.d", text)
 
     def test_no_args_enters_minion_tui(self):
         with tempfile.TemporaryDirectory() as tmp:

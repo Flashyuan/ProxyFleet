@@ -92,6 +92,9 @@ class MasterScriptTuiTests(unittest.TestCase):
         self.assertIn("asset_mirror_deploy()", text)
         self.assertIn("asset-mirror-deploy) asset_mirror_deploy", text)
         self.assertIn("bootstrap-manifest.json", text)
+        self.assertIn("/etc/apt/sources.list.d", text)
+        self.assertIn("/etc/apt/preferences.d", text)
+        self.assertNotIn("debconf-utils", text)
 
     def test_master_update_manifest_defaults_to_release_latest(self):
         text = SCRIPT.read_text(encoding="utf-8")

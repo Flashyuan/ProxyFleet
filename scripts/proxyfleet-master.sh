@@ -45,7 +45,7 @@ check_os() {
 }
 
 install_salt_repo() {
-  install -d -m 0755 /etc/apt/keyrings
+  install -d -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
   if [[ ! -f "${SALT_KEYRING}" ]]; then
     curl -fsSL "https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public" \
       | gpg --dearmor -o "${SALT_KEYRING}"
@@ -237,20 +237,18 @@ asset_mirror_prepare() {
   echo "[1/4] 准备 Salt ${SALT_VERSION} apt 源..."
   install_salt_repo
   apt-get update
-  echo "[2/4] 下载 Salt ${SALT_VERSION} Minion 安装包和依赖到 ${salt_dir}..."
+  echo "[2/4] 下载 Salt ${SALT_VERSION} Minion 安装包到 ${salt_dir}..."
   rm -rf "${salt_dir:?}/"*
   install -d -m 0755 "${salt_dir}/partial"
   DEBIAN_FRONTEND=noninteractive apt-get install -y --download-only --reinstall \
     -o "Dir::Cache::archives=${salt_dir}" \
     "salt-common=${SALT_VERSION}*" \
-    "salt-minion=${SALT_VERSION}*" \
-    debconf-utils || true
+    "salt-minion=${SALT_VERSION}*" || true
   (
     cd "${salt_dir}"
     apt-get download \
       "salt-common=${SALT_VERSION}*" \
-      "salt-minion=${SALT_VERSION}*" \
-      debconf-utils
+      "salt-minion=${SALT_VERSION}*"
   )
   rm -rf "${salt_dir}/partial" "${salt_dir}/lock"
   find "${salt_dir}" -maxdepth 1 -type f -name '*.deb' -print | sort
