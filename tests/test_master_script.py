@@ -252,29 +252,22 @@ class MasterScriptTuiTests(unittest.TestCase):
         self.assertIn("Salt file_roots 基线缺失或过期，自动执行一次 full-converge 发布", text)
         self.assertIn('"${publish_output}" == *"E_SYNC_NEEDS_FULL_CONVERGE"*', text)
         self.assertIn('[[ "${arg}" == "--lightweight" ]] && continue', text)
-        self.assertIn('local modules_synced="false"', text)
-        self.assertIn('modules_synced="true"', text)
-        self.assertIn("远端 Salt module 刚刷新，本轮使用 full-converge 同步", text)
         self.assertIn("publish_args+=(--lightweight)", text)
+        self.assertIn('--module-sha256 "${expected_module_hash}"', text)
         self.assertIn('--concurrency "${concurrency}"', text)
         self.assertIn('sync_args+=(--batch "${batch}")', text)
         self.assertIn('sync_args+=(--plan-only)', text)
         self.assertIn('sync_args+=(--json)', text)
         self.assertIn('--log-dir "${log_dir}"', text)
 
-    def test_select_sync_skips_sync_modules_only_after_remote_hash_match(self):
+    def test_select_sync_delegates_module_refresh_to_smart_sync(self):
         text = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn("salt_remote_module_hash_matches() {", text)
-        self.assertIn("proxyfleet_mihomo.module_sha256", text)
-        self.assertIn("salt-key --out=json -l acc", text)
-        self.assertIn("expected_targets_json", text)
-        self.assertIn("set(map(str, data.keys())) != expected_targets", text)
-        self.assertIn('return 1', text)
         self.assertIn("salt_assets_missing()", text)
-        self.assertIn('远端 Salt module hash 已验证一致，跳过 saltutil.sync_modules', text)
-        self.assertIn('salt "${target}" saltutil.sync_modules >/dev/null', text)
-        self.assertNotIn('salt --batch "${batch}" "${target}" saltutil.sync_modules', text)
+        self.assertNotIn("salt_remote_module_hash_matches() {", text)
+        self.assertNotIn('salt "${target}" saltutil.sync_modules >/dev/null', text)
+        self.assertNotIn("远端 Salt module 刚刷新，本轮使用 full-converge 同步", text)
+        self.assertIn('--module-sha256 "${expected_module_hash}"', text)
 
     def test_select_sync_health_concurrency_default_is_eight(self):
         text = SCRIPT.read_text(encoding="utf-8")

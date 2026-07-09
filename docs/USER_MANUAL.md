@@ -377,6 +377,8 @@ TUI 入口：
 
 普通使用不需要传 `--proxy-mode`。默认 `tproxy` 会让 Minion 上的命令行程序优先
 通过 Mihomo 当前选中节点访问公网；`explicit-proxy` 仅用于临时回退到手动代理端口。
+`tproxy` 会强制覆盖订阅中关闭透明代理的字段，例如 `tun.enable: false` 和
+`tproxy-port: 0`。
 
 废弃但兼容：
 
@@ -504,9 +506,9 @@ sudo scripts/proxyfleet-master.sh select-sync --plan
 会自动升级为一次 `full-converge`。基线补齐后，后续日常切换会回到智能分流
 轻量路径，不需要用户每次手动追加 `--full-converge`。
 
-Master 更新后，如果脚本发现远端 Salt execution module 版本刚刷新，本轮也会主动
-走一次完整 `state.apply`。这是正常保护动作，用来避免 Minion 尚未加载新函数时
-智能分类失败；下一轮 module hash 一致后会自动回到轻量智能分流。
+Master 更新后，如果某台 Minion 的 Salt execution module 缺失或 hash 不一致，
+只会对这台 Minion 执行 `saltutil.sync_modules + full-converge`。其它已经
+`ready-old` 的 Minion 继续走轻量 `switch-only`。
 
 ## 12. 卸载
 

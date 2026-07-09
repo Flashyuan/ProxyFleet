@@ -245,7 +245,7 @@ def _base_proxy_mode(base_source: dict[str, Any]) -> str:
 
 
 def _apply_proxy_mode(config: dict[str, Any], proxy_mode: str) -> None:
-    """为 release 注入默认运行模式；tproxy 通过 Mihomo TUN 自动路由实现透明代理。"""
+    """为 release 注入运行模式；tproxy 是强制透明代理模式。"""
 
     config.setdefault("mixed-port", 7890)
     config.setdefault("external-controller", "127.0.0.1:9090")
@@ -253,21 +253,22 @@ def _apply_proxy_mode(config: dict[str, Any], proxy_mode: str) -> None:
     if proxy_mode != PROXY_MODE_TPROXY:
         return
 
-    config.setdefault("tproxy-port", 7893)
+    # tproxy 是 Master 的显式运行模式选择，必须覆盖订阅源中关闭 TUN/TProxy 的字段。
+    config["tproxy-port"] = 7893
 
     tun = dict(config.get("tun", {})) if isinstance(config.get("tun"), dict) else {}
-    tun.setdefault("enable", True)
-    tun.setdefault("stack", "system")
-    tun.setdefault("auto-route", True)
-    tun.setdefault("auto-redirect", True)
-    tun.setdefault("auto-detect-interface", True)
-    tun.setdefault("strict-route", True)
-    tun.setdefault("dns-hijack", ["any:53", "tcp://any:53"])
-    tun.setdefault("route-exclude-address", TUN_ROUTE_EXCLUDES)
+    tun["enable"] = True
+    tun["stack"] = "system"
+    tun["auto-route"] = True
+    tun["auto-redirect"] = True
+    tun["auto-detect-interface"] = True
+    tun["strict-route"] = True
+    tun["dns-hijack"] = ["any:53", "tcp://any:53"]
+    tun["route-exclude-address"] = TUN_ROUTE_EXCLUDES
     config["tun"] = tun
 
     dns = dict(config.get("dns", {})) if isinstance(config.get("dns"), dict) else {}
-    dns.setdefault("enable", True)
+    dns["enable"] = True
     dns.setdefault("listen", "127.0.0.1:1053")
     dns.setdefault("enhanced-mode", "fake-ip")
     dns.setdefault("fake-ip-range", "198.18.0.1/16")

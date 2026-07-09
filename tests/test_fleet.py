@@ -653,6 +653,8 @@ proxies:
 
             self.assertEqual(0, result.returncode)
             self.assertEqual(4, run.call_count)
+            for call in run.call_args_list[1:]:
+                self.assertNotIn("--static", call.args[0])
             self.assertEqual("switch-only", result.route_plan["minions"][0]["action"])
             self.assertIn("route_plan", result.to_dict())
 
@@ -670,6 +672,7 @@ proxies:
                     mock.Mock(returncode=0, stdout=json.dumps({"minions": ["new"]}), stderr=""),
                     mock.Mock(returncode=0, stdout=json.dumps({"new": True}), stderr=""),
                     mock.Mock(returncode=0, stdout=json.dumps({"new": ["test.ping"]}), stderr=""),
+                    mock.Mock(returncode=0, stdout=json.dumps({"new": ["proxyfleet_mihomo"]}), stderr=""),
                     mock.Mock(returncode=0, stdout="new:\n  Result: True\n", stderr=""),
                 ]
                 result = run_salt_sync_result(plan, "salt", concurrency=2)
@@ -677,7 +680,11 @@ proxies:
             self.assertEqual(0, result.returncode)
             self.assertEqual("full-converge", result.route_plan["minions"][0]["action"])
             self.assertEqual("new-minion", result.route_plan["minions"][0]["classification"])
-            converge_cmd = run.call_args_list[3].args[0]
+            sync_modules_cmd = run.call_args_list[3].args[0]
+            converge_cmd = run.call_args_list[4].args[0]
+            self.assertIn("saltutil.sync_modules", sync_modules_cmd)
+            self.assertIn("-L", sync_modules_cmd)
+            self.assertIn("new", ",".join(sync_modules_cmd))
             self.assertIn("state.apply", converge_cmd)
 
     def test_smart_sync_stale_module_hash_routes_to_full_converge(self):
@@ -702,6 +709,7 @@ proxies:
                         stderr="",
                     ),
                     mock.Mock(returncode=0, stdout=json.dumps({"stale": {"sha256": "0" * 64}}), stderr=""),
+                    mock.Mock(returncode=0, stdout=json.dumps({"stale": ["proxyfleet_mihomo"]}), stderr=""),
                     mock.Mock(returncode=0, stdout="stale:\n  Result: True\n", stderr=""),
                 ]
                 result = run_salt_sync_result(plan, "salt", concurrency=2)
@@ -709,8 +717,70 @@ proxies:
             self.assertEqual(0, result.returncode)
             self.assertEqual("full-converge", result.route_plan["minions"][0]["action"])
             self.assertEqual("stale", result.route_plan["minions"][0]["module_status"])
-            converge_cmd = run.call_args_list[4].args[0]
+            sync_modules_cmd = run.call_args_list[4].args[0]
+            converge_cmd = run.call_args_list[5].args[0]
+            self.assertIn("saltutil.sync_modules", sync_modules_cmd)
+            self.assertIn("stale", ",".join(sync_modules_cmd))
             self.assertIn("state.apply", converge_cmd)
+
+    def test_smart_sync_module_refresh_is_per_minion_not_global(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            module_path = salt_root / "_modules" / "proxyfleet_mihomo.py"
+            module_path.parent.mkdir(parents=True, exist_ok=True)
+            module_path.write_text("current module\n", encoding="utf-8")
+            expected_hash = module_path.read_bytes()
+            current_hash = hashlib.sha256(expected_hash).hexdigest()
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", salt_root, "*")
+            status = json.dumps({"old": {"classification": "ready-old", "reason": "ready"}})
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout=json.dumps({"minions": ["old", "stale", "missing", "offline"]}), stderr=""),
+                    mock.Mock(returncode=0, stdout=json.dumps({"old": True, "stale": True, "missing": True}), stderr=""),
+                    mock.Mock(
+                        returncode=0,
+                        stdout=json.dumps(
+                            {
+                                "old": ["proxyfleet_mihomo.sync_status", "proxyfleet_mihomo.apply_switch", "proxyfleet_mihomo.module_sha256"],
+                                "stale": ["proxyfleet_mihomo.sync_status", "proxyfleet_mihomo.apply_switch", "proxyfleet_mihomo.module_sha256"],
+                                "missing": ["test.ping"],
+                            }
+                        ),
+                        stderr="",
+                    ),
+                    mock.Mock(returncode=0, stdout=json.dumps({"old": {"sha256": current_hash}, "stale": {"sha256": "0" * 64}}), stderr=""),
+                    mock.Mock(returncode=0, stdout=status, stderr=""),
+                    mock.Mock(returncode=0, stdout=json.dumps({"missing": ["proxyfleet_mihomo"], "stale": ["proxyfleet_mihomo"]}), stderr=""),
+                    mock.Mock(returncode=0, stdout=json.dumps({"old": {"status": "success"}}), stderr=""),
+                    mock.Mock(returncode=0, stdout="missing:\n  Result: True\nstale:\n  Result: True\n", stderr=""),
+                ]
+                result = run_salt_sync_result(plan, "salt", concurrency=4)
+
+            self.assertEqual(0, result.returncode)
+            by_id = {item["minion_id"]: item for item in result.route_plan["minions"]}
+            self.assertEqual("switch-only", by_id["old"]["action"])
+            self.assertEqual("defer", by_id["offline"]["action"])
+            self.assertEqual("full-converge", by_id["missing"]["action"])
+            self.assertEqual("full-converge", by_id["stale"]["action"])
+            sync_modules_cmd = run.call_args_list[5].args[0]
+            switch_cmd = run.call_args_list[6].args[0]
+            converge_cmd = run.call_args_list[7].args[0]
+            self.assertIn("saltutil.sync_modules", sync_modules_cmd)
+            self.assertIn("missing", ",".join(sync_modules_cmd))
+            self.assertIn("stale", ",".join(sync_modules_cmd))
+            self.assertNotIn("old", ",".join(sync_modules_cmd))
+            self.assertIn("proxyfleet_mihomo.apply_switch", switch_cmd)
+            self.assertIn("old", ",".join(switch_cmd))
+            self.assertNotIn("--static", switch_cmd)
+            self.assertIn("state.apply", converge_cmd)
+            self.assertIn("missing", ",".join(converge_cmd))
+            self.assertIn("stale", ",".join(converge_cmd))
+            self.assertNotIn("old", ",".join(converge_cmd))
 
     def test_smart_sync_accepted_key_without_ping_is_deferred_not_failed(self):
         with tempfile.TemporaryDirectory() as tmp:

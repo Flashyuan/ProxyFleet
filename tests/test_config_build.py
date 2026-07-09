@@ -68,6 +68,67 @@ class ConfigBuildTests(unittest.TestCase):
             self.assertNotIn("tun", config)
             self.assertNotIn("tproxy-port", config)
 
+    def test_tproxy_mode_overrides_disabled_tun_from_source(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as out:
+            shutil.copytree(FIXTURE, src, dirs_exist_ok=True)
+            base_path = Path(src) / "base.json"
+            base = json.loads(base_path.read_text(encoding="utf-8"))
+            base["tproxy-port"] = 0
+            base["tun"] = {
+                "enable": False,
+                "stack": "gVisor",
+                "auto-route": False,
+                "auto-redirect": False,
+                "auto-detect-interface": False,
+                "strict-route": False,
+                "dns-hijack": ["0.0.0.0:53"],
+            }
+            base_path.write_text(json.dumps(base, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+            release = build_release(
+                BuildOptions(
+                    source_dir=Path(src),
+                    output_dir=Path(out),
+                    revision=1,
+                    source_git_commit="abc123",
+                    component_locks=LOCKS,
+                )
+            )
+
+            config = json.loads((release / "config.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(7893, config["tproxy-port"])
+            self.assertTrue(config["tun"]["enable"])
+            self.assertEqual("system", config["tun"]["stack"])
+            self.assertTrue(config["tun"]["auto-route"])
+            self.assertTrue(config["tun"]["auto-redirect"])
+            self.assertTrue(config["tun"]["auto-detect-interface"])
+            self.assertTrue(config["tun"]["strict-route"])
+            self.assertEqual(["any:53", "tcp://any:53"], config["tun"]["dns-hijack"])
+
+    def test_explicit_proxy_mode_preserves_source_tun_settings(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as out:
+            shutil.copytree(FIXTURE, src, dirs_exist_ok=True)
+            base_path = Path(src) / "base.json"
+            base = json.loads(base_path.read_text(encoding="utf-8"))
+            base["proxy_mode"] = "explicit-proxy"
+            base["tproxy-port"] = 0
+            base["tun"] = {"enable": False, "auto-route": False}
+            base_path.write_text(json.dumps(base, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+            release = build_release(
+                BuildOptions(
+                    source_dir=Path(src),
+                    output_dir=Path(out),
+                    revision=1,
+                    source_git_commit="abc123",
+                    component_locks=LOCKS,
+                )
+            )
+
+            config = json.loads((release / "config.yaml").read_text(encoding="utf-8"))
+            self.assertNotEqual(7893, config.get("tproxy-port"))
+            self.assertNotEqual(True, config.get("tun", {}).get("enable") if isinstance(config.get("tun"), dict) else None)
+
     def test_verify_release_detects_hash_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             release = build_release(

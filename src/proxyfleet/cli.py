@@ -141,6 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--batch", default=None, help="Salt batch 大小，例如 10 或 20%")
     sync.add_argument("--concurrency", type=int, default=5, help="ProxyFleet 应用层每批最多同步的 Minion 数")
     sync.add_argument("--full-converge", action="store_true", help="强制所有目标走完整 state.apply")
+    sync.add_argument("--module-sha256", default=None, help="Master 当前 proxyfleet_mihomo execution module SHA-256")
     sync.add_argument("--plan-only", action="store_true", help="只输出 Minion 分类和将执行的路径")
     sync.add_argument("--log-dir", default=None, help="完整 Salt 输出落盘目录")
     sync.add_argument("--dry-run", action="store_true", help="只输出同步计划，不执行 Salt")
@@ -615,6 +616,7 @@ def main(argv: list[str] | None = None) -> int:
                 log_dir=Path(args.log_dir) if args.log_dir else None,
                 full_converge=args.full_converge,
                 concurrency=args.concurrency,
+                module_sha256=args.module_sha256,
                 plan_only=args.plan_only,
             )
             rc = result.returncode
