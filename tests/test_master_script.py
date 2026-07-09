@@ -239,6 +239,7 @@ class MasterScriptTuiTests(unittest.TestCase):
         self.assertIn("--full-converge) full_converge=\"true\"", text)
         self.assertIn("--concurrency) concurrency=\"$2\"", text)
         self.assertIn("--plan) plan_only=\"true\"", text)
+        self.assertIn("--json) json_output=\"true\"", text)
         self.assertIn("--batch) batch=\"$2\"", text)
         self.assertIn("--log-dir) log_dir=\"$2\"", text)
         self.assertIn('plan_salt_root="$(mktemp -d)"', text)
@@ -255,6 +256,7 @@ class MasterScriptTuiTests(unittest.TestCase):
         self.assertIn('--concurrency "${concurrency}"', text)
         self.assertIn('sync_args+=(--batch "${batch}")', text)
         self.assertIn('sync_args+=(--plan-only)', text)
+        self.assertIn('sync_args+=(--json)', text)
         self.assertIn('--log-dir "${log_dir}"', text)
 
     def test_select_sync_skips_sync_modules_only_after_remote_hash_match(self):

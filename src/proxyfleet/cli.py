@@ -10,6 +10,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 from .component_locks import ComponentLockError, assert_valid_lock_file
 from .config_build import BuildOptions, ConfigBuildError, build_release, verify_release
@@ -143,6 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--plan-only", action="store_true", help="只输出 Minion 分类和将执行的路径")
     sync.add_argument("--log-dir", default=None, help="完整 Salt 输出落盘目录")
     sync.add_argument("--dry-run", action="store_true", help="只输出同步计划，不执行 Salt")
+    sync.add_argument("--json", action="store_true", help="输出完整机器可读 JSON；默认输出运维摘要")
 
     apply_parser = subparsers.add_parser("apply", help="最少步骤：构建、可选选择、发布并同步")
     apply_parser.add_argument("source_dir", help="配置源目录")
@@ -268,6 +270,106 @@ def build_parser() -> argparse.ArgumentParser:
     update_manifest.add_argument("--summary", action="append", default=[], help="变更摘要，可重复")
 
     return parser
+
+
+def _sync_payload(status: str, plan: Any, result: Any) -> dict[str, Any]:
+    return {"status": status, "plan": plan.to_dict(), "salt": result.to_dict()}
+
+
+def _print_sync_summary(status: str, plan: Any, result: Any, *, planned: bool = False) -> None:
+    print(f"同步目标：{plan.target}")
+    print(f"执行模式：{_sync_mode_label(result)}")
+    if planned:
+        print("计划模式：只读预检，未执行同步")
+    if result.warning:
+        print(f"提示：{result.warning}")
+
+    rows = _sync_summary_rows(result)
+    print("")
+    if rows:
+        width = max(12, min(36, max(len(row["minion_id"]) for row in rows)))
+        print(f"{'节点名称'.ljust(width)}  状态      路径")
+        for row in rows:
+            print(f"{row['minion_id'].ljust(width)}  {row['label'].ljust(8)}  {row['action']}")
+    else:
+        print("节点结果：未取得逐 Minion 结果，请查看日志")
+
+    counts = _sync_counts(rows)
+    print("")
+    print(f"结果：{_sync_status_label(status)}，{counts['success']} 成功 / {counts['offline']} 离线 / {counts['failed']} 失败")
+    if result.error_summary:
+        print(f"摘要：{result.error_summary}")
+    if result.log_path:
+        print(f"日志：{result.log_path}")
+
+
+def _sync_mode_label(result: Any) -> str:
+    if result.fallback_used:
+        return "fallback/full-converge"
+    route_plan = result.route_plan if isinstance(result.route_plan, dict) else {}
+    return str(route_plan.get("mode") or "state.apply")
+
+
+def _sync_summary_rows(result: Any) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for item in result.minion_results or []:
+        if not isinstance(item, dict):
+            continue
+        minion_id = str(item.get("minion_id", ""))
+        if not minion_id:
+            continue
+        rows.append(
+            {
+                "minion_id": minion_id,
+                "label": _minion_status_label(str(item.get("status", "unknown"))),
+                "action": str(item.get("action", "-")),
+            }
+        )
+    if rows:
+        return rows
+    route_plan = result.route_plan if isinstance(result.route_plan, dict) else {}
+    for item in route_plan.get("minions", []):
+        if not isinstance(item, dict):
+            continue
+        minion_id = str(item.get("minion_id", ""))
+        if not minion_id:
+            continue
+        action = str(item.get("action", "-"))
+        classification = str(item.get("classification", "unknown"))
+        status = "offline" if classification == "offline" or action == "defer" else "success"
+        rows.append({"minion_id": minion_id, "label": _minion_status_label(status), "action": action})
+    return rows
+
+
+def _minion_status_label(status: str) -> str:
+    return {
+        "success": "成功",
+        "failed": "失败",
+        "offline": "离线",
+        "deferred": "延后",
+        "already-applied": "已是目标",
+    }.get(status, "未知")
+
+
+def _sync_status_label(status: str) -> str:
+    return {
+        "success": "成功",
+        "partial": "部分成功",
+        "planned": "计划完成",
+        "failed": "失败",
+    }.get(status, status)
+
+
+def _sync_counts(rows: list[dict[str, str]]) -> dict[str, int]:
+    counts = {"success": 0, "offline": 0, "failed": 0}
+    for row in rows:
+        if row["label"] in {"成功", "已是目标"}:
+            counts["success"] += 1
+        elif row["label"] == "离线":
+            counts["offline"] += 1
+        elif row["label"] == "失败":
+            counts["failed"] += 1
+    return counts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -520,19 +622,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{exc.error_code}: {exc.message}", file=sys.stderr)
             return 2
         if args.plan_only:
-            print(json.dumps({"status": "planned", "plan": plan.to_dict(), "salt": result.to_dict()}, ensure_ascii=False, indent=2, sort_keys=True))
+            if args.json:
+                print(json.dumps(_sync_payload("planned", plan, result), ensure_ascii=False, indent=2, sort_keys=True))
+            else:
+                _print_sync_summary("planned", plan, result, planned=True)
             return 0
         if rc != 0:
-            print(f"Salt 同步失败，退出码: {rc}", file=sys.stderr)
-            if result.failed_minions:
-                print("失败 Minion: " + ", ".join(result.failed_minions), file=sys.stderr)
-            if result.error_summary:
-                print("错误摘要: " + result.error_summary, file=sys.stderr)
-            if result.log_path:
-                print(f"完整日志: {result.log_path}", file=sys.stderr)
+            if args.json:
+                print(json.dumps(_sync_payload("failed", plan, result), ensure_ascii=False, indent=2, sort_keys=True))
+            else:
+                _print_sync_summary("failed", plan, result)
             return rc
         status = "partial" if result.warning else "success"
-        print(json.dumps({"status": status, "plan": plan.to_dict(), "salt": result.to_dict()}, ensure_ascii=False, indent=2, sort_keys=True))
+        if args.json:
+            print(json.dumps(_sync_payload(status, plan, result), ensure_ascii=False, indent=2, sort_keys=True))
+        else:
+            _print_sync_summary(status, plan, result)
         return 0
 
     if args.command == "apply":
