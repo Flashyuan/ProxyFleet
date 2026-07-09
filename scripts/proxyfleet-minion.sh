@@ -142,8 +142,8 @@ verify_salt_minion_install() {
   command -v salt-minion >/dev/null 2>&1 || die "salt-minion 命令不存在，Salt Minion 安装失败"
   common_version="$(dpkg-query -W -f='${Status} ${Version}\n' salt-common 2>/dev/null || true)"
   minion_version="$(dpkg-query -W -f='${Status} ${Version}\n' salt-minion 2>/dev/null || true)"
-  [[ "${common_version}" == install\ ok\ installed\ ${SALT_VERSION}* ]] || die "salt-common 未正确安装固定版本 ${SALT_VERSION}：${common_version:-missing}"
-  [[ "${minion_version}" == install\ ok\ installed\ ${SALT_VERSION}* ]] || die "salt-minion 未正确安装固定版本 ${SALT_VERSION}：${minion_version:-missing}"
+  [[ "${common_version}" == *\ ok\ installed\ ${SALT_VERSION}* ]] || die "salt-common 未正确安装固定版本 ${SALT_VERSION}：${common_version:-missing}"
+  [[ "${minion_version}" == *\ ok\ installed\ ${SALT_VERSION}* ]] || die "salt-minion 未正确安装固定版本 ${SALT_VERSION}：${minion_version:-missing}"
   salt-minion --versions-report >/dev/null 2>&1 || die "salt-minion 无法正常执行版本检查"
 }
 

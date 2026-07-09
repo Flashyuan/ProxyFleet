@@ -199,6 +199,7 @@ exit 0
         self.assertIn('name.startswith("salt-common_")', text)
         self.assertIn('name.startswith("salt-minion_")', text)
         self.assertIn("verify_salt_minion_install", text)
+        self.assertIn("*\\ ok\\ installed\\ ${SALT_VERSION}*", text)
         self.assertIn("systemctl is-active --quiet salt-minion", text)
         self.assertIn("/etc/apt/sources.list.d", text)
         self.assertIn("/etc/apt/preferences.d", text)
