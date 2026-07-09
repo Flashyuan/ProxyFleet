@@ -179,6 +179,49 @@ class SelfUpdateTests(unittest.TestCase):
             self.assertTrue(output.exists())
             self.assertEqual("README.md", payload["assets"][0]["path"])
 
+    def test_master_manifest_marks_minion_script_as_common(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = self._root(base)
+            output = base / "manifest.json"
+
+            payload = generate_manifest(
+                install_root=root,
+                output=output,
+                version="v0.1.1",
+                commit="c" * 40,
+                base_url="https://example.invalid/releases/v0.1.1",
+                role="master",
+                assets=["scripts/proxyfleet-master.sh", "scripts/proxyfleet-minion.sh"],
+                summary=["scripts"],
+            )
+
+            by_path = {asset["path"]: asset for asset in payload["assets"]}
+            self.assertEqual("master", by_path["scripts/proxyfleet-master.sh"]["role"])
+            self.assertEqual("common", by_path["scripts/proxyfleet-minion.sh"]["role"])
+
+    def test_minion_can_check_common_minion_script_from_master_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = self._root(base)
+            manifest = base / "manifest.json"
+            generate_manifest(
+                install_root=root,
+                output=manifest,
+                version="v0.1.1",
+                commit="c" * 40,
+                base_url="file://" + str(root),
+                role="master",
+                assets=["scripts/proxyfleet-master.sh", "scripts/proxyfleet-minion.sh"],
+                summary=["scripts"],
+            )
+
+            payload = check_update(self._context(root, manifest, role="minion"))
+
+            self.assertEqual("available", payload["status"])
+            self.assertEqual("scripts/proxyfleet-minion.sh", payload["assets"][0]["path"])
+            self.assertEqual("common", payload["assets"][0]["role"])
+
 
 if __name__ == "__main__":
     unittest.main()

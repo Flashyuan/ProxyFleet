@@ -436,7 +436,7 @@ def generate_manifest(
         url = base_url.rstrip("/") + "/" + rel
         manifest_assets.append(
             {
-                "role": role,
+                "role": "common" if role == "master" and rel == "scripts/proxyfleet-minion.sh" else role,
                 "path": rel,
                 "url": url,
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),

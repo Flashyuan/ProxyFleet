@@ -46,7 +46,7 @@ check_os() {
 }
 
 install_salt_repo() {
-  install -d -m 0755 /etc/apt/keyrings
+  install -d -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
   if [[ ! -f "${SALT_KEYRING}" ]]; then
     curl -fsSL "https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public" \
       | gpg --dearmor -o "${SALT_KEYRING}"
@@ -103,7 +103,10 @@ if str(manifest.get("salt_version")) != salt_version:
 selected = []
 for item in manifest.get("files", []):
     path = item.get("path")
-    if isinstance(path, str) and path.startswith("salt/") and path.endswith(".deb"):
+    if not isinstance(path, str) or not path.startswith("salt/") or not path.endswith(".deb"):
+        continue
+    name = Path(path).name
+    if name.startswith("salt-common_") or name.startswith("salt-minion_"):
         selected.append(item)
 if not any("/salt-common_" in "/" + item["path"] for item in selected):
     raise SystemExit("salt-common deb missing")
@@ -132,6 +135,24 @@ PY
     return 1
   }
   rm -rf "${workdir}"
+}
+
+verify_salt_minion_install() {
+  local common_version minion_version
+  command -v salt-minion >/dev/null 2>&1 || die "salt-minion 命令不存在，Salt Minion 安装失败"
+  common_version="$(dpkg-query -W -f='${Status} ${Version}\n' salt-common 2>/dev/null || true)"
+  minion_version="$(dpkg-query -W -f='${Status} ${Version}\n' salt-minion 2>/dev/null || true)"
+  [[ "${common_version}" == install\ ok\ installed\ ${SALT_VERSION}* ]] || die "salt-common 未正确安装固定版本 ${SALT_VERSION}：${common_version:-missing}"
+  [[ "${minion_version}" == install\ ok\ installed\ ${SALT_VERSION}* ]] || die "salt-minion 未正确安装固定版本 ${SALT_VERSION}：${minion_version:-missing}"
+  salt-minion --versions-report >/dev/null 2>&1 || die "salt-minion 无法正常执行版本检查"
+}
+
+prepare_salt_minion_runtime_dirs() {
+  install -d -m 0755 "${MINION_CONF_DIR}"
+  if id salt >/dev/null 2>&1; then
+    install -d -o salt -g salt -m 0700 "${MINION_PKI_DIR}" /var/cache/salt/minion /run/salt/minion
+    install -d -o salt -g salt -m 0755 /var/log/salt
+  fi
 }
 
 usage() {
@@ -655,9 +676,10 @@ install_minion() {
       "salt-minion=${SALT_VERSION}*"
   fi
   apt-mark hold salt-common salt-minion
+  verify_salt_minion_install
 
   systemctl stop salt-minion || true
-  install -d -m 0755 /etc/salt/minion.d
+  prepare_salt_minion_runtime_dirs
   cat > "${MINION_CONF}" <<CONF
 # ProxyFleet Salt Minion POC 配置。
 master: ${MASTER}
@@ -671,6 +693,10 @@ CONF
 
   systemctl enable salt-minion
   systemctl restart salt-minion
+  if ! systemctl is-active --quiet salt-minion; then
+    journalctl -u salt-minion -n 80 --no-pager || true
+    die "salt-minion 服务启动失败，请先查看上方 journalctl 日志"
+  fi
   echo "Minion 安装完成。请回到 Master 人工核验并接受 key：${MINION_ID}"
   echo "本机 Minion fingerprint："
   salt-call --local key.finger || true
