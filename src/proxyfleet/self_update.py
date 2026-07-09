@@ -96,15 +96,24 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _read_bytes(source: str, timeout: float = 10.0) -> bytes:
+def _read_bytes(source: str, timeout: float = 30.0) -> bytes:
     parsed = urlparse(source)
     if parsed.scheme in ("http", "https"):
         if parsed.username or parsed.password:
             raise UpdateError("E_UPDATE_UNTRUSTED_SOURCE", "更新 URL 不得包含凭据")
         if parsed.scheme != "https":
             raise UpdateError("E_UPDATE_UNTRUSTED_SOURCE", "远程更新 URL 必须使用 https")
-        with urlopen(source, timeout=timeout) as response:  # noqa: S310 - URL 已限制为 https/file。
-            return response.read()
+        configured_timeout = float(os.environ.get("PROXYFLEET_UPDATE_TIMEOUT", str(timeout)))
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                with urlopen(source, timeout=configured_timeout) as response:  # noqa: S310 - URL 已限制为 https/file。
+                    return response.read()
+            except OSError as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(2)
+        raise UpdateError("E_UPDATE_DOWNLOAD", f"无法读取更新资源：{last_error}")
     if parsed.scheme == "file":
         return Path(parsed.path).read_bytes()
     if parsed.scheme:

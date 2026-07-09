@@ -19,7 +19,7 @@ MIHOMO_CONFIG_PATH="${MIHOMO_CONFIG_PATH:-${PROXYFLEET_ETC_ROOT}/current/config.
 COMPONENT_LOCKS="${COMPONENT_LOCKS:-${PROXYFLEET_ETC_ROOT}/component-locks.json}"
 MIHOMO_RECEIPT="${MIHOMO_RECEIPT:-${MIHOMO_BINARY}.proxyfleet-install.json}"
 LOCAL_OPTIONS_PATH="${LOCAL_OPTIONS_PATH:-${PROXYFLEET_ETC_ROOT}/local/options.json}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v.0.2.4}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v.0.2.5}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://github.com/Flashyuan/ProxyFleet/releases/latest/download/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROXYFLEET_ETC_ROOT}/local/update-state.json}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
@@ -268,8 +268,17 @@ def read_bytes(src):
     if p.scheme in ("http", "https"):
         if p.username or p.password or p.scheme != "https":
             die("E_UPDATE_UNTRUSTED_SOURCE", "更新 URL 不可信")
-        with urlopen(src, timeout=10) as r:
-            return r.read()
+        timeout = float(os.environ.get("PROXYFLEET_UPDATE_TIMEOUT", "30"))
+        last_error = None
+        for attempt in range(3):
+            try:
+                with urlopen(src, timeout=timeout) as r:
+                    return r.read()
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(2)
+        die("E_UPDATE_DOWNLOAD", f"无法读取更新资源：{last_error}")
     if p.scheme == "file":
         return Path(p.path).read_bytes()
     if p.scheme:
