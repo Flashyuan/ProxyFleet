@@ -481,8 +481,8 @@ offline-assets/
 安装时仍按 SHA-256 校验后才使用。
 
 说明：这些资产主要服务于新 Minion、离线安装、组件升级和接管修复。日常切换
-默认不会重复发布不变的大文件；缺少安全基线时会自动执行一次 `full-converge`
-发布和同步。
+默认不会重复发布不变的大文件；缺少安全基线时会 fail-closed，并提示管理员确认
+后显式执行 `select-sync --full-converge`。
 
 日常切换时，Master 会先让 Minion 自检当前状态：
 
@@ -503,12 +503,17 @@ sudo scripts/proxyfleet-master.sh select-sync --plan
 `state.apply`。
 
 如果普通 `select-sync` 发现生产 Salt file_roots 缺少 release、组件锁或资产基线，
-会自动升级为一次 `full-converge`。基线补齐后，后续日常切换会回到智能分流
-轻量路径，不需要用户每次手动追加 `--full-converge`。
+会 fail-closed 并提示显式执行 `select-sync --full-converge`。基线补齐后，后续
+日常切换会回到智能分流轻量路径。
 
 Master 更新后，如果某台 Minion 的 Salt execution module 缺失或 hash 不一致，
 只会对这台 Minion 执行 `saltutil.sync_modules + full-converge`。其它已经
 `ready-old` 的 Minion 继续走轻量 `switch-only`。
+
+默认 `tproxy` 会保护 Docker/K8s/CNI 内部网络：常见私网和集群域名会前置
+`DIRECT` 规则，私网、loopback、link-local、Pod/Service CIDR 和 bridge 网段会
+进入 `route-exclude-address`。如需追加本环境特殊网段，可创建
+`config-src/tproxy-excludes.json` 或 `config-src/tproxy-excludes.yaml`。
 
 ## 12. 卸载
 

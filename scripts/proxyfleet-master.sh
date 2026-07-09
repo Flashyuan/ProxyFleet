@@ -1430,17 +1430,7 @@ select_sync() {
   local publish_output
   if ! publish_output="$(proxyfleet_python "${publish_args[@]}" 2>&1 >/dev/null)"; then
     if [[ "${plan_only}" != "true" && "${full_converge}" != "true" && "${publish_output}" == *"E_SYNC_NEEDS_FULL_CONVERGE"* ]]; then
-      echo "Salt file_roots 基线缺失或过期，自动执行一次 full-converge 发布..."
-      full_converge="true"
-      local retry_publish_args=()
-      local arg
-      for arg in "${publish_args[@]}"; do
-        [[ "${arg}" == "--lightweight" ]] && continue
-        retry_publish_args+=("${arg}")
-      done
-      if ! publish_output="$(proxyfleet_python "${retry_publish_args[@]}" 2>&1 >/dev/null)"; then
-        die "${publish_output}"
-      fi
+      die "${publish_output}"$'\n'"请确认后显式执行：select-sync --full-converge"
     else
       die "${publish_output}"
     fi

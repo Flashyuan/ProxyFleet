@@ -24,7 +24,7 @@ PROXY_MODE_TPROXY = "tproxy"
 PROXY_MODE_EXPLICIT = "explicit-proxy"
 VALID_PROXY_MODES = {PROXY_MODE_TPROXY, PROXY_MODE_EXPLICIT}
 
-TUN_ROUTE_EXCLUDES = [
+DEFAULT_TPROXY_ROUTE_EXCLUDES = [
     "0.0.0.0/8",
     "10.0.0.0/8",
     "100.64.0.0/10",
@@ -34,6 +34,24 @@ TUN_ROUTE_EXCLUDES = [
     "192.168.0.0/16",
     "224.0.0.0/4",
     "240.0.0.0/4",
+]
+TUN_ROUTE_EXCLUDES = DEFAULT_TPROXY_ROUTE_EXCLUDES
+DEFAULT_TPROXY_DIRECT_RULES = [
+    "IP-CIDR,0.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve",
+    "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+    "IP-CIDR,169.254.0.0/16,DIRECT,no-resolve",
+    "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+    "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+    "IP-CIDR,224.0.0.0/4,DIRECT,no-resolve",
+    "IP-CIDR,240.0.0.0/4,DIRECT,no-resolve",
+]
+DEFAULT_TPROXY_DIRECT_DOMAINS = [
+    "cluster.local",
+    "svc",
+    "localhost",
+    "local",
 ]
 
 
@@ -92,20 +110,25 @@ def load_config_source(source_dir: Path) -> dict[str, Any]:
     groups = _read_json(source_dir / "groups.json")
     rules = _read_json(source_dir / "rules.json")
     base = _read_json(source_dir / "base.json")
+    tproxy_excludes = _load_tproxy_excludes(source_dir)
 
     _assert_schema(providers, "providers.json")
     _assert_schema(groups, "groups.json")
     _assert_schema(rules, "rules.json")
     _assert_schema(base, "base.json")
+    if tproxy_excludes:
+        _assert_schema(tproxy_excludes, "tproxy-excludes")
     _validate_providers(providers, source_dir)
     _validate_groups(groups, providers)
     _validate_rules(rules, groups)
+    _validate_tproxy_excludes(tproxy_excludes)
 
     return {
         "providers": providers,
         "groups": groups,
         "rules": rules,
         "base": base,
+        "tproxy_excludes": tproxy_excludes,
     }
 
 
@@ -191,7 +214,9 @@ def _write_release_files(staging: Path, source_dir: Path, source: dict[str, Any]
 
 def _compile_config(source: dict[str, Any]) -> dict[str, Any]:
     base = dict(source["base"].get("config", {}))
-    _apply_proxy_mode(base, _base_proxy_mode(source["base"]))
+    proxy_mode = _base_proxy_mode(source["base"])
+    tproxy_excludes = source.get("tproxy_excludes", {})
+    _apply_proxy_mode(base, proxy_mode, tproxy_excludes)
     providers = {
         item["id"]: {
             "type": "file",
@@ -210,7 +235,7 @@ def _compile_config(source: dict[str, Any]) -> dict[str, Any]:
         }
         groups.append(compiled)
 
-    rules = []
+    rules = _tproxy_direct_rules(proxy_mode, tproxy_excludes)
     for item in source["rules"]["order"]:
         if "rule_provider" in item:
             rules.append(f"RULE-SET,{item['rule_provider']},{item['target']}")
@@ -231,7 +256,7 @@ def _compile_config(source: dict[str, Any]) -> dict[str, Any]:
     base["proxy-providers"] = providers
     base["proxy-groups"] = groups
     base["rule-providers"] = rule_providers
-    base["rules"] = rules
+    base["rules"] = _dedupe_str(rules)
     return base
 
 
@@ -244,7 +269,7 @@ def _base_proxy_mode(base_source: dict[str, Any]) -> str:
     return mode
 
 
-def _apply_proxy_mode(config: dict[str, Any], proxy_mode: str) -> None:
+def _apply_proxy_mode(config: dict[str, Any], proxy_mode: str, tproxy_excludes: dict[str, Any] | None = None) -> None:
     """为 release 注入运行模式；tproxy 是强制透明代理模式。"""
 
     config.setdefault("mixed-port", 7890)
@@ -255,6 +280,7 @@ def _apply_proxy_mode(config: dict[str, Any], proxy_mode: str) -> None:
 
     # tproxy 是 Master 的显式运行模式选择，必须覆盖订阅源中关闭 TUN/TProxy 的字段。
     config["tproxy-port"] = 7893
+    excludes = _dedupe_str(DEFAULT_TPROXY_ROUTE_EXCLUDES + _string_list((tproxy_excludes or {}).get("route_exclude_address")))
 
     tun = dict(config.get("tun", {})) if isinstance(config.get("tun"), dict) else {}
     tun["enable"] = True
@@ -264,7 +290,7 @@ def _apply_proxy_mode(config: dict[str, Any], proxy_mode: str) -> None:
     tun["auto-detect-interface"] = True
     tun["strict-route"] = True
     tun["dns-hijack"] = ["any:53", "tcp://any:53"]
-    tun["route-exclude-address"] = TUN_ROUTE_EXCLUDES
+    tun["route-exclude-address"] = excludes
     config["tun"] = tun
 
     dns = dict(config.get("dns", {})) if isinstance(config.get("dns"), dict) else {}
@@ -275,6 +301,17 @@ def _apply_proxy_mode(config: dict[str, Any], proxy_mode: str) -> None:
     dns.setdefault("nameserver", ["https://223.5.5.5/dns-query", "https://1.1.1.1/dns-query"])
     dns.setdefault("fallback", ["https://8.8.8.8/dns-query"])
     config["dns"] = dns
+
+
+def _tproxy_direct_rules(proxy_mode: str, tproxy_excludes: dict[str, Any] | None) -> list[str]:
+    excludes = tproxy_excludes or {}
+    rules: list[str] = []
+    if proxy_mode == PROXY_MODE_TPROXY:
+        rules.extend(DEFAULT_TPROXY_DIRECT_RULES)
+        rules.extend(f"DOMAIN-SUFFIX,{domain},DIRECT" for domain in DEFAULT_TPROXY_DIRECT_DOMAINS)
+    rules.extend(_string_list(excludes.get("direct_rules")))
+    rules.extend(f"DOMAIN-SUFFIX,{domain},DIRECT" for domain in _string_list(excludes.get("direct_domains")))
+    return _dedupe_str(rules)
 
 
 def _build_manifest(
@@ -359,6 +396,13 @@ def _validate_rules(data: dict[str, Any], groups: dict[str, Any]) -> None:
             raise ConfigBuildError(f"规则引用未知 rule_provider: {item['rule_provider']}")
 
 
+def _validate_tproxy_excludes(data: dict[str, Any]) -> None:
+    for field in ("route_exclude_address", "direct_rules", "direct_domains"):
+        value = data.get(field, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+            raise ConfigBuildError(f"tproxy-excludes {field} 必须是字符串数组")
+
+
 def _component_version(component_locks: Path, name: str) -> str:
     data = load_lock_file(component_locks)
     for component in data.get("components", []):
@@ -407,9 +451,77 @@ def _read_json(path: Path) -> dict[str, Any]:
     return data
 
 
+def _load_tproxy_excludes(source_dir: Path) -> dict[str, Any]:
+    merged: dict[str, Any] = {"schema_version": "1.0"}
+    for name in ("tproxy-excludes.json", "tproxy-excludes.yaml", "tproxy-excludes.yml"):
+        path = source_dir / name
+        if not path.exists():
+            continue
+        data = _read_json(path) if path.suffix == ".json" else _read_simple_yaml(path)
+        _assert_schema(data, name)
+        for field in ("route_exclude_address", "direct_rules", "direct_domains"):
+            merged[field] = _dedupe_str(_string_list(merged.get(field)) + _string_list(data.get(field)))
+    return merged
+
+
+def _read_simple_yaml(path: Path) -> dict[str, Any]:
+    """读取 tproxy-excludes 使用的简单 YAML 子集，避免为三组数组引入新依赖。"""
+
+    result: dict[str, Any] = {}
+    current_key: str | None = None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError as exc:
+        raise ConfigBuildError(f"缺少配置源文件: {path.name}") from exc
+    for line in lines:
+        raw = line.split("#", 1)[0].rstrip()
+        if not raw.strip():
+            continue
+        if not raw.startswith((" ", "\t")) and ":" in raw:
+            key, value = raw.split(":", 1)
+            key = key.strip()
+            value = _strip_yaml_scalar(value.strip())
+            if value:
+                result[key] = value
+                current_key = None
+            else:
+                result[key] = []
+                current_key = key
+            continue
+        if current_key and raw.lstrip().startswith("- "):
+            result[current_key].append(_strip_yaml_scalar(raw.lstrip()[2:].strip()))
+            continue
+        raise ConfigBuildError(f"tproxy-excludes YAML 仅支持顶层字段和字符串数组: {path.name}")
+    if not isinstance(result, dict):
+        raise ConfigBuildError(f"配置源必须是对象: {path.name}")
+    return result
+
+
+def _strip_yaml_scalar(value: str) -> str:
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    return value
+
+
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _dedupe_str(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
 
 
 def _safe_relative_path(raw: str) -> Path:
