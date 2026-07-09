@@ -388,6 +388,15 @@ exit 0
             self.assertTrue(state.exists())
             self.assertEqual("success", json.loads(state.read_text(encoding="utf-8"))["last_update_status"])
 
+    def test_minion_update_manifest_defaults_to_release_latest(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://github.com/Flashyuan/ProxyFleet/releases/latest/download/update-manifest.json}"',
+            text,
+        )
+        self.assertNotIn("raw.githubusercontent.com/Flashyuan/ProxyFleet/main/update-manifest.json", text)
+
 
 if __name__ == "__main__":
     unittest.main()
