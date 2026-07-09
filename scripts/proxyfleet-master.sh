@@ -134,90 +134,6 @@ file_sha256() {
   sha256sum "$1" | awk '{print $1}'
 }
 
-salt_remote_module_hash_matches() {
-  local expected_hash="$1"
-  local target="$2"
-  local batch="$3"
-  local output
-  output="$(mktemp)"
-  local expected_targets_json=""
-  if [[ "${target}" == "*" ]]; then
-    local keys_output
-    keys_output="$(mktemp)"
-    if ! salt-key --out=json -l acc >"${keys_output}" 2>/dev/null; then
-      rm -f "${output}" "${keys_output}"
-      return 1
-    fi
-    expected_targets_json="$(python3 - "${keys_output}" <<'PY'
-import json
-import sys
-
-try:
-    data = json.loads(open(sys.argv[1], encoding="utf-8").read())
-except Exception:
-    sys.exit(1)
-keys = []
-if isinstance(data, dict):
-    for field in ("minions", "accepted", "Accepted Keys"):
-        value = data.get(field)
-        if isinstance(value, list):
-            keys = [str(item) for item in value]
-            break
-if not keys:
-    sys.exit(1)
-print(json.dumps(sorted(set(keys)), ensure_ascii=True))
-PY
-)"
-    local key_rc=$?
-    rm -f "${keys_output}"
-    if [[ "${key_rc}" -ne 0 || -z "${expected_targets_json}" ]]; then
-      rm -f "${output}"
-      return 1
-    fi
-  elif [[ "${target}" != *"*"* && "${target}" != *"?"* && "${target}" != *"["* && "${target}" != *","* ]]; then
-    expected_targets_json="$(python3 - "${target}" <<'PY'
-import json
-import sys
-print(json.dumps([sys.argv[1]], ensure_ascii=True))
-PY
-)"
-  else
-    rm -f "${output}"
-    return 1
-  fi
-  local cmd=(salt)
-  if [[ -n "${batch}" ]]; then
-    cmd+=(--batch "${batch}")
-  fi
-  cmd+=("${target}" proxyfleet_mihomo.module_sha256 --out=json --static)
-  if ! "${cmd[@]}" >"${output}" 2>/dev/null; then
-    rm -f "${output}"
-    return 1
-  fi
-  python3 - "${output}" "${expected_hash}" "${expected_targets_json}" <<'PY'
-import json
-import sys
-
-path, expected, expected_targets_raw = sys.argv[1], sys.argv[2], sys.argv[3]
-try:
-    data = json.loads(open(path, encoding="utf-8").read())
-    expected_targets = set(json.loads(expected_targets_raw))
-except Exception:
-    sys.exit(1)
-if not isinstance(data, dict) or not data or not expected_targets:
-    sys.exit(1)
-if set(map(str, data.keys())) != expected_targets:
-    sys.exit(1)
-for value in data.values():
-    if not isinstance(value, dict) or value.get("sha256") != expected:
-        sys.exit(1)
-sys.exit(0)
-PY
-  local rc=$?
-  rm -f "${output}"
-  return "${rc}"
-}
-
 salt_assets_missing() {
   [[ -f "${SALT_STATES_ROOT}/_modules/proxyfleet_mihomo.py" ]] || return 0
   [[ -f "${SALT_STATES_ROOT}/proxyfleet/sync.sls" ]] || return 0
@@ -1533,30 +1449,10 @@ select_sync() {
   local source_module="${PROJECT_ROOT}/salt/modules/proxyfleet_mihomo.py"
   local expected_module_hash
   expected_module_hash="$(file_sha256 "${source_module}")"
-  local sync_modules_required="true"
-  if [[ "${plan_only}" == "true" ]]; then
-    sync_modules_required="false"
-  elif [[ "${full_converge}" != "true" ]] && salt_remote_module_hash_matches "${expected_module_hash}" "${target}" "${batch}"; then
-    sync_modules_required="false"
-  fi
-  local modules_synced="false"
-  if [[ "${plan_only}" != "true" ]] && { [[ "${full_converge}" == "true" || "${sync_modules_required}" == "true" ]] || salt_assets_missing; }; then
+  if [[ "${plan_only}" != "true" ]] && { [[ "${full_converge}" == "true" ]] || salt_assets_missing; }; then
     sync_assets
   fi
-  if [[ "${plan_only}" != "true" && ( "${full_converge}" == "true" || "${sync_modules_required}" == "true" ) ]]; then
-    echo "同步 Salt execution module..."
-    # Salt 3008.1 的 batch 模式在 saltutil.sync_modules 上可能触发
-    # "Some exception handling minion payload"。该操作本身很轻量，保持非 batch
-    # 发布，batch 仅用于后续 state.apply。
-    salt "${target}" saltutil.sync_modules >/dev/null
-    modules_synced="true"
-  else
-    echo "远端 Salt module hash 已验证一致，跳过 saltutil.sync_modules"
-  fi
-  if [[ "${modules_synced}" == "true" && "${plan_only}" != "true" ]]; then
-    echo "远端 Salt module 刚刷新，本轮使用 full-converge 同步；下一轮将进入智能分流"
-    full_converge="true"
-  fi
+  echo "检查并按需同步 Salt execution module..."
 
   local sync_args=(
     sync
@@ -1567,6 +1463,7 @@ select_sync() {
     --salt-bin salt
     --port-policy-mode "${port_policy_mode}"
     --proxy-mode "${proxy_mode}"
+    --module-sha256 "${expected_module_hash}"
     --concurrency "${concurrency}"
     --log-dir "${log_dir}"
   )

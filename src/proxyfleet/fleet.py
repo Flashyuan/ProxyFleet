@@ -377,6 +377,7 @@ def run_salt_sync_result(
     log_dir: Path | None = None,
     full_converge: bool = False,
     concurrency: int = 5,
+    module_sha256: str | None = None,
     plan_only: bool = False,
 ) -> SaltSyncResult:
     """同步 release 并应用节点选择。
@@ -390,7 +391,7 @@ def run_salt_sync_result(
     if concurrency < 1:
         raise FleetError("E_CONFIG_VALIDATE", "concurrency 必须大于 0")
     if not full_converge and not batch:
-        return _run_smart_sync_result(plan, salt_bin, log_dir=log_dir, concurrency=concurrency, plan_only=plan_only)
+        return _run_smart_sync_result(plan, salt_bin, log_dir=log_dir, concurrency=concurrency, module_sha256=module_sha256, plan_only=plan_only)
     if plan_only:
         return SaltSyncResult(
             0,
@@ -450,12 +451,13 @@ def _run_smart_sync_result(
     *,
     log_dir: Path | None,
     concurrency: int,
+    module_sha256: str | None,
     plan_only: bool,
 ) -> SaltSyncResult:
     if not plan.salt_desired_path.exists() or not (plan.salt_desired_path.parent / "component-locks.json").exists():
         return _run_state_apply_result(plan, salt_bin, batch=None, log_dir=log_dir)
     desired = _read_json(plan.salt_desired_path)
-    route_plan, status_output, status_rc = _build_minion_route_plan(plan, salt_bin)
+    route_plan, status_output, status_rc = _build_minion_route_plan(plan, salt_bin, module_sha256=module_sha256)
     if plan_only:
         log_path = _write_salt_log(plan, [salt_bin, plan.target, "proxyfleet_mihomo.sync_status"], status_output, log_dir) if log_dir is not None else None
         return SaltSyncResult(0, log_path, [], "", route_plan=route_plan, warning=_route_plan_warning(route_plan))
@@ -480,7 +482,24 @@ def _run_smart_sync_result(
     failed_minions: list[str] = []
     switch_minions = [item["minion_id"] for item in route_plan["minions"] if item["action"] == "switch-only"]
     converge_minions = [item["minion_id"] for item in route_plan["minions"] if item["action"] == "full-converge"]
+    module_refresh_minions = [
+        item["minion_id"]
+        for item in route_plan["minions"]
+        if item["action"] == "full-converge" and item.get("module_status") in {"missing", "stale"}
+    ]
     route_warning = _route_plan_warning(route_plan)
+
+    for chunk in _chunks(module_refresh_minions, concurrency):
+        cmd = _salt_sync_modules_cmd(salt_bin, chunk)
+        completed = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        output = _completed_output(completed)
+        outputs.append(output)
+        if int(completed.returncode) != 0:
+            returncode = int(completed.returncode)
+            failed_minions.extend(chunk)
+
+    refresh_failed = set(failed_minions)
+    converge_minions = [minion_id for minion_id in converge_minions if minion_id not in refresh_failed]
 
     for chunk in _chunks(switch_minions, concurrency):
         cmd = _salt_apply_switch_cmd(plan, salt_bin, chunk, desired)
@@ -519,9 +538,9 @@ def _run_smart_sync_result(
     )
 
 
-def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, Any], str, int]:
+def _build_minion_route_plan(plan: SyncPlan, salt_bin: str, *, module_sha256: str | None = None) -> tuple[dict[str, Any], str, int]:
     expected_locks = _sha256_file(plan.salt_desired_path.parent / "component-locks.json")
-    expected_module_hash = _expected_salt_module_hash(plan)
+    expected_module_hash = module_sha256 or _expected_salt_module_hash(plan)
     desired = _read_json(plan.salt_desired_path)
     expected_targets = _expected_target_ids(plan.target, salt_bin)
     if expected_targets is None and plan.target == "*":
@@ -532,7 +551,6 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, A
         plan.target,
         "test.ping",
         "--out=json",
-        "--static",
     ]
     ping = subprocess.run(ping_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     ping_output = _completed_output(ping)
@@ -566,7 +584,6 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, A
         "sys.list_functions",
         "proxyfleet_mihomo",
         "--out=json",
-        "--static",
     ]
     functions = subprocess.run(functions_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     functions_output = _completed_output(functions)
@@ -602,7 +619,6 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, A
             ",".join(module_ready),
             "proxyfleet_mihomo.module_sha256",
             "--out=json",
-            "--static",
         ]
         hash_completed = subprocess.run(hash_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         hash_output = _completed_output(hash_completed)
@@ -641,7 +657,6 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str) -> tuple[dict[str, A
             f"expected_component_locks_sha256={expected_locks}",
             f"expected_selected_node_id={desired['selected_node_id']}",
             "--out=json",
-            "--static",
         ]
         completed = subprocess.run(status_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         status_output = _completed_output(completed)
@@ -890,7 +905,16 @@ def _salt_apply_switch_cmd(plan: SyncPlan, salt_bin: str, minions: list[str], de
         f"operation_id={plan.operation_id}",
         "fail_on_error=true",
         "--out=json",
-        "--static",
+    ]
+
+
+def _salt_sync_modules_cmd(salt_bin: str, minions: list[str]) -> list[str]:
+    return [
+        salt_bin,
+        "-L",
+        ",".join(minions),
+        "saltutil.sync_modules",
+        "--out=json",
     ]
 
 
