@@ -28,6 +28,7 @@ from proxyfleet.fleet import (
     salt_envelope,
     select_node,
     SaltSyncResult,
+    _parse_salt_mapping,
     _summarize_salt_output,
 )
 
@@ -40,6 +41,10 @@ SALT_MODULE = ROOT / "salt" / "modules" / "proxyfleet_mihomo.py"
 
 def _release(tmp: Path):
     return build_release(BuildOptions(FIXTURE, tmp, 1, "abc123", LOCKS))
+
+
+def _json_docs(*items):
+    return "\n".join(json.dumps(item, ensure_ascii=False, indent=4) for item in items)
 
 
 def _installed_mihomo_fixture(root: Path):
@@ -659,6 +664,85 @@ proxies:
                 self.assertNotIn("--static", call.args[0])
             self.assertEqual("switch-only", result.route_plan["minions"][0]["action"])
             self.assertIn("route_plan", result.to_dict())
+
+    def test_parse_salt_mapping_merges_pretty_json_documents(self):
+        output = _json_docs(
+            {"minion-a": True},
+            {"minion-b": ["proxyfleet_mihomo.sync_status", "proxyfleet_mihomo.apply_switch"]},
+            {"minion-c": {"classification": "ready-old", "reason": "ready"}},
+        )
+
+        self.assertEqual(
+            {
+                "minion-a": True,
+                "minion-b": ["proxyfleet_mihomo.sync_status", "proxyfleet_mihomo.apply_switch"],
+                "minion-c": {"classification": "ready-old", "reason": "ready"},
+            },
+            _parse_salt_mapping(output),
+        )
+
+    def test_smart_sync_classifies_segmented_pretty_json_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "releases")
+            node = build_node_catalog(release)[0]
+            select_node(release, root / "runtime", node.node_id, "production")
+            salt_root = root / "srv-salt"
+            prepare_salt_publish(release, root / "runtime" / "desired.yaml", salt_root, LOCKS, None, full_converge=True)
+            module_path = salt_root / "_modules" / "proxyfleet_mihomo.py"
+            module_path.parent.mkdir(parents=True, exist_ok=True)
+            module_path.write_text("current module\n", encoding="utf-8")
+            expected_hash = hashlib.sha256(module_path.read_bytes()).hexdigest()
+            plan = build_sync_plan(release, root / "runtime" / "desired.yaml", salt_root, "*")
+            with mock.patch("proxyfleet.fleet.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout=_json_docs({"minions": ["minion-a", "minion-b"]}), stderr=""),
+                    mock.Mock(returncode=0, stdout=_json_docs({"minion-a": True}, {"minion-b": True}), stderr=""),
+                    mock.Mock(
+                        returncode=0,
+                        stdout=_json_docs(
+                            {"minion-a": ["proxyfleet_mihomo.sync_status", "proxyfleet_mihomo.apply_switch", "proxyfleet_mihomo.module_sha256"]},
+                            {"minion-b": ["proxyfleet_mihomo.sync_status", "proxyfleet_mihomo.apply_switch", "proxyfleet_mihomo.module_sha256"]},
+                        ),
+                        stderr="",
+                    ),
+                    mock.Mock(
+                        returncode=0,
+                        stdout=_json_docs(
+                            {"minion-a": {"sha256": expected_hash}},
+                            {"minion-b": {"sha256": expected_hash}},
+                        ),
+                        stderr="",
+                    ),
+                    mock.Mock(
+                        returncode=0,
+                        stdout=_json_docs(
+                            {"minion-a": {"classification": "ready-old", "reason": "ready"}},
+                            {"minion-b": {"classification": "ready-old", "reason": "ready"}},
+                        ),
+                        stderr="",
+                    ),
+                    mock.Mock(
+                        returncode=0,
+                        stdout=_json_docs(
+                            {"minion-a": {"status": "success"}},
+                            {"minion-b": {"status": "success"}},
+                        ),
+                        stderr="",
+                    ),
+                ]
+                result = run_salt_sync_result(plan, "salt", concurrency=2)
+
+            self.assertEqual(0, result.returncode)
+            self.assertIsNone(result.warning)
+            self.assertEqual([], result.failed_minions)
+            by_id = {item["minion_id"]: item for item in result.route_plan["minions"]}
+            self.assertEqual("switch-only", by_id["minion-a"]["action"])
+            self.assertEqual("switch-only", by_id["minion-b"]["action"])
+            switch_cmd = run.call_args_list[-1].args[0]
+            self.assertIn("proxyfleet_mihomo.apply_switch", switch_cmd)
+            self.assertIn("minion-a,minion-b", switch_cmd)
+            self.assertNotIn("state.apply", switch_cmd)
 
     def test_smart_sync_missing_module_routes_to_full_converge(self):
         with tempfile.TemporaryDirectory() as tmp:
