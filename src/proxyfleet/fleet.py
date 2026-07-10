@@ -757,6 +757,9 @@ def _parse_salt_mapping(raw: str | None) -> dict[str, Any] | None:
     data = _json_object(text)
     if data is not None:
         return data
+    data = _json_documents_mapping(text)
+    if data is not None:
+        return data
     parsed: dict[str, Any] = {}
     current: str | None = None
     for line in text.splitlines():
@@ -792,6 +795,45 @@ def _parse_salt_mapping(raw: str | None) -> dict[str, Any] | None:
     if not parsed:
         return None
     return parsed
+
+
+def _json_documents_mapping(text: str) -> dict[str, Any] | None:
+    """合并 Salt 分块输出的多个 JSON document。
+
+    Salt 3008.x 在部分环境下会为每个 Minion 输出一个 pretty JSON 对象，例如：
+
+    {
+        "minion-a": true
+    }
+    {
+        "minion-b": true
+    }
+
+    这不是合法的单个 JSON 文档，但每一块都是合法 JSON。这里使用标准 JSON
+    decoder 从左到右逐个读取，只有所有非空白内容都能被解析成对象时才返回合并
+    结果，避免把截断或混入异常文本的输出误判为成功。
+    """
+
+    decoder = json.JSONDecoder()
+    index = 0
+    parsed: dict[str, Any] = {}
+    length = len(text)
+    while True:
+        while index < length and text[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        if text[index] != "{":
+            return None
+        try:
+            value, next_index = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(value, dict):
+            return None
+        parsed.update(value)
+        index = next_index
+    return parsed or None
 
 
 def _is_salt_noise_line(value: str) -> bool:
