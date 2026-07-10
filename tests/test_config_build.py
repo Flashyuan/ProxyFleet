@@ -43,6 +43,9 @@ class ConfigBuildTests(unittest.TestCase):
             self.assertTrue(config["tun"]["auto-redirect"])
             self.assertIn("any:53", config["tun"]["dns-hijack"])
             self.assertIn("192.168.0.0/16", config["tun"]["route-exclude-address"])
+            self.assertIn("IP-CIDR,10.0.0.0/8,DIRECT,no-resolve", config["rules"])
+            self.assertIn("DOMAIN-SUFFIX,cluster.local,DIRECT", config["rules"])
+            self.assertLess(config["rules"].index("IP-CIDR,10.0.0.0/8,DIRECT,no-resolve"), config["rules"].index("RULE-SET,force-proxy,FLEET_PROXY"))
             self.assertTrue((release / "manifest.sha256").exists())
             verify_release(release)
 
@@ -104,6 +107,73 @@ class ConfigBuildTests(unittest.TestCase):
             self.assertTrue(config["tun"]["auto-detect-interface"])
             self.assertTrue(config["tun"]["strict-route"])
             self.assertEqual(["any:53", "tcp://any:53"], config["tun"]["dns-hijack"])
+            self.assertIn("10.0.0.0/8", config["tun"]["route-exclude-address"])
+
+    def test_tproxy_custom_excludes_json_are_merged_and_deduped(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as out:
+            shutil.copytree(FIXTURE, src, dirs_exist_ok=True)
+            (Path(src) / "tproxy-excludes.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "route_exclude_address": ["10.96.0.0/12", "10.96.0.0/12"],
+                        "direct_rules": ["IP-CIDR,10.96.0.0/12,DIRECT,no-resolve"],
+                        "direct_domains": ["cluster.local", "svc.custom"],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+
+            release = build_release(
+                BuildOptions(
+                    source_dir=Path(src),
+                    output_dir=Path(out),
+                    revision=1,
+                    source_git_commit="abc123",
+                    component_locks=LOCKS,
+                )
+            )
+
+            config = json.loads((release / "config.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(1, config["tun"]["route-exclude-address"].count("10.96.0.0/12"))
+            self.assertIn("IP-CIDR,10.96.0.0/12,DIRECT,no-resolve", config["rules"])
+            self.assertIn("DOMAIN-SUFFIX,svc.custom,DIRECT", config["rules"])
+            self.assertEqual(1, config["rules"].count("DOMAIN-SUFFIX,cluster.local,DIRECT"))
+
+    def test_tproxy_custom_excludes_yaml_are_merged_and_deduped(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as out:
+            shutil.copytree(FIXTURE, src, dirs_exist_ok=True)
+            (Path(src) / "tproxy-excludes.yaml").write_text(
+                """
+schema_version: "1.0"
+route_exclude_address:
+  - 10.244.0.0/16
+direct_rules:
+  - IP-CIDR,10.244.0.0/16,DIRECT,no-resolve
+direct_domains:
+  - pod.cluster.local
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            release = build_release(
+                BuildOptions(
+                    source_dir=Path(src),
+                    output_dir=Path(out),
+                    revision=1,
+                    source_git_commit="abc123",
+                    component_locks=LOCKS,
+                )
+            )
+
+            config = json.loads((release / "config.yaml").read_text(encoding="utf-8"))
+            self.assertIn("10.244.0.0/16", config["tun"]["route-exclude-address"])
+            self.assertIn("IP-CIDR,10.244.0.0/16,DIRECT,no-resolve", config["rules"])
+            self.assertIn("DOMAIN-SUFFIX,pod.cluster.local,DIRECT", config["rules"])
 
     def test_explicit_proxy_mode_preserves_source_tun_settings(self):
         with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as out:
@@ -128,6 +198,40 @@ class ConfigBuildTests(unittest.TestCase):
             config = json.loads((release / "config.yaml").read_text(encoding="utf-8"))
             self.assertNotEqual(7893, config.get("tproxy-port"))
             self.assertNotEqual(True, config.get("tun", {}).get("enable") if isinstance(config.get("tun"), dict) else None)
+
+    def test_explicit_proxy_preserves_custom_direct_rules_without_forcing_tun(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as out:
+            shutil.copytree(FIXTURE, src, dirs_exist_ok=True)
+            base_path = Path(src) / "base.json"
+            base = json.loads(base_path.read_text(encoding="utf-8"))
+            base["proxy_mode"] = "explicit-proxy"
+            base_path.write_text(json.dumps(base, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+            (Path(src) / "tproxy-excludes.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "direct_rules": ["IP-CIDR,10.96.0.0/12,DIRECT,no-resolve"],
+                        "direct_domains": ["cluster.local"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            release = build_release(
+                BuildOptions(
+                    source_dir=Path(src),
+                    output_dir=Path(out),
+                    revision=1,
+                    source_git_commit="abc123",
+                    component_locks=LOCKS,
+                )
+            )
+
+            config = json.loads((release / "config.yaml").read_text(encoding="utf-8"))
+            self.assertNotIn("tun", config)
+            self.assertNotIn("tproxy-port", config)
+            self.assertIn("IP-CIDR,10.96.0.0/12,DIRECT,no-resolve", config["rules"])
+            self.assertIn("DOMAIN-SUFFIX,cluster.local,DIRECT", config["rules"])
 
     def test_verify_release_detects_hash_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:

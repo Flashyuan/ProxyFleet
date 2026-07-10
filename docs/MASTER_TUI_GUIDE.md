@@ -45,6 +45,7 @@ q             退出，不切换
 读取各 Minion 的当前受管状态并分类
 旧 Minion 只调用 Mihomo API 切换 FLEET_PROXY
 新 Minion 或漂移 Minion 才执行 state.apply proxyfleet.sync
+无法安全分类的 Minion 标记为 unknown/defer，不拖累在线节点
 如已配置邮件告警，向管理员发送手动切换成功通知
 ```
 
@@ -57,10 +58,17 @@ q             退出，不切换
 - TUI 测速优先当前已选节点、当前页和搜索结果，非可见节点低优先级后台刷新；
 - 默认测速并发为 8，避免进入 TUI 时压高 Master 本机 Mihomo 资源；
 - 日常切换节点与完整组件收敛拆开，普通切换不重复发布不变的 Mihomo 离线资产；
+- Salt file_roots 缺少完整基线时，TUI 会提示显式执行 `select-sync --full-converge`，
+  不会自动对全目标完整收敛；
+- 某台 Minion 分类失败时只标记 `unknown/defer`，已分类的在线 Minion 继续按
+  `switch-only` 或 `full-converge` 执行；
 - 默认不启用 Salt batch，改由 ProxyFleet 按较小并发分组，避免 Master 瞬时
   fork 和事件处理压力过高；
 - 同步所有 Minion 时默认 batch 分批，最终仍保证目标 Minion 都收敛到同一个节点；
 - Salt 输出摘要优先，完整 highstate 输出写入权限受限日志文件。
+- 默认 `tproxy` 会保护 Docker/K8s/CNI 内部网络，支持通过
+  `config-src/tproxy-excludes.json` 或 `config-src/tproxy-excludes.yaml` 追加
+  Pod CIDR、Service CIDR、bridge 和企业内网。
 
 如果同步失败并提示：
 

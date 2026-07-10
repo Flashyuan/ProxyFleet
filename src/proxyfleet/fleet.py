@@ -455,27 +455,12 @@ def _run_smart_sync_result(
     plan_only: bool,
 ) -> SaltSyncResult:
     if not plan.salt_desired_path.exists() or not (plan.salt_desired_path.parent / "component-locks.json").exists():
-        return _run_state_apply_result(plan, salt_bin, batch=None, log_dir=log_dir)
+        raise FleetError("E_SYNC_NEEDS_FULL_CONVERGE", "Salt file_roots 缺少轻量同步基线，请显式执行 --full-converge")
     desired = _read_json(plan.salt_desired_path)
     route_plan, status_output, status_rc = _build_minion_route_plan(plan, salt_bin, module_sha256=module_sha256)
     if plan_only:
         log_path = _write_salt_log(plan, [salt_bin, plan.target, "proxyfleet_mihomo.sync_status"], status_output, log_dir) if log_dir is not None else None
         return SaltSyncResult(0, log_path, [], "", route_plan=route_plan, warning=_route_plan_warning(route_plan))
-    if status_rc != 0 or route_plan.get("classification_unavailable"):
-        fallback = _run_state_apply_result(plan, salt_bin, batch=None, log_dir=log_dir)
-        warning = "Minion classification failed; fell back to state.apply"
-        if route_plan.get("classification_unavailable"):
-            warning = "Minion classification unavailable; fell back to state.apply"
-        return SaltSyncResult(
-            fallback.returncode,
-            fallback.log_path,
-            fallback.failed_minions,
-            fallback.error_summary,
-            route_plan=route_plan,
-            fallback_used=True,
-            warning=warning,
-            minion_results=fallback.minion_results,
-        )
 
     outputs = [status_output] if status_output else []
     returncode = 0
@@ -487,8 +472,6 @@ def _run_smart_sync_result(
         for item in route_plan["minions"]
         if item["action"] == "full-converge" and item.get("module_status") in {"missing", "stale"}
     ]
-    route_warning = _route_plan_warning(route_plan)
-
     for chunk in _chunks(module_refresh_minions, concurrency):
         cmd = _salt_sync_modules_cmd(salt_bin, chunk)
         completed = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -527,13 +510,16 @@ def _run_smart_sync_result(
     envelope_failed = _failed_envelope_minions(combined)
     merged_failed = sorted(set(failed_minions + parsed_failed + envelope_failed))
     final_returncode = returncode or (1 if merged_failed else 0)
+    warning = _route_plan_warning(route_plan)
+    if status_rc != 0 and not warning:
+        warning = "Some Minions could not be classified and were deferred"
     return SaltSyncResult(
         final_returncode,
         log_path,
         merged_failed,
         error_summary,
         route_plan=route_plan,
-        warning=route_warning,
+        warning=warning,
         minion_results=_route_minion_results(route_plan, merged_failed, combined),
     )
 
@@ -559,6 +545,9 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str, *, module_sha256: st
         ping_data = _parse_salt_mapping(ping_output)
     if ping_data is None:
         reason = "test.ping command failed" if int(ping.returncode) != 0 else "test.ping returned invalid output"
+        if expected_targets:
+            minions = [_unknown_route_item(minion_id, reason) for minion_id in expected_targets]
+            return _route_plan(plan, minions, classification_unavailable=True, reason=reason), ping_output, int(ping.returncode) or 1
         return _route_plan_unavailable(plan, reason), ping_output, int(ping.returncode) or 1
 
     minions: list[dict[str, Any]] = []
@@ -587,15 +576,20 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str, *, module_sha256: st
     ]
     functions = subprocess.run(functions_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     functions_output = _completed_output(functions)
-    if int(functions.returncode) != 0:
-        return _route_plan_unavailable(plan, "sys.list_functions command failed"), "\n".join([ping_output, functions_output]), int(functions.returncode)
-
-    functions_data = _json_object(functions.stdout)
+    functions_data = _parse_salt_mapping(functions.stdout)
     if functions_data is None:
-        return _route_plan_unavailable(plan, "sys.list_functions returned invalid JSON"), "\n".join([ping_output, functions_output]), 1
+        functions_data = _parse_salt_mapping(functions_output)
+    if functions_data is None:
+        reason = "sys.list_functions command failed" if int(functions.returncode) != 0 else "sys.list_functions returned invalid output"
+        for minion_id in reachable:
+            minions.append(_unknown_route_item(minion_id, reason))
+        return _route_plan(plan, sorted(minions, key=lambda item: item["minion_id"]), classification_unavailable=True, reason=reason), "\n".join([ping_output, functions_output]), int(functions.returncode) or 1
 
     module_ready: list[str] = []
     for minion_id in reachable:
+        if minion_id not in functions_data:
+            minions.append(_unknown_route_item(minion_id, "sys.list_functions missing return"))
+            continue
         functions_value = functions_data.get(minion_id)
         if _has_proxyfleet_sync_functions(functions_value):
             module_ready.append(minion_id)
@@ -626,9 +620,15 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str, *, module_sha256: st
         if hash_data is None:
             hash_data = _parse_salt_mapping(hash_output)
         if hash_data is None:
-            return _route_plan_unavailable(plan, "module_sha256 returned invalid output"), "\n".join([ping_output, functions_output, hash_output]), int(hash_completed.returncode) or 1
+            reason = "module_sha256 returned invalid output"
+            for minion_id in module_ready:
+                minions.append(_unknown_route_item(minion_id, reason))
+            return _route_plan(plan, sorted(minions, key=lambda item: item["minion_id"]), classification_unavailable=True, reason=reason), "\n".join([ping_output, functions_output, hash_output]), int(hash_completed.returncode) or 1
         current_module_ready: list[str] = []
         for minion_id in module_ready:
+            if minion_id not in hash_data:
+                minions.append(_unknown_route_item(minion_id, "module_sha256 missing return"))
+                continue
             value = hash_data.get(minion_id)
             remote_hash = value.get("sha256") if isinstance(value, dict) else None
             if remote_hash == expected_module_hash:
@@ -660,24 +660,18 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str, *, module_sha256: st
         ]
         completed = subprocess.run(status_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         status_output = _completed_output(completed)
-        if int(completed.returncode) != 0:
-            return _route_plan_unavailable(plan, "sync_status command failed"), "\n".join([ping_output, functions_output, hash_output, status_output]), int(completed.returncode)
-        status_data = _json_object(completed.stdout)
+        status_data = _parse_salt_mapping(completed.stdout)
         if status_data is None:
-            return _route_plan_unavailable(plan, "sync_status returned invalid JSON"), "\n".join([ping_output, functions_output, hash_output, status_output]), 1
+            status_data = _parse_salt_mapping(status_output)
+        if status_data is None:
+            reason = "sync_status command failed" if int(completed.returncode) != 0 else "sync_status returned invalid output"
+            for minion_id in module_ready:
+                minions.append(_unknown_route_item(minion_id, reason))
+            return _route_plan(plan, sorted(minions, key=lambda item: item["minion_id"]), classification_unavailable=True, reason=reason), "\n".join([ping_output, functions_output, hash_output, status_output]), int(completed.returncode) or 1
         for minion_id in module_ready:
             value = status_data.get(minion_id)
             if not isinstance(value, dict):
-                minions.append(
-                    {
-                        "minion_id": minion_id,
-                        "classification": "drifted",
-                        "action": "full-converge",
-                        "reason": "missing status return",
-                        "reachability": "online",
-                        "module_status": "ready",
-                    }
-                )
+                minions.append(_unknown_route_item(minion_id, "sync_status missing return"))
                 continue
             classification = str(value.get("classification", "drifted"))
             reason = str(value.get("reason", ""))
@@ -719,13 +713,27 @@ def _route_plan_unavailable(plan: SyncPlan, reason: str) -> dict[str, Any]:
     }
 
 
-def _route_plan(plan: SyncPlan, minions: list[dict[str, Any]], *, classification_unavailable: bool) -> dict[str, Any]:
-    return {
+def _route_plan(plan: SyncPlan, minions: list[dict[str, Any]], *, classification_unavailable: bool, reason: str | None = None) -> dict[str, Any]:
+    payload = {
         "mode": "smart",
         "target": plan.target,
         "classification_unavailable": classification_unavailable,
         "summary": _route_summary(minions),
         "minions": minions,
+    }
+    if reason:
+        payload["reason"] = reason
+    return payload
+
+
+def _unknown_route_item(minion_id: str, reason: str) -> dict[str, Any]:
+    return {
+        "minion_id": minion_id,
+        "classification": "unknown",
+        "action": "defer",
+        "reason": reason,
+        "reachability": "unknown",
+        "module_status": "unknown",
     }
 
 
@@ -817,11 +825,22 @@ def _has_proxyfleet_sync_functions(functions_value: Any) -> bool:
 
 
 def _route_plan_warning(route_plan: dict[str, Any]) -> str | None:
+    if route_plan.get("classification_unavailable") and not route_plan.get("minions"):
+        return "Minion classification unavailable; sync deferred"
     minions = route_plan.get("minions", [])
     if not isinstance(minions, list):
         return None
     offline = [item for item in minions if isinstance(item, dict) and item.get("classification") == "offline"]
+    deferred = [
+        item
+        for item in minions
+        if isinstance(item, dict) and item.get("action") == "defer" and item.get("classification") != "offline"
+    ]
     active = [item for item in minions if isinstance(item, dict) and item.get("action") in {"switch-only", "full-converge"}]
+    if deferred and active:
+        return "Some Minions could not be classified and were deferred"
+    if deferred and not active:
+        return "No actionable Minions; sync deferred"
     if offline and active:
         return "Some Minions were offline and deferred"
     if offline and not active:
@@ -933,7 +952,7 @@ def _is_salt_batch_publish_error(output: str) -> bool:
 
 
 def run_salt_sync(plan: SyncPlan, salt_bin: str = "salt", *, batch: str | None = None, log_dir: Path | None = None) -> int:
-    return run_salt_sync_result(plan, salt_bin, batch=batch, log_dir=log_dir).returncode
+    return run_salt_sync_result(plan, salt_bin, batch=batch, log_dir=log_dir, full_converge=True).returncode
 
 
 class MihomoClient:
@@ -1363,7 +1382,9 @@ def _route_minion_results(route_plan: dict[str, Any], failed_minions: list[str],
             status = "failed"
         elif isinstance(actual, dict) and actual.get("status") == "success" and actual_message == "already-applied":
             status = "already-applied"
-        elif classification == "offline" or action == "defer":
+        elif action == "defer" and classification != "offline":
+            status = "deferred"
+        elif classification == "offline":
             status = "offline"
         else:
             status = "success"

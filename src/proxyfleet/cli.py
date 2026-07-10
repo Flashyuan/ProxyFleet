@@ -297,7 +297,11 @@ def _print_sync_summary(status: str, plan: Any, result: Any, *, planned: bool = 
 
     counts = _sync_counts(rows)
     print("")
-    print(f"结果：{_sync_status_label(status)}，{counts['success']} 成功 / {counts['offline']} 离线 / {counts['failed']} 失败")
+    print(
+        f"结果：{_sync_status_label(status)}，"
+        f"{counts['success']} 成功 / {counts['offline']} 离线 / "
+        f"{counts['deferred']} 延后 / {counts['failed']} 失败"
+    )
     if result.error_summary:
         print(f"摘要：{result.error_summary}")
     if result.log_path:
@@ -337,7 +341,12 @@ def _sync_summary_rows(result: Any) -> list[dict[str, str]]:
             continue
         action = str(item.get("action", "-"))
         classification = str(item.get("classification", "unknown"))
-        status = "offline" if classification == "offline" or action == "defer" else "success"
+        if classification == "offline":
+            status = "offline"
+        elif action == "defer":
+            status = "deferred"
+        else:
+            status = "success"
         rows.append({"minion_id": minion_id, "label": _minion_status_label(status), "action": action})
     return rows
 
@@ -358,19 +367,34 @@ def _sync_status_label(status: str) -> str:
         "partial": "部分成功",
         "planned": "计划完成",
         "failed": "失败",
+        "deferred": "已延后",
     }.get(status, status)
 
 
 def _sync_counts(rows: list[dict[str, str]]) -> dict[str, int]:
-    counts = {"success": 0, "offline": 0, "failed": 0}
+    counts = {"success": 0, "offline": 0, "deferred": 0, "failed": 0}
     for row in rows:
         if row["label"] in {"成功", "已是目标"}:
             counts["success"] += 1
         elif row["label"] == "离线":
             counts["offline"] += 1
+        elif row["label"] == "延后":
+            counts["deferred"] += 1
         elif row["label"] == "失败":
             counts["failed"] += 1
     return counts
+
+
+def _sync_status_from_result(result: Any) -> str:
+    rows = _sync_summary_rows(result)
+    counts = _sync_counts(rows)
+    if result.returncode != 0:
+        return "failed"
+    if counts["success"] == 0 and counts["failed"] == 0 and (counts["offline"] or counts["deferred"]):
+        return "deferred"
+    if result.warning:
+        return "partial"
+    return "success"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -635,7 +659,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 _print_sync_summary("failed", plan, result)
             return rc
-        status = "partial" if result.warning else "success"
+        status = _sync_status_from_result(result)
         if args.json:
             print(json.dumps(_sync_payload(status, plan, result), ensure_ascii=False, indent=2, sort_keys=True))
         else:

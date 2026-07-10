@@ -499,8 +499,8 @@ Salt 输出写入日志。
 不会修改生产 `/srv/proxyfleet/salt/states`，也不会执行真实同步。
 
 普通 `select-sync` 如果发现生产 Salt file_roots 缺少 release、组件锁或资产基线，
-会自动升级为一次 `full-converge` 发布和同步；用户不需要每次手动追加
-`--full-converge`。基线补齐后，后续日常切换会回到智能分流轻量路径。
+会 fail-closed 并提示管理员确认后显式执行 `select-sync --full-converge`。基线
+补齐后，后续日常切换会回到智能分流轻量路径。
 
 Master 更新后，如果某台 Minion 的 Salt execution module 缺失或 hash 不一致，
 只会对这台 Minion 执行 `saltutil.sync_modules + full-converge`。其它已经
@@ -510,6 +510,10 @@ Master 更新后，如果某台 Minion 的 Salt execution module 缺失或 hash 
 `tproxy-port`，让 Minion 本机进程不显式设置 `HTTP_PROXY` 时也可以走当前选中节点。
 该模式会覆盖订阅配置中关闭透明代理的字段，例如 `tun.enable: false` 和
 `tproxy-port: 0`。
+如果 Minion 同时运行 Docker、K8s 或 CNI，默认 release 会前置私网和集群域名的
+DIRECT 规则，并把常见私网、Pod/Service CIDR、bridge、loopback、link-local 等
+网段加入 `route-exclude-address`。如需追加本环境特殊网段，可创建
+`config-src/tproxy-excludes.json` 或 `config-src/tproxy-excludes.yaml`。
 如需排查透明代理导致的路由问题，可临时使用 `--proxy-mode explicit-proxy`。
 
 废弃但兼容的参数：
