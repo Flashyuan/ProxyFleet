@@ -476,7 +476,7 @@ Salt 输出写入日志。
 ## 14. `select-sync` 参数
 
 ```text
---release-dir PATH       release 目录，默认 releases/000001；不存在时取最大编号
+--release-dir PATH       release 目录，默认自动使用 releases 下最大编号
 --runtime-dir PATH       runtime 目录，默认 runtime
 --salt-root PATH         Salt file_roots，默认 /srv/proxyfleet/salt/states
 --target TARGET          Salt 目标，默认 *
@@ -509,7 +509,8 @@ Master 更新后，如果某台 Minion 的 Salt execution module 缺失或 hash 
 默认 `tproxy` 会在 release 的 `config.yaml` 中启用 Mihomo TUN 自动路由和
 `tproxy-port`，让 Minion 本机进程不显式设置 `HTTP_PROXY` 时也可以走当前选中节点。
 该模式会覆盖订阅配置中关闭透明代理的字段，例如 `tun.enable: false` 和
-`tproxy-port: 0`。
+`tproxy-port: 0`；同时关闭 DNS fallback GeoIP 过滤，避免 Mihomo 启动时因 MMDB
+在线下载超时而无法监听 9090/7890/7893。
 如果 Minion 同时运行 Docker、K8s 或 CNI，默认 release 会前置私网和集群域名的
 DIRECT 规则，并把常见私网、Pod/Service CIDR、bridge、loopback、link-local 等
 网段加入 `route-exclude-address`。如需追加本环境特殊网段，可创建

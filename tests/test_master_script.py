@@ -235,6 +235,7 @@ class MasterScriptTuiTests(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn('local full_converge="false"', text)
+        self.assertIn('local release_dir=""', text)
         self.assertIn('local batch=""', text)
         self.assertIn('local concurrency="5"', text)
         self.assertIn('local plan_only="false"', text)

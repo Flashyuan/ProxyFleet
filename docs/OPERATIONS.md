@@ -247,7 +247,7 @@ sudo scripts/proxyfleet-master.sh select-sync --target '<minion-id>'
 ## 7. `select-sync` 参数
 
 ```text
---release-dir PATH       release 目录，默认 releases/000001；不存在时取最大编号
+--release-dir PATH       release 目录，默认自动使用 releases 下最大编号
 --runtime-dir PATH       runtime 目录，默认 runtime
 --salt-root PATH         Salt file_roots，默认 /srv/proxyfleet/salt/states
 --target TARGET          Salt 目标，默认 *
@@ -280,7 +280,9 @@ Master 更新后，如果本轮检测到某台 Minion 的 Salt execution module 
 
 默认 `tproxy` 会把透明代理运行参数写入新构建的 release，并在同步切换时作为
 Salt plan 记录。该模式会覆盖订阅里关闭 TUN/TProxy 的字段，例如
-`tun.enable: false` 和 `tproxy-port: 0`。只有排障时建议临时切到
+`tun.enable: false` 和 `tproxy-port: 0`。为避免 Minion 启动时在线下载 MMDB
+失败导致 Mihomo fatal，默认 TProxy release 会关闭 DNS fallback GeoIP 过滤：
+`dns.fallback=[]` 且 `dns.fallback-filter.geoip=false`。只有排障时建议临时切到
 `explicit-proxy`。
 
 默认 `tproxy` 还会保护 Docker/K8s/CNI 内部网络：私网、loopback、link-local、

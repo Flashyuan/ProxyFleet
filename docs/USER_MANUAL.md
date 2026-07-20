@@ -356,7 +356,7 @@ TUI 入口：
 ## 10. `select-sync` 参数说明
 
 ```text
---release-dir PATH       release 目录，默认 releases/000001；不存在时取最大编号
+--release-dir PATH       release 目录，默认自动使用 releases 下最大编号
 --runtime-dir PATH       runtime 目录，默认 runtime
 --salt-root PATH         Salt file_roots，默认 /srv/proxyfleet/salt/states
 --target TARGET          Salt 目标，默认 *
@@ -378,7 +378,8 @@ TUI 入口：
 普通使用不需要传 `--proxy-mode`。默认 `tproxy` 会让 Minion 上的命令行程序优先
 通过 Mihomo 当前选中节点访问公网；`explicit-proxy` 仅用于临时回退到手动代理端口。
 `tproxy` 会强制覆盖订阅中关闭透明代理的字段，例如 `tun.enable: false` 和
-`tproxy-port: 0`。
+`tproxy-port: 0`；同时关闭 DNS fallback GeoIP 过滤，避免 Mihomo 启动时因 MMDB
+在线下载超时而无法监听 9090/7890/7893。
 
 废弃但兼容：
 

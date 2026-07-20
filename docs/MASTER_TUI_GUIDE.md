@@ -62,10 +62,14 @@ q             退出，不切换
   不会自动对全目标完整收敛；
 - 某台 Minion 分类失败时只标记 `unknown/defer`，已分类的在线 Minion 继续按
   `switch-only` 或 `full-converge` 执行；
+- TUI 默认使用 `releases` 下最大编号的最新 release，不再固定同步
+  `releases/000001`；
 - 默认不启用 Salt batch，改由 ProxyFleet 按较小并发分组，避免 Master 瞬时
   fork 和事件处理压力过高；
 - 同步所有 Minion 时默认 batch 分批，最终仍保证目标 Minion 都收敛到同一个节点；
 - Salt 输出摘要优先，完整 highstate 输出写入权限受限日志文件。
+- 默认 `tproxy` release 会关闭 DNS fallback GeoIP 过滤，避免 Minion 启动时因
+  MMDB 在线下载超时导致 Mihomo 无法监听 9090/7890/7893；
 - 默认 `tproxy` 会保护 Docker/K8s/CNI 内部网络，支持通过
   `config-src/tproxy-excludes.json` 或 `config-src/tproxy-excludes.yaml` 追加
   Pod CIDR、Service CIDR、bridge 和企业内网。

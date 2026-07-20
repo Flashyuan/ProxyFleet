@@ -1446,6 +1446,7 @@ class SaltModuleTests(unittest.TestCase):
             module = self._module()
             module._reload_or_restart = lambda service_name: order.append("reload")
             module._wait_mihomo_node = lambda api, secret, group, name: order.append("wait")
+            module._assert_runtime_proxy_mode = lambda api, secret, mode: None
             module._select_mihomo = lambda api, secret, group, name: order.append("select")
             result = module.apply_desired(
                 release_root=str(root / "salt" / "releases"),
@@ -1470,6 +1471,7 @@ class SaltModuleTests(unittest.TestCase):
             module = self._module()
             module._reload_or_restart = lambda service_name: order.append("reload")
             module._wait_mihomo_node = lambda api, secret, group, name: order.append("wait")
+            module._assert_runtime_proxy_mode = lambda api, secret, mode: None
             module._select_mihomo = lambda api, secret, group, name: order.append("select")
 
             result = module.apply_desired(
@@ -1526,6 +1528,7 @@ class SaltModuleTests(unittest.TestCase):
 
             module = self._module()
             module._api = lambda api, secret, method, path, body, **kwargs: {"all": [node.mihomo_name], "now": node.mihomo_name}
+            module._runtime_proxy_mode_ready = lambda api, secret, mode: True
             with mock.patch.object(module, "_reload_or_restart") as reload_or_restart:
                 result = module.apply_desired(
                     release_root=str(root / "salt" / "releases"),
@@ -1554,6 +1557,8 @@ class SaltModuleTests(unittest.TestCase):
             module = self._module()
             module._wait_mihomo_node = lambda api, secret, group, name: calls.append(("wait", name))
             module._select_mihomo = lambda api, secret, group, name: calls.append(("select", name)) or True
+            module._runtime_proxy_mode_ready = lambda api, secret, mode: True
+            module._assert_runtime_proxy_mode = lambda api, secret, mode: None
             with mock.patch.object(module, "_reload_or_restart") as reload_or_restart:
                 result = module.apply_desired(
                     release_root=str(root / "salt" / "releases"),
@@ -1593,6 +1598,7 @@ class SaltModuleTests(unittest.TestCase):
                     install_root=str(install_root),
                     component_locks_path=str(locks),
                     binary_path=str(binary),
+                    proxy_mode="explicit-proxy",
                     operation_id="op-test",
                 )
 
@@ -1622,6 +1628,7 @@ class SaltModuleTests(unittest.TestCase):
                 install_root=str(install_root),
                 component_locks_path=str(locks),
                 binary_path=str(binary),
+                proxy_mode="explicit-proxy",
                 operation_id="op-test",
             )
 
@@ -1645,6 +1652,7 @@ class SaltModuleTests(unittest.TestCase):
             (install_root / "current").symlink_to(active_release)
 
             module = self._module()
+            module._runtime_proxy_mode_ready = lambda api, secret, mode: True
             ready = module.sync_status(
                 expected_release_revision=1,
                 expected_component_locks_sha256=hashlib.sha256(locks.read_bytes()).hexdigest(),
@@ -1657,6 +1665,36 @@ class SaltModuleTests(unittest.TestCase):
 
             self.assertEqual("ready-old", ready["classification"])
             self.assertEqual("new-minion", new["classification"])
+
+    def test_sync_status_marks_tproxy_runtime_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = _release(root / "salt" / "releases")
+            install_root = root / "install"
+            install_root.mkdir()
+            locks, binary = _installed_mihomo_fixture(root)
+            service = root / "mihomo.service"
+            service.write_text("[Service]\n", encoding="utf-8")
+            shutil.copy2(locks, install_root / "component-locks.json")
+            managed_release = install_root / "managed" / "releases" / "000001"
+            active_release = install_root / "releases" / "000001"
+            shutil.copytree(release, managed_release)
+            shutil.copytree(release, active_release)
+            (install_root / "current").symlink_to(active_release)
+
+            module = self._module()
+            module._runtime_proxy_mode_ready = lambda api, secret, mode: False
+            status = module.sync_status(
+                expected_release_revision=1,
+                expected_component_locks_sha256=hashlib.sha256(locks.read_bytes()).hexdigest(),
+                install_root=str(install_root),
+                component_locks_path=str(locks),
+                binary_path=str(binary),
+                service_path=str(service),
+            )
+
+            self.assertEqual("drifted", status["classification"])
+            self.assertIn("runtime tproxy is not active", status["reasons"])
 
     def test_sync_status_rejects_bad_component_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2345,6 +2383,7 @@ class SaltModuleTests(unittest.TestCase):
                 )
             module._reload_or_restart = fake_reload
             module._wait_mihomo_node = fake_wait
+            module._assert_runtime_proxy_mode = lambda api, secret, mode: None
             module._select_mihomo = fake_select
             apply = module.apply_desired(
                 release_root=str(root / "srv-salt" / "proxyfleet" / "releases"),
