@@ -46,8 +46,12 @@ class ConfigBuildTests(unittest.TestCase):
             self.assertEqual([], config["dns"]["fallback"])
             self.assertFalse(config["dns"]["fallback-filter"]["geoip"])
             self.assertIn("IP-CIDR,10.0.0.0/8,DIRECT,no-resolve", config["rules"])
+            self.assertIn("IP-CIDR,223.5.5.5/32,DIRECT,no-resolve", config["rules"])
             self.assertIn("DOMAIN-SUFFIX,cluster.local,DIRECT", config["rules"])
+            self.assertIn("DOMAIN-SUFFIX,gitee.com,DIRECT", config["rules"])
+            self.assertIn("DOMAIN-SUFFIX,cn,DIRECT", config["rules"])
             self.assertLess(config["rules"].index("IP-CIDR,10.0.0.0/8,DIRECT,no-resolve"), config["rules"].index("RULE-SET,force-proxy,FLEET_PROXY"))
+            self.assertLess(config["rules"].index("DOMAIN-SUFFIX,gitee.com,DIRECT"), config["rules"].index("RULE-SET,force-proxy,FLEET_PROXY"))
             self.assertTrue((release / "manifest.sha256").exists())
             verify_release(release)
 

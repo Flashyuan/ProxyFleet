@@ -516,6 +516,13 @@ Master 更新后，如果某台 Minion 的 Salt execution module 缺失或 hash 
 进入 `route-exclude-address`。如需追加本环境特殊网段，可创建
 `config-src/tproxy-excludes.json` 或 `config-src/tproxy-excludes.yaml`。
 
+默认 TProxy 还会把 Gitee、OSChina、GitCode、阿里云、腾讯云、华为云、
+清华/中科大镜像站、`*.cn` 等中国常用域名前置为 `DIRECT`，避免 `git fetch`
+Gitee、下载国内镜像或访问国内云服务时被兜底代理拖慢。默认不会使用 `GEOIP,CN`，
+因为它可能重新触发 GeoIP/MMDB 在线资产依赖；需要完整中国公网 IP 段直连时，
+请在 `config-src/tproxy-excludes.json` 或 `.yaml` 的 `direct_rules` 中追加
+已验证的 `IP-CIDR,...,DIRECT,no-resolve`。
+
 ## 12. 卸载
 
 Master 节点：

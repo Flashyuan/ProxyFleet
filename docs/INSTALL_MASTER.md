@@ -515,6 +515,11 @@ Master 更新后，如果某台 Minion 的 Salt execution module 缺失或 hash 
 DIRECT 规则，并把常见私网、Pod/Service CIDR、bridge、loopback、link-local 等
 网段加入 `route-exclude-address`。如需追加本环境特殊网段，可创建
 `config-src/tproxy-excludes.json` 或 `config-src/tproxy-excludes.yaml`。
+默认 TProxy 还会把 Gitee、OSChina、GitCode、阿里云、腾讯云、华为云、清华/中科大
+镜像站、`*.cn` 等中国常用域名前置为 `DIRECT`，并直连常见国内公共 DNS IP。
+为避免重新引入 GeoIP/MMDB 启动期下载依赖，默认不会使用 `GEOIP,CN`；如果生产环境
+必须按完整中国公网 IP 段直连，可通过 `tproxy-excludes` 的 `direct_rules` 追加
+经你验证过的 `IP-CIDR,...,DIRECT,no-resolve` 规则。
 如需排查透明代理导致的路由问题，可临时使用 `--proxy-mode explicit-proxy`。
 
 废弃但兼容的参数：
