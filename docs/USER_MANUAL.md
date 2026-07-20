@@ -356,7 +356,7 @@ TUI 入口：
 ## 10. `select-sync` 参数说明
 
 ```text
---release-dir PATH       release 目录，默认 releases/000001；不存在时取最大编号
+--release-dir PATH       release 目录，默认自动使用 releases 下最大编号
 --runtime-dir PATH       runtime 目录，默认 runtime
 --salt-root PATH         Salt file_roots，默认 /srv/proxyfleet/salt/states
 --target TARGET          Salt 目标，默认 *
@@ -378,7 +378,8 @@ TUI 入口：
 普通使用不需要传 `--proxy-mode`。默认 `tproxy` 会让 Minion 上的命令行程序优先
 通过 Mihomo 当前选中节点访问公网；`explicit-proxy` 仅用于临时回退到手动代理端口。
 `tproxy` 会强制覆盖订阅中关闭透明代理的字段，例如 `tun.enable: false` 和
-`tproxy-port: 0`。
+`tproxy-port: 0`；同时关闭 DNS fallback GeoIP 过滤，避免 Mihomo 启动时因 MMDB
+在线下载超时而无法监听 9090/7890/7893。
 
 废弃但兼容：
 
@@ -514,6 +515,13 @@ Master 更新后，如果某台 Minion 的 Salt execution module 缺失或 hash 
 `DIRECT` 规则，私网、loopback、link-local、Pod/Service CIDR 和 bridge 网段会
 进入 `route-exclude-address`。如需追加本环境特殊网段，可创建
 `config-src/tproxy-excludes.json` 或 `config-src/tproxy-excludes.yaml`。
+
+默认 TProxy 还会把 Gitee、OSChina、GitCode、阿里云、腾讯云、华为云、
+清华/中科大镜像站、`*.cn` 等中国常用域名前置为 `DIRECT`，避免 `git fetch`
+Gitee、下载国内镜像或访问国内云服务时被兜底代理拖慢。默认不会使用 `GEOIP,CN`，
+因为它可能重新触发 GeoIP/MMDB 在线资产依赖；需要完整中国公网 IP 段直连时，
+请在 `config-src/tproxy-excludes.json` 或 `.yaml` 的 `direct_rules` 中追加
+已验证的 `IP-CIDR,...,DIRECT,no-resolve`。
 
 ## 12. 卸载
 

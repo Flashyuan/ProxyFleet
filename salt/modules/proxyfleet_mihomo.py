@@ -131,6 +131,7 @@ def apply_desired(
     mihomo_api="http://127.0.0.1:9090",
     api_secret=None,
     service_name="mihomo.service",
+    proxy_mode="tproxy",
     operation_id="op-unknown",
     fail_on_error=False,
 ):
@@ -166,7 +167,7 @@ def apply_desired(
         if previous_current == target_release.resolve() and _desired_matches(Path(install_root) / "desired.yaml", desired):
             try:
                 state = _api(mihomo_api, api_secret, "GET", "/proxies/" + parse.quote(group, safe=""), None)
-                if state.get("now") == selected_name:
+                if state.get("now") == selected_name and _runtime_proxy_mode_ready(mihomo_api, api_secret, proxy_mode):
                     return _envelope(
                         operation_id,
                         "apply",
@@ -180,7 +181,10 @@ def apply_desired(
             except _ApplyError:
                 pass
         if previous_current == target_release.resolve():
+            if not _runtime_proxy_mode_ready(mihomo_api, api_secret, proxy_mode):
+                _reload_or_restart(service_name)
             _wait_mihomo_node(mihomo_api, api_secret, group, selected_name)
+            _assert_runtime_proxy_mode(mihomo_api, api_secret, proxy_mode)
             changed = _select_mihomo(mihomo_api, api_secret, group, selected_name)
             _atomic_copy(Path(desired_path), Path(install_root) / "desired.yaml")
             return _envelope(
@@ -202,6 +206,7 @@ def apply_desired(
         try:
             _reload_or_restart(service_name)
             _wait_mihomo_node(mihomo_api, api_secret, group, selected_name)
+            _assert_runtime_proxy_mode(mihomo_api, api_secret, proxy_mode)
             _select_mihomo(mihomo_api, api_secret, group, selected_name)
         except _ApplyError:
             _restore_current(current, previous_current)
@@ -234,10 +239,13 @@ def sync_status(
     expected_release_revision=None,
     expected_component_locks_sha256=None,
     expected_selected_node_id=None,
+    expected_proxy_mode="tproxy",
     install_root="/etc/proxyfleet",
     component_locks_path="/etc/proxyfleet/component-locks.json",
     binary_path="/usr/local/bin/mihomo",
     service_path="/etc/systemd/system/mihomo.service",
+    mihomo_api="http://127.0.0.1:9090",
+    api_secret=None,
 ):
     """只读检查 Minion 当前状态，用于 Master 决定轻量切换或完整收敛。"""
 
@@ -285,6 +293,12 @@ def sync_status(
         reasons.append("current symlink missing")
     elif release_revision is not None and _current_target(current) != (install / "releases" / f"{release_revision:06d}").resolve():
         reasons.append("current release mismatch")
+    elif str(expected_proxy_mode) == "tproxy":
+        config_path = current / "config.yaml"
+        if not _config_tproxy_ready(config_path):
+            reasons.append("current config is not tproxy")
+        elif not _runtime_proxy_mode_ready(mihomo_api, api_secret, expected_proxy_mode):
+            reasons.append("runtime tproxy is not active")
 
     if reasons:
         return _status_payload("drifted", reasons[0], reasons)
@@ -307,6 +321,7 @@ def apply_switch(
     binary_path="/usr/local/bin/mihomo",
     mihomo_api="http://127.0.0.1:9090",
     api_secret=None,
+    proxy_mode="tproxy",
     operation_id="op-unknown",
     fail_on_error=False,
 ):
@@ -340,6 +355,7 @@ def apply_switch(
         current = install / "current"
         if _current_target(current) != active_release.resolve():
             raise _ApplyError("E_SWITCH_NEEDS_CONVERGE", "current release mismatch")
+        _assert_runtime_proxy_mode(mihomo_api, api_secret, proxy_mode)
 
         before = _api(mihomo_api, api_secret, "GET", "/proxies/" + parse.quote(group, safe=""), None)
         all_names = set(before.get("all", []))
@@ -425,6 +441,55 @@ def _wait_mihomo_node(base_url, api_secret, group, selected_name, timeout_second
     if last_error is not None:
         raise last_error
     raise _ApplyError("E_NODE_NOT_FOUND", "target node is not selectable")
+
+
+def _runtime_proxy_mode_ready(base_url, api_secret, proxy_mode):
+    if str(proxy_mode) != "tproxy":
+        return True
+    try:
+        config = _api(base_url, api_secret, "GET", "/configs", None)
+    except _ApplyError:
+        return False
+    return _mihomo_configs_tproxy_ready(config)
+
+
+def _assert_runtime_proxy_mode(base_url, api_secret, proxy_mode):
+    if str(proxy_mode) != "tproxy":
+        return
+    try:
+        config = _api(base_url, api_secret, "GET", "/configs", None)
+    except _ApplyError as exc:
+        raise _ApplyError("E_TPROXY_NOT_ACTIVE", "mihomo api unavailable while checking tproxy") from exc
+    if not _mihomo_configs_tproxy_ready(config):
+        tun = config.get("tun") if isinstance(config, dict) else {}
+        raise _ApplyError(
+            "E_TPROXY_NOT_ACTIVE",
+            "tproxy not active: "
+            f"tproxy-port={config.get('tproxy-port') if isinstance(config, dict) else None}, "
+            f"tun.enable={tun.get('enable') if isinstance(tun, dict) else None}, "
+            f"tun.auto-route={tun.get('auto-route') if isinstance(tun, dict) else None}",
+        )
+
+
+def _mihomo_configs_tproxy_ready(config):
+    if not isinstance(config, dict):
+        return False
+    tun = config.get("tun")
+    return (
+        isinstance(config.get("tproxy-port"), int)
+        and int(config.get("tproxy-port")) > 0
+        and isinstance(tun, dict)
+        and tun.get("enable") is True
+        and tun.get("auto-route") is True
+    )
+
+
+def _config_tproxy_ready(config_path):
+    try:
+        config = _read_json(Path(config_path))
+    except Exception:
+        return False
+    return _mihomo_configs_tproxy_ready(config)
 
 
 def health_check(base_url, api_secret=None, mihomo_name=None, test_url="https://www.gstatic.com/generate_204", timeout_ms=3000, operation_id="op-unknown"):

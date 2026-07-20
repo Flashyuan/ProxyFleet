@@ -132,6 +132,7 @@ proxyfleet-apply-desired:
     - mihomo_api: http://127.0.0.1:9090
     - api_secret: null
     - service_name: mihomo.service
+    - proxy_mode: {{ pillar.get('proxyfleet_proxy_mode', 'tproxy') }}
     - operation_id: {{ pillar.get('proxyfleet_operation_id', 'op-unknown') }}
     - fail_on_error: true
     - require:

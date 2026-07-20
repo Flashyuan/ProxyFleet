@@ -12,7 +12,7 @@ MASTER_CONF_DIR="${MASTER_CONF_DIR:-/etc/salt/master.d}"
 MASTER_PKI_DIR="${MASTER_PKI_DIR:-/etc/salt/pki/master}"
 SALT_STATES_ROOT="${SALT_STATES_ROOT:-/srv/proxyfleet/salt/states}"
 SALT_PILLAR_ROOT="${SALT_PILLAR_ROOT:-/srv/proxyfleet/salt/pillar}"
-PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v.0.2.8}"
+PROXYFLEET_VERSION="${PROXYFLEET_VERSION:-v.0.2.9}"
 UPDATE_MANIFEST_URL="${UPDATE_MANIFEST_URL:-https://github.com/Flashyuan/ProxyFleet/releases/latest/download/update-manifest.json}"
 UPDATE_STATE_PATH="${UPDATE_STATE_PATH:-${PROJECT_ROOT}/runtime/update-state.json}"
 MONITOR_POLICY_PATH="${MONITOR_POLICY_PATH:-${PROJECT_ROOT}/runtime/health-monitor-policy.json}"
@@ -510,7 +510,7 @@ monitor_auto_switch_cmd() {
 
 monitor_once_cmd() {
   need_root
-  local release_dir="${PROJECT_ROOT}/releases/000001"
+  local release_dir=""
   local runtime_dir="${PROJECT_ROOT}/runtime"
   local mihomo_api="http://127.0.0.1:9090"
   local dry_run="false"
@@ -1283,7 +1283,7 @@ live_health_menu() {
 select_sync() {
   need_root
 
-  local release_dir="${PROJECT_ROOT}/releases/000001"
+  local release_dir=""
   local runtime_dir="${PROJECT_ROOT}/runtime"
   local salt_root="${SALT_STATES_ROOT}"
   local target="*"
@@ -1549,7 +1549,7 @@ usage() {
                    兼容旧参数；行为等同 uninstall
 
 select-sync 常用参数：
-  --release-dir PATH       默认 releases/000001；不存在时自动使用 releases 下最大编号
+  --release-dir PATH       默认自动使用 releases 下最大编号
   --runtime-dir PATH       默认 runtime
   --target '*'             默认同步全部 Minion
   --health-cache PATH      默认 runtime/health.json，存在时展示测速状态

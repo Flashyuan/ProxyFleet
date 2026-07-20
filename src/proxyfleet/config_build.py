@@ -43,15 +43,64 @@ DEFAULT_TPROXY_DIRECT_RULES = [
     "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
     "IP-CIDR,169.254.0.0/16,DIRECT,no-resolve",
     "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+    "IP-CIDR,114.114.114.114/32,DIRECT,no-resolve",
+    "IP-CIDR,119.29.29.29/32,DIRECT,no-resolve",
+    "IP-CIDR,180.76.76.76/32,DIRECT,no-resolve",
     "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+    "IP-CIDR,223.5.5.5/32,DIRECT,no-resolve",
+    "IP-CIDR,223.6.6.6/32,DIRECT,no-resolve",
     "IP-CIDR,224.0.0.0/4,DIRECT,no-resolve",
     "IP-CIDR,240.0.0.0/4,DIRECT,no-resolve",
 ]
 DEFAULT_TPROXY_DIRECT_DOMAINS = [
+    "126.com",
+    "163.com",
+    "alicdn.com",
+    "aliyun.com",
+    "aliyuncs.com",
+    "alipay.com",
+    "baidu.com",
+    "bdimg.com",
+    "bdstatic.com",
+    "bilibili.com",
+    "bytedance.com",
+    "byteimg.com",
+    "cdn.bcebos.com",
+    "chinaunicom.cn",
     "cluster.local",
-    "svc",
-    "localhost",
+    "cn",
+    "cnblogs.com",
+    "csdn.net",
+    "douyin.com",
+    "gitee.com",
+    "gitee.io",
+    "gitcode.com",
+    "gtimg.com",
+    "huawei.com",
+    "huaweicloud.com",
+    "jd.com",
     "local",
+    "localhost",
+    "mi.com",
+    "mmstat.com",
+    "netease.com",
+    "npmmirror.com",
+    "oschina.net",
+    "qcloud.com",
+    "qq.com",
+    "sina.com.cn",
+    "sogou.com",
+    "sohu.com",
+    "svc",
+    "taobao.com",
+    "tencent.com",
+    "tencent-cloud.com",
+    "tmall.com",
+    "tsinghua.edu.cn",
+    "ustc.edu.cn",
+    "weibo.com",
+    "weixin.qq.com",
+    "zhihu.com",
 ]
 
 
@@ -286,10 +335,10 @@ def _apply_proxy_mode(config: dict[str, Any], proxy_mode: str, tproxy_excludes: 
     tun["enable"] = True
     tun["stack"] = "system"
     tun["auto-route"] = True
-    tun["auto-redirect"] = True
+    tun["auto-redirect"] = False
     tun["auto-detect-interface"] = True
-    tun["strict-route"] = True
-    tun["dns-hijack"] = ["any:53", "tcp://any:53"]
+    tun["strict-route"] = False
+    tun["dns-hijack"] = ["any:53"]
     tun["route-exclude-address"] = excludes
     config["tun"] = tun
 
@@ -299,8 +348,30 @@ def _apply_proxy_mode(config: dict[str, Any], proxy_mode: str, tproxy_excludes: 
     dns.setdefault("enhanced-mode", "fake-ip")
     dns.setdefault("fake-ip-range", "198.18.0.1/16")
     dns.setdefault("nameserver", ["https://223.5.5.5/dns-query", "https://1.1.1.1/dns-query"])
-    dns.setdefault("fallback", ["https://8.8.8.8/dns-query"])
+    # TProxy 首次收敛不能依赖启动时在线下载 MMDB；fallback-filter.geoip 会触发
+    # GeoIP 初始化，网络不佳时会让 Mihomo fatal，导致 Minion 无法进入可控状态。
+    dns["fallback"] = []
+    dns["fallback-filter"] = {
+        "geoip": False,
+        "ipcidr": [],
+        "domain": [],
+    }
     config["dns"] = dns
+    _assert_tproxy_config(config)
+
+
+def _assert_tproxy_config(config: dict[str, Any]) -> None:
+    tun = config.get("tun")
+    dns = config.get("dns")
+    if config.get("tproxy-port") != 7893:
+        raise ConfigBuildError("tproxy release 必须启用 tproxy-port=7893")
+    if not isinstance(tun, dict) or tun.get("enable") is not True or tun.get("auto-route") is not True:
+        raise ConfigBuildError("tproxy release 必须启用 tun.enable 和 tun.auto-route")
+    if not isinstance(dns, dict):
+        raise ConfigBuildError("tproxy release 必须包含 dns 配置")
+    fallback_filter = dns.get("fallback-filter")
+    if dns.get("fallback") != [] or not isinstance(fallback_filter, dict) or fallback_filter.get("geoip") is not False:
+        raise ConfigBuildError("tproxy release 必须关闭 DNS fallback GeoIP/MMDB 启动依赖")
 
 
 def _tproxy_direct_rules(proxy_mode: str, tproxy_excludes: dict[str, Any] | None) -> list[str]:

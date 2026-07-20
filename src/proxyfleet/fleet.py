@@ -296,6 +296,7 @@ def prepare_salt_publish(
         raise FleetError("E_PROVIDER_MISMATCH", "desired release_revision 与 release 不一致")
     if desired["provider_revision"] != release.provider_revision:
         raise FleetError("E_PROVIDER_MISMATCH", "desired provider_revision 与 release 不一致")
+    _assert_release_proxy_mode(release.release_dir, proxy_mode)
 
     salt_root = salt_root.resolve()
     release_target = salt_root / "proxyfleet" / "releases" / f"{release.release_revision:06d}"
@@ -354,6 +355,7 @@ def build_sync_plan(
         raise FleetError("E_PROVIDER_MISMATCH", "desired release_revision 与 release 不一致")
     if desired["provider_revision"] != release.provider_revision:
         raise FleetError("E_PROVIDER_MISMATCH", "desired provider_revision 与 release 不一致")
+    _assert_release_proxy_mode(release.release_dir, proxy_mode)
     salt_release_dir = salt_root.resolve() / "proxyfleet" / "releases" / f"{release.release_revision:06d}"
     salt_desired_path = salt_root.resolve() / "proxyfleet" / "desired.yaml"
     return _sync_plan(
@@ -367,6 +369,29 @@ def build_sync_plan(
         port_policy_mode=port_policy_mode,
         proxy_mode=proxy_mode,
     )
+
+
+def _assert_release_proxy_mode(release_dir: Path, proxy_mode: str) -> None:
+    if proxy_mode != "tproxy":
+        return
+    try:
+        config = _read_json(release_dir / "config.yaml")
+    except FleetError as exc:
+        raise FleetError("E_TPROXY_RELEASE_INVALID", "release config.yaml 不可读取") from exc
+    tun = config.get("tun")
+    dns = config.get("dns")
+    fallback_filter = dns.get("fallback-filter") if isinstance(dns, dict) else None
+    if (
+        config.get("tproxy-port") != 7893
+        or not isinstance(tun, dict)
+        or tun.get("enable") is not True
+        or tun.get("auto-route") is not True
+        or not isinstance(dns, dict)
+        or dns.get("fallback") != []
+        or not isinstance(fallback_filter, dict)
+        or fallback_filter.get("geoip") is not False
+    ):
+        raise FleetError("E_TPROXY_RELEASE_INVALID", "当前 release 未启用稳定 TProxy 配置，请重新构建 release")
 
 
 def run_salt_sync_result(
@@ -656,6 +681,7 @@ def _build_minion_route_plan(plan: SyncPlan, salt_bin: str, *, module_sha256: st
             f"expected_release_revision={plan.release_revision}",
             f"expected_component_locks_sha256={expected_locks}",
             f"expected_selected_node_id={desired['selected_node_id']}",
+            f"expected_proxy_mode={plan.proxy_mode}",
             "--out=json",
         ]
         completed = subprocess.run(status_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -964,6 +990,7 @@ def _salt_apply_switch_cmd(plan: SyncPlan, salt_bin: str, minions: list[str], de
         "proxyfleet_mihomo.apply_switch",
         f"desired_json={json.dumps(desired, ensure_ascii=False, separators=(',', ':'))}",
         f"operation_id={plan.operation_id}",
+        f"proxy_mode={plan.proxy_mode}",
         "fail_on_error=true",
         "--out=json",
     ]
